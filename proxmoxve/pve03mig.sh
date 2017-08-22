@@ -12,6 +12,10 @@ then
     ## copy vm config from pve01 to pve03, then you can start it.
     mv /etc/pve/nodes/pve01/qemu-server/102.conf \
     /etc/pve/nodes/pve03/qemu-server/
+
+    # del repl conf, u need setting again.
+    rm /etc/pve/replication.cfg
+
     echo
 else
     echo
