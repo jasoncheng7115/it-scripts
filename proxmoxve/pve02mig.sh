@@ -9,7 +9,7 @@ then
     echo
     pvecm expected 1
     
-    ## copy vm config to pve02, then you can start it.
+    ## copy vm config from pve01 to pve02, then you can start it.
     mv /etc/pve/nodes/pve01/qemu-server/102.conf \
     /etc/pve/nodes/pve02/qemu-server/
     
