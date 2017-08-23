@@ -21,7 +21,7 @@ then
     pvecm expected 1
 
     # to destroy zvol
-    zfs destroy -r rpoo/data/vm-101-disk-1 
+    zfs destroy -r rpool/data/vm-101-disk-1 
 
     echo
 else

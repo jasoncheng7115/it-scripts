@@ -15,7 +15,12 @@ then
     /etc/pve/nodes/pve02/qemu-server/
 
     # del repl conf, u need setting again.    
+    echo "Del Old Replication Conf..."
     rm /etc/pve/replication.cfg
+
+    # remove replicate temp snapshot.    
+    echo "Destroy Temp Replicate Snapshot..."
+    zfs destroy -f $(zfs list -t snapshot | grep vm-101 | awk '{print$ 1}')
 
 
     echo
