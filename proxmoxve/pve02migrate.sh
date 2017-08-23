@@ -1,6 +1,7 @@
+#!/bin/bash
 echo
-read -r -p "Warning! Are you sure to migrate [102]? [y/n]: " response
-response=$(response,,)
+read -r -p "Warning! Are you sure to migrate [102]? [y/n]: " response1
+response=$response1
 
 if [[ $response =~ ^(yes|y)$ ]]
 then
