@@ -1,7 +1,7 @@
 #!/bin/bash
 echo
-read -r -p "Warning! Are you sure to migrate [101]? [y/n]: " response1
-response=$response1
+read -r -p "Warning! Are you sure to migrate [101]? [y/n]: " userinput
+response=$userinput
 
 if [[ $response =~ ^(yes|y)$ ]]
 then
@@ -17,7 +17,18 @@ then
     # del repl conf, u need setting again.    
     rm /etc/pve/replication.cfg
 
+
     echo
+    read -r -p "Start [101] now ? [y/n]: " userinput
+    response=$userinput
+    if [[ $response =~ ^(yes|y)$ ]]
+    then
+        echo "Start [101]..."
+        qm start 101
+    fi
+
+
+
 else
     echo
     echo "Cancel."
