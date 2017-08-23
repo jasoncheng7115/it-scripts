@@ -9,19 +9,22 @@ then
     echo "Migrate [101] From pve01 to pve02(me)..."
     echo
     pvecm expected 1
+    sleep 2
     
     ## copy vm config from pve01 to pve02, then you can start it.
     mv /etc/pve/nodes/pve01/qemu-server/101.conf \
     /etc/pve/nodes/pve02/qemu-server/
+    sleep 2
 
     # del repl conf, u need setting again.    
     echo "Del Old Replication Conf..."
     rm /etc/pve/replication.cfg
+    sleep 2
 
     # remove replicate temp snapshot.    
     echo "Destroy Temp Replicate Snapshot..."
     zfs destroy -f $(zfs list -t snapshot | grep vm-101 | awk '{print$ 1}')
-
+   sleep 2
 
     echo
     read -r -p "Start [101] now ? [y/n]: " userinput
@@ -30,6 +33,7 @@ then
     then
         echo "Start [101]..."
         qm start 101
+        sleep 2
     fi
 
 

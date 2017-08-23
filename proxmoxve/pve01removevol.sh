@@ -20,8 +20,14 @@ then
     echo
     pvecm expected 1
 
+    sleep 2
+
     # to destroy zvol
     zfs destroy -r rpool/data/vm-101-disk-1 
+
+    sleep 2
+    
+    zfs destroy -r rpool/data/vm-101-disk-2
 
     echo
 else
