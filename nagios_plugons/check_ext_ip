@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# check_ext_ip V1.2
+#
+# ----------------------
+#
+# This is a modified version of Jason Cheng (jason@jason.tools) to support LibreNMS.
+# from https://exchange.nagios.org/directory/Plugins/Network-and-Systems-Management/Check_External_IP/details
+#
+# ----------------------
+#
+# This script checks to ensure that your real-world IP address hasn't changed, and if it does, notify you of the new address.
+# Copyright 2012 Justin Reherman.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+# Preliminary checks
+if [ -z $2 ]
+then
+        echo "Expected IP address not provided!"
+        echo "Usage: -H check_ext_ip <expexted.external.ip.address>"
+        exit 2
+fi
+
+
+if [ -z $1 ]
+then
+        echo "Expected IP address not provided!"
+        echo "Usage: -H check_ext_ip <expexted.external.ip.address>"
+        exit 2
+fi
+
+#Find out what the external IP address is. 
+ACTUAL=$(wget -q -O - checkip.dyndns.org|sed -e 's/.*Current IP Address: //' -e 's/<.*$//')
+
+#What do we expect the external IP address to be?
+EXPECTED="$2"
+
+if [ $ACTUAL == $EXPECTED ]
+then
+        echo "OK - External IP address hasn't changed."
+        exit 0
+else
+        echo "CRITICAL - External IP address has changed to $ACTUAL"
+        exit 2
+fi
+exit 0
