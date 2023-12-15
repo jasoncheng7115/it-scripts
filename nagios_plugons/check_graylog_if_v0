@@ -1,10 +1,43 @@
 #!/bin/bash
 
-# 還有不少要改進，例如改參數化傳入
+usage() {
+    echo "Usage: $0 -U USER -P PASSWORD -p PORT -H IP [-S] [-h]"
+    echo
+    echo "  -U USER        The username for authentication"
+    echo "  -P PASSWORD    The password for authentication"
+    echo "  -p PORT        The port number"
+    echo "  -H IP/FQDN     The IP or FQDN"
+    echo "  -S             Use https protocol (optional)"
+    echo "  -h             Display this help message"
+    exit 1
+}
 
-RESULT=`curl -u 'admin:yourpassword' -H 'Accept: application/json' -X GET "https://yourgraylogip:yourgraylogport/api/system/indexer/failures/count?since=$(date -u +'%FT%T.%2NZ' -d " -5 minute")&pretty=true" -k | grep count | awk -F":" '{print $2}'`
 
-#echo $RESULT
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+while getopts U:P:p:H:Sh option
+do
+ case "${option}"
+ in
+ U) USER=${OPTARG};;
+ P) PASSWORD=${OPTARG};;
+ p) PORT=${OPTARG};;
+ H) IP=${OPTARG};;
+ S) SECURE=1;;
+ h) usage;;
+ esac
+done
+
+if [ "$SECURE" ]; then
+    PROTOCOL="https"
+else
+    PROTOCOL="http"
+fi
+
+
+RESULT=`curl -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/indexer/failures/count?since=$(date -u +'%FT%T.%2NZ' -d " -5 minute")&pretty=true" -k | grep count | awk -F":" '{print $2}'`
 
 
 if [ $RESULT -eq 1 ]; then
