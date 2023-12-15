@@ -3,6 +3,8 @@
 # Check Graylog for Indexer Failure errors in the last five minutes.
 # 
 # https://github.com/jasoncheng7115/it-scripts
+# https://blog.jason.tools
+#
 # jason@jason.tools
 # 2023/12/15
 
