@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# Check Graylog for Indexer Failure errors in the last five minutes.
+# 
+# https://github.com/jasoncheng7115/it-scripts
+# jason@jason.tools
+# 2023/12/15
 
 usage() {
     echo "Usage: $0 -U USER -P PASSWORD -p PORT -H IP [-S] [-h]"
