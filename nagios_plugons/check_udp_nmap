@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# check_udp_nmap : UDP Port Checker (using nmap)
+#
+# Version: 1.0
+# Author: Jason Cheng
+# Web: blog.jason.tools
+# Email: jason@jason.tools
+#
+# This script checks if a specific UDP port is open on a given IP address.
+#
+
+# Declare variables
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+# Parse command line options
+while getopts H:p:h option
+do
+    case "${option}"
+    in
+        H) IP=${OPTARG};;
+        p) PORT=${OPTARG};;
+        h) echo "Usage: $0 -H [IP] -p [port]"; exit 0;;
+    esac
+done
+
+# If no options are passed, display usage
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 -H [IP] -p [port]"
+    exit $STATE_UNKNOWN
+fi
+
+# Check if /usr/bin/nmap exists
+if [ ! -f /usr/bin/nmap ]; then
+    echo "The nmap command does not exist. Please install nmap."
+    exit $STATE_UNKNOWN
+fi
+
+# Run the nmap command and store the result in a variable
+NMAP_OUTPUT=$(/usr/bin/nmap -sU -p $PORT -P0 $IP)
+
+# Use grep to filter out lines containing "PORT/udp" and "open"
+PORT_OUTPUT=$(echo "$NMAP_OUTPUT" | grep "$PORT/udp")
+OPEN_OUTPUT=$(echo "$PORT_OUTPUT" | grep "open")
+
+# Check the exit status of the last command
+if [ -n "$OPEN_OUTPUT" ]; then
+    echo "OK: $PORT/udp is listening."
+    exit $STATE_OK
+else
+    echo "CRITICAL: $PORT/udp is not listening or does not exist."
+    exit $STATE_CRITICAL
+fi
