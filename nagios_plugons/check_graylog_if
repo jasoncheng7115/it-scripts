@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Check Graylog for Indexer Failure errors in the last five minutes.
+# Check Graylog for Index Failure errors in the last five minutes.
 # v1.1 
 #
 # https://github.com/jasoncheng7115/it-scripts
