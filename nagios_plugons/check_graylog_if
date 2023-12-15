@@ -1,7 +1,8 @@
 #!/bin/bash
 #
 # Check Graylog for Indexer Failure errors in the last five minutes.
-# 
+# v1.1 
+#
 # https://github.com/jasoncheng7115/it-scripts
 # https://blog.jason.tools
 #
@@ -45,18 +46,24 @@ else
 fi
 
 
-RESULT=`curl -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/indexer/failures/count?since=$(date -u +'%FT%T.%2NZ' -d " -5 minute")&pretty=true" -k | grep count | awk -F":" '{print $2}' | tr -d ' '`
+RESULT=`curl --silent -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/indexer/failures/count?sin>
+
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
 
 
 if [ $RESULT -eq 1 ]; then
-    echo "CRITICAL: Index failure occurred ($RESULT records)|$RESULT"
+    echo "CRITICAL: Index failure occurred ($RESULT records)|'index_failure'=$RESULT"
     exit $STATE_CRITICAL
 fi
 
 if [ $RESULT -eq 0 ]; then
-    echo "OK: No index failure.|$RESULT"
+    echo "OK: No index failure.|'index_failure'=$RESULT"
     exit $STATE_OK
 fi
 
-echo "Unknown state : $RESULT"
+echo "Unknown state:$RESULT"
 exit $STATE_UNKNOWN
