@@ -40,7 +40,7 @@ if [ ! -f /usr/bin/nmap ]; then
 fi
 
 # Run the nmap command and store the result in a variable
-NMAP_OUTPUT=$(/usr/bin/nmap -sU -p $PORT -P0 $IP)
+NMAP_OUTPUT=$(sudo /usr/bin/nmap -sU -p $PORT -P0 $IP)
 
 # Use grep to filter out lines containing "PORT/udp" and "open"
 PORT_OUTPUT=$(echo "$NMAP_OUTPUT" | grep "$PORT/udp")
