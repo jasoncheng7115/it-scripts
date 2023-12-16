@@ -46,7 +46,7 @@ else
 fi
 
 
-RESULT=`curl --silent -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/indexer/failures/count?sin>
+RESULT=`curl --silent -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/indexer/failures/count?since=$(date -u +'%FT%T.%2NZ' -d " -5 minute")&pretty=true" -k | grep count | awk -F":" '{print $2}' | tr -d ' '` 
 
 
 STATE_OK=0
