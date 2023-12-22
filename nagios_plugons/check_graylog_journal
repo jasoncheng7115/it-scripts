@@ -76,11 +76,26 @@ journal_size_limit=$(echo $journal_size_limit_line | awk -F: '{print $2}' | awk 
 # Calculate usage percentage
 usage_percentage=$(echo "scale=2; $journal_size / $journal_size_limit * 100" | bc)
 
-# Add thousands separator
-journal_size=$(echo $journal_size | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')
-journal_size_limit=$(echo $journal_size_limit | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')
+# Convert journal_size and journal_size_limit to GB or MB
+if ((journal_size>=1073741824)); then 
+    journal_size=$(echo "scale=2; $journal_size / 1073741824" | bc)
+    journal_size="${journal_size}GB"
+elif ((journal_size>=1048576)); then 
+    journal_size=$(echo "scale=2; $journal_size / 1048576" | bc)
+    journal_size="${journal_size}MB"
+else
+    journal_size="${journal_size}B"
+fi
 
-
+if ((journal_size_limit>=1073741824)); then 
+    journal_size_limit=$(echo "scale=2; $journal_size_limit / 1073741824" | bc)
+    journal_size_limit="${journal_size_limit}GB"
+elif ((journal_size_limit>=1048576)); then 
+    journal_size_limit=$(echo "scale=2; $journal_size_limit / 1048576" | bc)
+    journal_size_limit="${journal_size_limit}MB"
+else
+    journal_size_limit="${journal_size_limit}B"
+fi
 
 # Check if usage_percentage is greater than or equal to the threshold
 if (( $(echo "$usage_percentage >= $THRESHOLD" | bc -l) ))
