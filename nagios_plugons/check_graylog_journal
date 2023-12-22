@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Check Graylog for Journal Usage.
+# v1.0
+#
+# https://github.com/jasoncheng7115/it-scripts
+# https://blog.jason.tools
+#
+# jason@jason.tools
+# 2023/12/22
+
+
+usage() {
+    echo "Usage: $0 -U USER -P PASSWORD -p PORT -H IP -c THRESHOLD [-S] [-h]"
+    echo
+    echo "  -U USER        The username for authentication"
+    echo "  -P PASSWORD    The password for authentication"
+    echo "  -p PORT        The port number"
+    echo "  -H IP/FQDN     The IP or FQDN"
+    echo "  -c THRESHOLD   Threshold for usage percentage"
+    echo "  -S             Use https protocol (optional)"
+    echo "  -h             Display this help message"
+    exit 1
+}
+
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+while getopts U:P:p:H:c:Sh option
+do
+ case "${option}"
+ in
+ U) USER=${OPTARG};;
+ P) PASSWORD=${OPTARG};;
+ p) PORT=${OPTARG};;
+ H) IP=${OPTARG};;
+ c) THRESHOLD=${OPTARG};;
+ S) SECURE=1;;
+ h) usage;;
+ esac
+done
+
+if [ "$SECURE" ]; then
+    PROTOCOL="https"
+else
+    PROTOCOL="http"
+fi
+
+RESULT=`curl --silent -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/journal?pretty=true" -k`
+
+# Use grep to find lines containing "journal_size" and "journal_size_limit", then use awk to process
+journal_size_line=$(echo "$RESULT" | grep '"journal_size"')
+journal_size=$(echo $journal_size_line | awk -F: '{print $2}' | awk -F, '{print $1}')
+
+journal_size_limit_line=$(echo "$RESULT" | grep '"journal_size_limit"')
+journal_size_limit=$(echo $journal_size_limit_line | awk -F: '{print $2}' | awk -F, '{print $1}')
+
+# Calculate usage percentage
+usage_percentage=$(echo "scale=2; $journal_size / $journal_size_limit * 100" | bc)
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+
+# Use grep to find lines containing "journal_size" and "journal_size_limit", then use awk to process
+journal_size_line=$(echo "$RESULT" | grep '"journal_size"')
+journal_size=$(echo $journal_size_line | awk -F: '{print $2}' | awk -F, '{print $1}')
+
+journal_size_limit_line=$(echo "$RESULT" | grep '"journal_size_limit"')
+journal_size_limit=$(echo $journal_size_limit_line | awk -F: '{print $2}' | awk -F, '{print $1}')
+
+# Calculate usage percentage
+usage_percentage=$(echo "scale=2; $journal_size / $journal_size_limit * 100" | bc)
+
+# Add thousands separator
+journal_size=$(echo $journal_size | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')
+journal_size_limit=$(echo $journal_size_limit | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')
+
+
+
+# Check if usage_percentage is greater than or equal to the threshold
+if (( $(echo "$usage_percentage >= $THRESHOLD" | bc -l) ))
+then
+    echo "CRITICAL: Journal usage exceeds $THRESHOLD% ! ($journal_size/$journal_size_limit)|'journal_usage'=$usage_percentage"
+    exit $STATE_CRITICAL
+else
+    echo "OK: Journal usage is normal. $usage_percentage% ($journal_size/$journal_size_limit)|'journal_usage'=$usage_percentage"
+    exit $STATE_OK
+fi
+
+
+
+echo "Unknown state:$RESULT"
+exit $STATE_UNKNOWN
