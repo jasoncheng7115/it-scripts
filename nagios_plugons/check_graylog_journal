@@ -50,16 +50,6 @@ fi
 
 RESULT=`curl --silent -u "$USER:${PASSWORD//\!/\\!}" -H "Accept: application/json" -X GET "$PROTOCOL://$IP:$PORT/api/system/journal?pretty=true" -k`
 
-# Use grep to find lines containing "journal_size" and "journal_size_limit", then use awk to process
-journal_size_line=$(echo "$RESULT" | grep '"journal_size"')
-journal_size=$(echo $journal_size_line | awk -F: '{print $2}' | awk -F, '{print $1}')
-
-journal_size_limit_line=$(echo "$RESULT" | grep '"journal_size_limit"')
-journal_size_limit=$(echo $journal_size_limit_line | awk -F: '{print $2}' | awk -F, '{print $1}')
-
-# Calculate usage percentage
-usage_percentage=$(echo "scale=2; $journal_size / $journal_size_limit * 100" | bc)
-
 STATE_OK=0
 STATE_WARNING=1
 STATE_CRITICAL=2
