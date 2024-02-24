@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""
+This script is a Nagios plugin that checks the queue count of a Proxmox Mail Gateway (Proxmox MG).
+It requires the Proxmox MG FQDN, port, username, password, node name, and queue name as inputs.
+The script outputs the queue count and exits with a status code indicating OK or CRITICAL based on the threshold provided.
+
+Required Python modules: requests, argparse, sys
+
+Usage:
+    This script accepts command-line arguments for the Proxmox MG FQDN, port, username, password,
+    node name, queue name, and a critical threshold for the queue count. It returns the queue count and an exit status.
+
+Example:
+    ./check_pmg_queue -H pmg.example.com -P 8006 -u admin@pmg -p secret -n node1 -q deferred -c 10
+
+Author: Jason Cheng
+Email: jason@jason.tools
+Version: v1.0
+Date: 2024-02-24
+"""
+
+import argparse
+import requests
+import sys
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def get_auth_ticket(pmg_url, username, password):
+    url = f"{pmg_url}/access/ticket"
+    data = {
+        "username": username,
+        "password": password
+    }
+    response = requests.post(url, data=data, verify=False)  # SSL verification disabled for example purposes
+    if response.status_code == 200:
+        data = response.json()
+        return data.get("data", {}).get("ticket"), data.get("data", {}).get("CSRFPreventionToken")
+    return None, None
+
+def get_queue_count(pmg_url, ticket, csrf_token, node_name, queue_name):
+    headers = {
+        "CSRFPreventionToken": csrf_token,
+        "Cookie": f"PMGAuthCookie={ticket}"
+    }
+    url = f"{pmg_url}/nodes/{node_name}/postfix/queue/{queue_name}"
+    response = requests.get(url, headers=headers, verify=False)  # SSL verification disabled for example purposes
+    if response.status_code == 200:
+        data = response.json()
+        return len(data.get("data", []))
+    return None
+
+parser = argparse.ArgumentParser(description='Check Proxmox MG queue count. Example: ./check_pmg_queue -H pmg.example.com -P 8006 -u admin@pmg -p secret -n node1 -q active -c 10',
+                                 formatter_class=argparse.RawTextHelpFormatter)
+parser.add_argument('-H', '--hostname', required=True, help='Proxmox MG server FQDN')
+parser.add_argument('-P', '--port', required=True, help='Proxmox MG server port')
+parser.add_argument('-u', '--username', required=True, help='Username and Realm for Proxmox MG server')
+parser.add_argument('-p', '--password', required=True, help='Password for Proxmox MG server')
+parser.add_argument('-n', '--nodename', required=True, help='Node name for Proxmox MG server')
+parser.add_argument('-q', '--queuename', required=True, help='Queue name for Proxmox MG server (e.g., active, deferred)')
+parser.add_argument('-c', '--critical', type=int, required=True, help='Critical threshold for queue count')
+
+args = parser.parse_args()
+
+pmg_url = f"https://{args.hostname}:{args.port}/api2/json"
+ticket, csrf_token = get_auth_ticket(pmg_url, args.username, args.password)
+
+if ticket is None or csrf_token is None:
+    print("UNKNOWN - Failed to authenticate with Proxmox MG server")
+    sys.exit(3)
+
+queue_count = get_queue_count(pmg_url, ticket, csrf_token, args.nodename, args.queuename)
+if queue_count is None:
+    print("UNKNOWN - Failed to retrieve queue count")
+    sys.exit(3)
+
+if queue_count > args.critical:
+    print(f"CRITICAL - Queue count is {queue_count}, exceeds critical threshold of {args.critical} | 'queue_count'={queue_count};{args.critical};{args.critical};0;")
+    sys.exit(2)
+#if queue_count > args.critical:
+#    print(f"CRITICAL - Queue count is {queue_count}, exceeds critical threshold of {args.critical}")
+#    sys.exit(2)
+else:
+    print(f"OK - Queue count is {queue_count} | 'queue_count'={queue_count};{args.critical};{args.critical};")
+    sys.exit(0)
