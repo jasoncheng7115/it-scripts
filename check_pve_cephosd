@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+
+import argparse
+import requests
+import json
+import sys
+import urllib3
+
+class CustomHelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+description_text = """
+This Nagios plugin checks the status of Ceph OSDs on a specified Proxmox VE node. It uses the Proxmox VE API to fetch OSD status information and determines the overall health based on the status of the OSDs. If any OSDs are down, it can return a CRITICAL or WARNING status for Nagios to act upon. The script supports a debug mode to print detailed information about all OSDs under the specified node.
+
+Author: Jason Cheng
+Email: jason@jason.tools
+Version: v1.0
+Date: 2024-03-01
+
+Required Python Modules:
+- requests
+- json (included with Python)
+- sys (included with Python)
+- argparse (included with Python)
+- urllib3
+
+To install the required non-standard modules, run: pip install requests urllib3
+
+Usage Example:
+./check_ceph_osd_status -H your.proxmox.host --node_name your-node-name --user your-username@pam --token_id your-token-id --token_secret your-token-secret -c 1 -d
+"""
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(
+    description=description_text,
+    formatter_class=lambda prog: CustomHelpFormatter(prog, max_help_position=50, width=100)
+)
+
+parser.add_argument('-H', '--host', required=True, help='Proxmox VE host address')
+parser.add_argument('--node_name', required=True, help='Node name to query')
+parser.add_argument('--user', required=True, help='Username and realm')
+parser.add_argument('--token_id', required=True, help='Token ID')
+parser.add_argument('--token_secret', required=True, help='API token secret')
+parser.add_argument('-c', '--critical', type=int, required=True, help='OSD failure count threshold for critical state')
+parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode to print JSON data of OSDs under the specified node name')
+args = parser.parse_args()
+
+# Set API access parameters
+base_url = f'https://{args.host}:8006/api2/json'
+auth_headers = {
+    'Authorization': f'PVEAPIToken={args.user}!{args.token_id}={args.token_secret}'
+}
+
+def get_ceph_osd_status(node_name):
+    osd_list_url = f'{base_url}/nodes/{node_name}/ceph/osd'
+    try:
+        response = requests.get(osd_list_url, headers=auth_headers, verify=False)
+        response.raise_for_status()
+        osd_data = response.json()
+
+        debug_info = []
+        down_osds = []
+
+        if 'data' in osd_data and 'root' in osd_data['data']:
+            for child in osd_data['data']['root'].get('children', []):
+                if child.get('type') == 'root' or child.get('name') == node_name:
+                    for host in child.get('children', []):
+                        if host.get('type') == 'host' and host.get('name') == node_name:
+                            for osd in host.get('children', []):
+                                if osd.get('type') == 'osd':
+                                    debug_info.append({
+                                        'name': osd.get('name'),
+                                        'status': osd.get('status'),
+                                        'device_class': osd.get('device_class'),
+                                        'in': osd.get('in'),
+                                        'blfsdev': osd.get('blfsdev')
+                                    })
+                                    if osd.get('status') != 'up':
+                                        down_osds.append(osd.get('name'))
+
+        if args.debug:
+            print(json.dumps(debug_info, indent=4))
+
+        return down_osds
+    except Exception as e:
+        print(f'UNKNOWN - API request failed: {e}')
+        sys.exit(3)
+
+down_osds = get_ceph_osd_status(args.node_name)
+
+if len(down_osds) >= args.critical:
+    print(f'CRITICAL - {len(down_osds)} OSD(s) ({", ".join(down_osds)}) are down')
+    sys.exit(2)
+elif len(down_osds) > 0:
+    print(f'WARNING - {len(down_osds)} OSD(s) ({", ".join(down_osds)}) are down')
+    sys.exit(1)
+else:
+    print('OK - All OSDs are up')
+    sys.exit(0)
