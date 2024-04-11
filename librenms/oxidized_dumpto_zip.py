@@ -8,6 +8,10 @@ To schedule this script to run as the 'oxidized' user using cron:
    0 3 * * * /usr/bin/python3 /opt/oxidized_dumpto_zip.py
    Make sure to replace "/opt/oxidized_dumpto_zip.py" with the actual path to this script.
 4. Save and close the crontab editor. The cron job is now scheduled.
+
+jason@jason.tools
+Jason Tools Co., Ltd.
+v1.0
 """
 
 import subprocess
