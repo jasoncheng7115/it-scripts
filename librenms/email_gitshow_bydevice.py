@@ -49,6 +49,8 @@ SAVE_TO_FILE = 'N'  # 如果設定為 'Y'，則將郵件本文保存到一個暫
 # 切換到指定的目錄並執行 git log
 os.chdir(DIRECTORY)
 repo = Repo(DIRECTORY)
+
+# 請依據情況設定 master 或 HEAD
 commits = list(repo.iter_commits('master', since=TIME_RANGE))
 
 # 將每個提交的詳細資訊轉換為 HTML 格式
