@@ -14,22 +14,32 @@ download_filename="blocklist_de.csv" # You can change this to your desired filen
 temp_path="/tmp/" # You can change this to your desired temporary file path
 temp_filename="tmp_blocklist_de.csv" # You can change this to your desired temporary filename
 
-# Download the all.txt file, ignoring HTTPS warnings or errors
-curl -k -o "${download_path}${download_filename}" $url
+# Download the netset file, ignoring HTTPS warnings or errors
+curl -k -o "${temp_path}${temp_filename}" $url
 
-# Create a temporary file to store the modified content
-temp_file="${temp_path}${temp_filename}"
+# Create the final file path
+final_file="${download_path}${download_filename}"
 
-# Add the header row
-echo "ip,blocklist" > "$temp_file"
+# Add the header row to the final file
+echo "ip,blocklist" > "$final_file"
 
-# Process the file line by line, adding ,"blocklist.de" to each line
+# Process the temporary file line by line
+# Remove lines starting with # and add ,"blocklist.de" to each IP
+# Save intermediate results to a new temporary file
+intermediate_temp_file="${temp_path}intermediate_${temp_filename}"
 while IFS= read -r line
 do
-  echo "${line},\"blocklist.de\"" >> "$temp_file"
-done < "${download_path}${download_filename}"
+  if [[ ! "$line" =~ ^# ]]; then
+    echo "${line},\"blocklist.de\"" >> "$intermediate_temp_file"
+  fi
+done < "${temp_path}${temp_filename}"
 
-# Replace the original file with the modified file
-mv "$temp_file" "${download_path}${download_filename}"
+# Remove duplicate lines and append to final file
+sort "$intermediate_temp_file" | uniq >> "$final_file"
 
-echo "Processing complete. The file has been saved as ${download_path}${download_filename}"
+# Optionally, you can remove the temporary files if they're no longer needed
+rm "${temp_path}${temp_filename}" "$intermediate_temp_file"
+
+echo "Processing complete. The file has been saved as ${final_file}"
+
+
