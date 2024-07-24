@@ -1,0 +1,1388 @@
+{
+  "v": 1,
+  "id": "253aaa98-ccdb-4734-b920-9e54b695224a",
+  "rev": 1,
+  "name": "AdGuard Log Dashboard",
+  "summary": "AdGuard Log Dashboard",
+  "description": "AdGuard Log Dashboard",
+  "vendor": "Jason Tools",
+  "url": "https://www.jason.tools",
+  "parameters": [],
+  "entities": [
+    {
+      "v": "1",
+      "type": {
+        "name": "dashboard",
+        "version": "2"
+      },
+      "id": "bc5321ca-0297-46f1-a4aa-29c1219176af",
+      "data": {
+        "summary": {
+          "@type": "string",
+          "@value": ""
+        },
+        "search": {
+          "queries": [
+            {
+              "id": "f8b33ced-5831-41a8-8b03-f846c053d8f2",
+              "timerange": {
+                "from": 300,
+                "type": "relative"
+              },
+              "filters": [],
+              "query": {
+                "type": "elasticsearch",
+                "query_string": ""
+              },
+              "search_types": [
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "Upstream"
+                      ],
+                      "limit": 15,
+                      "skip_empty_values": true
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "30f7f7e8-40b6-43af-abf4-391951d5923b",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "filtertext"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": true
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "6c108493-82a2-4e81-942f-e86594028fbd",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "QH"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "00cebe49-bd06-4a2d-a30a-a46831a98352",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "trend",
+                  "timerange": {
+                    "source": "search_type",
+                    "id": "7e4f4e51-111c-4a00-8b07-1a382e6d92eb",
+                    "offset": "1i",
+                    "type": "offset"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [],
+                  "type": "pivot",
+                  "id": "1f3901f1-79db-4329-9caf-07d5e444ad4d",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "action"
+                      ],
+                      "limit": 15,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "f45d3ef6-5e54-402b-b4b2-104205ba0d7c",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "time",
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "interval": {
+                        "type": "auto",
+                        "scaling": 1
+                      }
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "f20b4841-3e05-4d04-9c13-a6a1ae756161",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "Upstream"
+                      ],
+                      "limit": 15,
+                      "skip_empty_values": true
+                    }
+                  ],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome AND action: Blocked "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "QH"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "f58d9bd3-35f0-42e6-8c68-755674d03670",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [],
+                  "type": "pivot",
+                  "id": "7e4f4e51-111c-4a00-8b07-1a382e6d92eb",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": false,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "QT"
+                      ],
+                      "limit": 10,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "83a053ad-07b0-40fe-9bf3-3c8ec1af115d",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "action"
+                      ],
+                      "limit": 15,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "filterlist_name"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": true
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "2321b5ab-7fb7-46f2-a682-249eaf46808b",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": null,
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "offset": 0,
+                  "streams": [],
+                  "filter": null,
+                  "decorators": [],
+                  "type": "messages",
+                  "id": "a69cc8ad-3036-458b-a564-f5fce73724ad",
+                  "limit": 150,
+                  "filters": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome AND action: Blocked "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "IP"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "40574301-09c9-4c34-bd12-400afdab5660",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "IP"
+                      ],
+                      "limit": 30,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "9bfc826f-5701-438a-8f05-0752d7fa2ed6",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "app:AdGuardHome"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "from": 7200,
+                    "type": "relative"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count()",
+                      "field": null
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "time",
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "interval": {
+                        "type": "auto",
+                        "scaling": 1
+                      }
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "5eee4644-813a-400d-bf54-fd06d8a11318",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "action"
+                      ],
+                      "limit": 15,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": []
+                }
+              ]
+            }
+          ],
+          "parameters": [],
+          "requires": {},
+          "owner": "admin",
+          "created_at": "2024-07-24T14:14:20.014Z"
+        },
+        "created_at": "2024-07-24T13:44:54.794Z",
+        "requires": {},
+        "state": {
+          "f8b33ced-5831-41a8-8b03-f846c053d8f2": {
+            "selected_fields": null,
+            "static_message_list_id": null,
+            "titles": {
+              "tab": {
+                "title": "AdGuard Query (2H)"
+              },
+              "widget": {
+                "cfada0c4-ca18-4234-807c-4357fc584ca9": "Message Count",
+                "11fbfbf8-47c9-4067-b62e-e94b3c16b42f": "Upstream Time Graph",
+                "33596a01-8daf-4fec-b821-ff052f7624e7": "Filter List",
+                "0e574bef-bf7b-4c61-93b8-92cb8ba11698": "Query Source IP",
+                "73064c42-2cd4-4aeb-b882-b39ba8b4d99c": "All Messages",
+                "5c7a2917-e527-4e7a-b3de-649f5c446bd3": "Message Time Graph",
+                "313d42cb-4bea-42b1-8a9c-f85bdad55945": "Upstream",
+                "2a0731c3-53f3-41b2-a488-41ddcb2f742c": "Fillter Text",
+                "8ee3d3eb-575f-450c-8a0a-d5cc5c92e440": "Blocked Query FQDN",
+                "99628230-f1fa-4f4e-8356-06c482d0a4c4": "Query Type",
+                "c592d12d-bb09-43b2-8886-ba71dbc41042": "Query FQDN",
+                "ef036a2a-dfbc-4be3-a5b4-f84364418586": "Blocked Query Source IP",
+                "f9aff6fe-0e70-4ef3-82bb-1027556c2adf": "Action"
+              }
+            },
+            "widgets": [
+              {
+                "id": "cfada0c4-ca18-4234-807c-4357fc584ca9",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "numeric",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": true,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "trend": true,
+                    "trend_preference": "NEUTRAL"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "0e574bef-bf7b-4c61-93b8-92cb8ba11698",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "IP"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "2a0731c3-53f3-41b2-a488-41ddcb2f742c",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "filtertext"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "11fbfbf8-47c9-4067-b62e-e94b3c16b42f",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "bar",
+                  "column_limit": 15,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "type": "time",
+                      "config": {
+                        "interval": {
+                          "type": "auto",
+                          "scaling": 1
+                        }
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": true,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "Upstream"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 15,
+                        "skip_empty_values": true
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "barmode": "overlay",
+                    "axis_type": "linear"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "99628230-f1fa-4f4e-8356-06c482d0a4c4",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "bar",
+                  "column_limit": 15,
+                  "event_annotation": false,
+                  "row_limit": 10,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "QT"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 10,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "action"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 15
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "barmode": "overlay",
+                    "axis_type": "linear"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "33596a01-8daf-4fec-b821-ff052f7624e7",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "filterlist_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "ef036a2a-dfbc-4be3-a5b4-f84364418586",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome AND action: Blocked "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "IP"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "5c7a2917-e527-4e7a-b3de-649f5c446bd3",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "bar",
+                  "column_limit": 15,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "type": "time",
+                      "config": {
+                        "interval": {
+                          "type": "auto",
+                          "scaling": 1
+                        }
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": true,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "action"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 15
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "barmode": "overlay",
+                    "axis_type": "linear"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "c592d12d-bb09-43b2-8886-ba71dbc41042",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "QH"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "8ee3d3eb-575f-450c-8a0a-d5cc5c92e440",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome AND action: Blocked "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 30,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "QH"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 30,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "f9aff6fe-0e70-4ef3-82bb-1027556c2adf",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "pie",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 15,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "action"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 15,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": null,
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "313d42cb-4bea-42b1-8a9c-f85bdad55945",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "pie",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 15,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "Upstream"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 15,
+                        "skip_empty_values": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count()"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": null,
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "73064c42-2cd4-4aeb-b882-b39ba8b4d99c",
+                "type": "messages",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "from": 7200,
+                  "type": "relative"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "app:AdGuardHome"
+                },
+                "streams": [],
+                "config": {
+                  "fields": [
+                    "timestamp",
+                    "IP",
+                    "QT",
+                    "QH",
+                    "action",
+                    "filterlist_name",
+                    "filtertext"
+                  ],
+                  "show_message_row": false,
+                  "show_summary": false,
+                  "decorators": [],
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "timestamp",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              }
+            ],
+            "widget_mapping": {
+              "cfada0c4-ca18-4234-807c-4357fc584ca9": [
+                "7e4f4e51-111c-4a00-8b07-1a382e6d92eb",
+                "1f3901f1-79db-4329-9caf-07d5e444ad4d"
+              ],
+              "11fbfbf8-47c9-4067-b62e-e94b3c16b42f": [
+                "f20b4841-3e05-4d04-9c13-a6a1ae756161"
+              ],
+              "33596a01-8daf-4fec-b821-ff052f7624e7": [
+                "2321b5ab-7fb7-46f2-a682-249eaf46808b"
+              ],
+              "0e574bef-bf7b-4c61-93b8-92cb8ba11698": [
+                "9bfc826f-5701-438a-8f05-0752d7fa2ed6"
+              ],
+              "73064c42-2cd4-4aeb-b882-b39ba8b4d99c": [
+                "a69cc8ad-3036-458b-a564-f5fce73724ad"
+              ],
+              "5c7a2917-e527-4e7a-b3de-649f5c446bd3": [
+                "5eee4644-813a-400d-bf54-fd06d8a11318"
+              ],
+              "313d42cb-4bea-42b1-8a9c-f85bdad55945": [
+                "30f7f7e8-40b6-43af-abf4-391951d5923b"
+              ],
+              "2a0731c3-53f3-41b2-a488-41ddcb2f742c": [
+                "6c108493-82a2-4e81-942f-e86594028fbd"
+              ],
+              "8ee3d3eb-575f-450c-8a0a-d5cc5c92e440": [
+                "f58d9bd3-35f0-42e6-8c68-755674d03670"
+              ],
+              "99628230-f1fa-4f4e-8356-06c482d0a4c4": [
+                "83a053ad-07b0-40fe-9bf3-3c8ec1af115d"
+              ],
+              "c592d12d-bb09-43b2-8886-ba71dbc41042": [
+                "00cebe49-bd06-4a2d-a30a-a46831a98352"
+              ],
+              "ef036a2a-dfbc-4be3-a5b4-f84364418586": [
+                "40574301-09c9-4c34-bd12-400afdab5660"
+              ],
+              "f9aff6fe-0e70-4ef3-82bb-1027556c2adf": [
+                "f45d3ef6-5e54-402b-b4b2-104205ba0d7c"
+              ]
+            },
+            "positions": {
+              "cfada0c4-ca18-4234-807c-4357fc584ca9": {
+                "col": 1,
+                "row": 1,
+                "height": 3,
+                "width": 3
+              },
+              "11fbfbf8-47c9-4067-b62e-e94b3c16b42f": {
+                "col": 4,
+                "row": 10,
+                "height": 3,
+                "width": 9
+              },
+              "33596a01-8daf-4fec-b821-ff052f7624e7": {
+                "col": 1,
+                "row": 7,
+                "height": 3,
+                "width": 3
+              },
+              "0e574bef-bf7b-4c61-93b8-92cb8ba11698": {
+                "col": 7,
+                "row": 4,
+                "height": 3,
+                "width": 3
+              },
+              "73064c42-2cd4-4aeb-b882-b39ba8b4d99c": {
+                "col": 1,
+                "row": 13,
+                "height": 6,
+                "width": "Infinity"
+              },
+              "5c7a2917-e527-4e7a-b3de-649f5c446bd3": {
+                "col": 4,
+                "row": 1,
+                "height": 3,
+                "width": 9
+              },
+              "313d42cb-4bea-42b1-8a9c-f85bdad55945": {
+                "col": 1,
+                "row": 10,
+                "height": 3,
+                "width": 3
+              },
+              "2a0731c3-53f3-41b2-a488-41ddcb2f742c": {
+                "col": 4,
+                "row": 7,
+                "height": 3,
+                "width": 3
+              },
+              "8ee3d3eb-575f-450c-8a0a-d5cc5c92e440": {
+                "col": 10,
+                "row": 7,
+                "height": 3,
+                "width": 3
+              },
+              "99628230-f1fa-4f4e-8356-06c482d0a4c4": {
+                "col": 4,
+                "row": 4,
+                "height": 3,
+                "width": 3
+              },
+              "c592d12d-bb09-43b2-8886-ba71dbc41042": {
+                "col": 10,
+                "row": 4,
+                "height": 3,
+                "width": 3
+              },
+              "ef036a2a-dfbc-4be3-a5b4-f84364418586": {
+                "col": 7,
+                "row": 7,
+                "height": 3,
+                "width": 3
+              },
+              "f9aff6fe-0e70-4ef3-82bb-1027556c2adf": {
+                "col": 1,
+                "row": 4,
+                "height": 3,
+                "width": 3
+              }
+            },
+            "formatting": {
+              "highlighting": []
+            },
+            "display_mode_settings": {
+              "positions": {}
+            }
+          }
+        },
+        "properties": [],
+        "owner": "admin",
+        "title": {
+          "@type": "string",
+          "@value": "AdGuard Query (2H)"
+        },
+        "type": "DASHBOARD",
+        "description": {
+          "@type": "string",
+          "@value": "AdGuard Query (2H)"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=5.2.8+8e06d22"
+        }
+      ]
+    }
+  ]
+}
