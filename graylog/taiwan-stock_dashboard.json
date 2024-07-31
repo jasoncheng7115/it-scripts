@@ -1,0 +1,1612 @@
+{
+  "v": 1,
+  "id": "6caea272-30a3-46f4-be0e-c90ba2c1a7da",
+  "rev": 1,
+  "name": "Taiwan Stock",
+  "summary": "Taiwan Stock",
+  "description": "Taiwan Stock",
+  "vendor": "Jason Tools",
+  "url": "https://www.jason.tools",
+  "parameters": [],
+  "entities": [
+    {
+      "v": "1",
+      "type": {
+        "name": "dashboard",
+        "version": "2"
+      },
+      "id": "f16d13db-f221-4fb7-8a69-6326359d5dca",
+      "data": {
+        "summary": {
+          "@type": "string",
+          "@value": ""
+        },
+        "search": {
+          "queries": [
+            {
+              "id": "f9d28949-8a71-4dee-8feb-80be6562f38a",
+              "timerange": {
+                "from": 300,
+                "type": "relative"
+              },
+              "filters": [],
+              "query": {
+                "type": "elasticsearch",
+                "query_string": ""
+              },
+              "search_types": [
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "latest",
+                      "id": "latest(stock_price)",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": false,
+                  "row_groups": [
+                    {
+                      "type": "time",
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "interval": {
+                        "type": "timeunit",
+                        "timeunit": "30s"
+                      }
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "693cd626-6ec0-4c5a-a66f-089ed2f3ca65",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 99999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": null,
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "offset": 0,
+                  "streams": [],
+                  "filter": null,
+                  "decorators": [],
+                  "type": "messages",
+                  "id": "3a667b28-420a-4fa7-89d9-c9add7ff4b9b",
+                  "limit": 150,
+                  "filters": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "card",
+                      "id": "card(stock_code)",
+                      "field": "stock_code"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [],
+                  "type": "pivot",
+                  "id": "2854f125-a644-4099-933e-4967d168bef5",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": ""
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count(stock_price)",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": false,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_price"
+                      ],
+                      "limit": 9999999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "e98d7b7d-407c-4ca2-a6cb-38dd605861e9",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 99999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "stock_price",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "latest",
+                      "id": "最新",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "65650eac-ae3d-44fb-8bb7-71f24f293244",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "latest(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "max",
+                      "id": "最高",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "9c38bf3f-9c07-42a1-a79d-bceaacab0684",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "max(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "min",
+                      "id": "最低",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "842ab74c-e495-42dc-97d7-0d3aa1b26cb6",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "min(stock_price)",
+                      "direction": "Ascending"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "0f22d61a-58f4-42ab-a20e-071ff493e660",
+              "timerange": {
+                "from": 300,
+                "type": "relative"
+              },
+              "filters": [],
+              "query": {
+                "type": "elasticsearch",
+                "query_string": ""
+              },
+              "search_types": [
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "max",
+                      "id": "Maximum",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "7145bd1e-d6eb-4c6e-a76e-15b6d31adea7",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "max(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher"
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "latest",
+                      "id": "latest(stock_price)",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": false,
+                  "row_groups": [
+                    {
+                      "type": "time",
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "interval": {
+                        "type": "timeunit",
+                        "timeunit": "30s"
+                      }
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "11485d15-abab-441a-97d2-3579859df338",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 99999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": null,
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "offset": 0,
+                  "streams": [],
+                  "filter": null,
+                  "decorators": [],
+                  "type": "messages",
+                  "id": "488192ce-5f1c-471a-a391-0a2a5600fc7c",
+                  "limit": 150,
+                  "filters": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "latest",
+                      "id": "Latest",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "bcd4c5fe-ab53-42ff-ac9c-2de3969c5d9f",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "latest(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": ""
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "count",
+                      "id": "count(stock_price)",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": false,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_price"
+                      ],
+                      "limit": 9999999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "080833ee-bfc3-481c-8be9-4c4f67c6f8ef",
+                  "filters": [],
+                  "column_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 99999,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "stock_price",
+                      "direction": "Descending"
+                    }
+                  ]
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "card",
+                      "id": "card(stock_code)",
+                      "field": "stock_code"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [],
+                  "type": "pivot",
+                  "id": "537fafe0-5aae-4468-aee3-5655e4e5a542",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": []
+                },
+                {
+                  "query": {
+                    "type": "elasticsearch",
+                    "query_string": "source:stock\\-fetcher "
+                  },
+                  "name": "chart",
+                  "timerange": {
+                    "keyword": "today 09:00 to today 13:30",
+                    "timezone": "Asia/Taipei",
+                    "type": "keyword"
+                  },
+                  "column_limit": null,
+                  "streams": [],
+                  "row_limit": null,
+                  "series": [
+                    {
+                      "type": "min",
+                      "id": "Minmiun",
+                      "field": "stock_price"
+                    }
+                  ],
+                  "filter": null,
+                  "rollup": true,
+                  "row_groups": [
+                    {
+                      "type": "values",
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "limit": 50,
+                      "skip_empty_values": false
+                    }
+                  ],
+                  "type": "pivot",
+                  "id": "bb745edf-cd80-4c61-8d59-143389814626",
+                  "filters": [],
+                  "column_groups": [],
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "min(stock_price)",
+                      "direction": "Ascending"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "parameters": [],
+          "requires": {},
+          "owner": "admin",
+          "created_at": "2024-07-31T08:25:08.508Z"
+        },
+        "created_at": "2024-07-29T08:09:19.703Z",
+        "requires": {},
+        "state": {
+          "f9d28949-8a71-4dee-8feb-80be6562f38a": {
+            "selected_fields": null,
+            "static_message_list_id": null,
+            "titles": {
+              "tab": {
+                "title": "當日交易看板"
+              },
+              "widget": {
+                "e3c8218c-8413-4f4b-958c-23dbcd8d9b06": "詳細資料",
+                "6f1bcbd9-e2de-4df4-b877-b7b4316d0d26": "最高價",
+                "defc804e-f806-4141-aa28-58eb135975da": "股價變化圖",
+                "6e2ef02a-8595-4b67-b915-a26926cca252": "最新價",
+                "0dd81ab8-01a2-4ea2-95ef-733d90db15ba": "最低價",
+                "490cf565-bdf5-401f-9520-180e54dda285": "監測對象總數",
+                "79fc7ac3-c282-49e9-9d1b-99a3d5ca066c": "取得數",
+                "ac8e0d36-bf7b-4d45-adb3-16e9d3a14da1": "價格熱度圖"
+              }
+            },
+            "widgets": [
+              {
+                "id": "0dd81ab8-01a2-4ea2-95ef-733d90db15ba",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "最低"
+                      },
+                      "function": "min(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "min(stock_price)",
+                      "direction": "Ascending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "defc804e-f806-4141-aa28-58eb135975da",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "line",
+                  "column_limit": 99999,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "type": "time",
+                      "config": {
+                        "interval": {
+                          "type": "timeunit",
+                          "value": 30,
+                          "unit": "seconds"
+                        }
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "latest(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 99999
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "interpolation": "linear",
+                    "axis_type": "logarithmic"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "6f1bcbd9-e2de-4df4-b877-b7b4316d0d26",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "最高"
+                      },
+                      "function": "max(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "max(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "e3c8218c-8413-4f4b-958c-23dbcd8d9b06",
+                "type": "messages",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "fields": [
+                    "timestamp",
+                    "stock_code",
+                    "stock_name",
+                    "stock_price"
+                  ],
+                  "show_message_row": false,
+                  "show_summary": false,
+                  "decorators": [],
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "timestamp",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "490cf565-bdf5-401f-9520-180e54dda285",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "numeric",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [],
+                  "series": [
+                    {
+                      "config": {
+                        "name": ""
+                      },
+                      "function": "card(stock_code)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "trend": false,
+                    "trend_preference": "NEUTRAL"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "6e2ef02a-8595-4b67-b915-a26926cca252",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "最新"
+                      },
+                      "function": "latest(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "latest(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "ac8e0d36-bf7b-4d45-adb3-16e9d3a14da1",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": ""
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "heatmap",
+                  "column_limit": 99999,
+                  "event_annotation": false,
+                  "row_limit": 9999999,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_price"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 9999999
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 99999
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "color_scale": "Viridis",
+                    "reverse_scale": false,
+                    "auto_scale": true,
+                    "z_min": null,
+                    "z_max": null,
+                    "default_value": null,
+                    "use_smallest_as_default": false
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "stock_price",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              }
+            ],
+            "widget_mapping": {
+              "0dd81ab8-01a2-4ea2-95ef-733d90db15ba": [
+                "842ab74c-e495-42dc-97d7-0d3aa1b26cb6"
+              ],
+              "defc804e-f806-4141-aa28-58eb135975da": [
+                "693cd626-6ec0-4c5a-a66f-089ed2f3ca65"
+              ],
+              "6f1bcbd9-e2de-4df4-b877-b7b4316d0d26": [
+                "9c38bf3f-9c07-42a1-a79d-bceaacab0684"
+              ],
+              "e3c8218c-8413-4f4b-958c-23dbcd8d9b06": [
+                "3a667b28-420a-4fa7-89d9-c9add7ff4b9b"
+              ],
+              "490cf565-bdf5-401f-9520-180e54dda285": [
+                "2854f125-a644-4099-933e-4967d168bef5"
+              ],
+              "6e2ef02a-8595-4b67-b915-a26926cca252": [
+                "65650eac-ae3d-44fb-8bb7-71f24f293244"
+              ],
+              "ac8e0d36-bf7b-4d45-adb3-16e9d3a14da1": [
+                "e98d7b7d-407c-4ca2-a6cb-38dd605861e9"
+              ]
+            },
+            "positions": {
+              "0dd81ab8-01a2-4ea2-95ef-733d90db15ba": {
+                "col": 10,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "defc804e-f806-4141-aa28-58eb135975da": {
+                "col": 1,
+                "row": 1,
+                "height": 4,
+                "width": "Infinity"
+              },
+              "6f1bcbd9-e2de-4df4-b877-b7b4316d0d26": {
+                "col": 7,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "e3c8218c-8413-4f4b-958c-23dbcd8d9b06": {
+                "col": 1,
+                "row": 9,
+                "height": 5,
+                "width": 5
+              },
+              "490cf565-bdf5-401f-9520-180e54dda285": {
+                "col": 1,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "6e2ef02a-8595-4b67-b915-a26926cca252": {
+                "col": 4,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "ac8e0d36-bf7b-4d45-adb3-16e9d3a14da1": {
+                "col": 6,
+                "row": 9,
+                "height": 5,
+                "width": 7
+              }
+            },
+            "formatting": {
+              "highlighting": []
+            },
+            "display_mode_settings": {
+              "positions": {}
+            }
+          },
+          "0f22d61a-58f4-42ab-a20e-071ff493e660": {
+            "selected_fields": null,
+            "static_message_list_id": null,
+            "titles": {
+              "tab": {
+                "title": "Today's Stocks"
+              },
+              "widget": {
+                "13a95202-4f08-44c2-8873-d5d403ee20ec": "Detail",
+                "efa62f22-d115-4583-bf44-da4d2f4f3bf4": "Maximum Price",
+                "93c0772e-7e4c-45c4-b5b2-81c52b43c94c": "Stock Price Change",
+                "8d851fb0-4479-4d59-873b-4a017280eb78": "Latest Price",
+                "cd85358c-839d-4a02-9eb1-39fcd93edf2c": "Minimum Price",
+                "6aa875f5-41b9-4f3a-986b-8b6f9ed38360": "Stock Watch",
+                "undefined": "取得數",
+                "c7502c9e-3f66-4c15-ac7e-d8aa3d093642": "Price Heat Map"
+              }
+            },
+            "widgets": [
+              {
+                "id": "93c0772e-7e4c-45c4-b5b2-81c52b43c94c",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher"
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "line",
+                  "column_limit": 99999,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "timestamp"
+                      ],
+                      "type": "time",
+                      "config": {
+                        "interval": {
+                          "type": "timeunit",
+                          "value": 30,
+                          "unit": "seconds"
+                        }
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "latest(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 99999
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "interpolation": "linear",
+                    "axis_type": "logarithmic"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "c7502c9e-3f66-4c15-ac7e-d8aa3d093642",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": ""
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "heatmap",
+                  "column_limit": 99999,
+                  "event_annotation": false,
+                  "row_limit": 9999999,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_price"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 9999999
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": null
+                      },
+                      "function": "count(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 99999
+                      }
+                    }
+                  ],
+                  "visualization_config": {
+                    "color_scale": "Viridis",
+                    "reverse_scale": false,
+                    "auto_scale": true,
+                    "z_min": null,
+                    "z_max": null,
+                    "default_value": null,
+                    "use_smallest_as_default": false
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "stock_price",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "13a95202-4f08-44c2-8873-d5d403ee20ec",
+                "type": "messages",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "fields": [
+                    "timestamp",
+                    "stock_code",
+                    "stock_name",
+                    "stock_price"
+                  ],
+                  "show_message_row": false,
+                  "show_summary": false,
+                  "decorators": [],
+                  "sort": [
+                    {
+                      "type": "pivot",
+                      "field": "timestamp",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "6aa875f5-41b9-4f3a-986b-8b6f9ed38360",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "numeric",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": null,
+                  "row_pivots": [],
+                  "series": [
+                    {
+                      "config": {
+                        "name": ""
+                      },
+                      "function": "card(stock_code)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "trend": false,
+                    "trend_preference": "NEUTRAL"
+                  },
+                  "formatting_settings": null,
+                  "sort": []
+                }
+              },
+              {
+                "id": "8d851fb0-4479-4d59-873b-4a017280eb78",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "Latest"
+                      },
+                      "function": "latest(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "latest(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "cd85358c-839d-4a02-9eb1-39fcd93edf2c",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "Minmiun"
+                      },
+                      "function": "min(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "min(stock_price)",
+                      "direction": "Ascending"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "efa62f22-d115-4583-bf44-da4d2f4f3bf4",
+                "type": "aggregation",
+                "filter": null,
+                "filters": [],
+                "timerange": {
+                  "keyword": "today 09:00 to today 13:30",
+                  "timezone": "Asia/Taipei",
+                  "type": "keyword"
+                },
+                "query": {
+                  "type": "elasticsearch",
+                  "query_string": "source:stock\\-fetcher "
+                },
+                "streams": [],
+                "config": {
+                  "visualization": "table",
+                  "column_limit": null,
+                  "event_annotation": false,
+                  "row_limit": 50,
+                  "row_pivots": [
+                    {
+                      "fields": [
+                        "stock_code",
+                        "stock_name"
+                      ],
+                      "type": "values",
+                      "config": {
+                        "limit": 50,
+                        "skip_empty_values": false
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "config": {
+                        "name": "Maximum"
+                      },
+                      "function": "max(stock_price)"
+                    }
+                  ],
+                  "rollup": false,
+                  "column_pivots": [],
+                  "visualization_config": {
+                    "pinned_columns": []
+                  },
+                  "formatting_settings": null,
+                  "sort": [
+                    {
+                      "type": "series",
+                      "field": "max(stock_price)",
+                      "direction": "Descending"
+                    }
+                  ]
+                }
+              }
+            ],
+            "widget_mapping": {
+              "cd85358c-839d-4a02-9eb1-39fcd93edf2c": [
+                "bb745edf-cd80-4c61-8d59-143389814626"
+              ],
+              "93c0772e-7e4c-45c4-b5b2-81c52b43c94c": [
+                "11485d15-abab-441a-97d2-3579859df338"
+              ],
+              "efa62f22-d115-4583-bf44-da4d2f4f3bf4": [
+                "7145bd1e-d6eb-4c6e-a76e-15b6d31adea7"
+              ],
+              "13a95202-4f08-44c2-8873-d5d403ee20ec": [
+                "488192ce-5f1c-471a-a391-0a2a5600fc7c"
+              ],
+              "6aa875f5-41b9-4f3a-986b-8b6f9ed38360": [
+                "537fafe0-5aae-4468-aee3-5655e4e5a542"
+              ],
+              "8d851fb0-4479-4d59-873b-4a017280eb78": [
+                "bcd4c5fe-ab53-42ff-ac9c-2de3969c5d9f"
+              ],
+              "c7502c9e-3f66-4c15-ac7e-d8aa3d093642": [
+                "080833ee-bfc3-481c-8be9-4c4f67c6f8ef"
+              ]
+            },
+            "positions": {
+              "cd85358c-839d-4a02-9eb1-39fcd93edf2c": {
+                "col": 10,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "93c0772e-7e4c-45c4-b5b2-81c52b43c94c": {
+                "col": 1,
+                "row": 1,
+                "height": 4,
+                "width": "Infinity"
+              },
+              "efa62f22-d115-4583-bf44-da4d2f4f3bf4": {
+                "col": 7,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "13a95202-4f08-44c2-8873-d5d403ee20ec": {
+                "col": 1,
+                "row": 9,
+                "height": 5,
+                "width": 5
+              },
+              "6aa875f5-41b9-4f3a-986b-8b6f9ed38360": {
+                "col": 1,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "8d851fb0-4479-4d59-873b-4a017280eb78": {
+                "col": 4,
+                "row": 5,
+                "height": 4,
+                "width": 3
+              },
+              "c7502c9e-3f66-4c15-ac7e-d8aa3d093642": {
+                "col": 6,
+                "row": 9,
+                "height": 5,
+                "width": 7
+              }
+            },
+            "formatting": {
+              "highlighting": []
+            },
+            "display_mode_settings": {
+              "positions": {}
+            }
+          }
+        },
+        "properties": [],
+        "owner": "admin",
+        "title": {
+          "@type": "string",
+          "@value": "台灣股市"
+        },
+        "type": "DASHBOARD",
+        "description": {
+          "@type": "string",
+          "@value": "交易時間以證交所開放 API 抓取資料，每分鐘一次。"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.0.4+9759bc7"
+        }
+      ]
+    }
+  ]
+}
