@@ -10,6 +10,13 @@
 # pip3 install twstock
 # pip3 install lxml
 # Note: 'json' and 'socket' are part of the standard Python library and do not require installation via pip.
+# 
+# Scheduling Execution:
+# crontab -e
+#
+# * 9-13 * * 1-5 /usr/bin/python3 /opt/resend_twstock.py
+# 30 13  * * 1-5 /usr/bin/python3 /opt/resend_twstock.py
+#
 
 import json
 import socket
