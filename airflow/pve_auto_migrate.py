@@ -1,3 +1,4 @@
+# Jason Tools (www.jason.tools) - Jason Cheng (jason@jason.tools)
 from airflow import DAG, Dataset
 from airflow.operators.python import PythonOperator
 from airflow.models import Variable
