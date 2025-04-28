@@ -1,0 +1,142 @@
+<!--
+  AmViz
+  Amass Output Visualizer (Graphviz + PanZoom) by Jason Tools
+  Author: Jason Cheng (Jason Tools)
+  Contact: jason@jason.tools
+  Description: Paste amass enumeration output, visualize relationships via Graphviz,
+               enable interactive pan/zoom and export to SVG/PNG.
+-->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>AmViz (Amass Output Visualizer) by Jason Tools</title>
+  <!-- External Libraries -->
+  <script src="https://unpkg.com/viz.js@2.1.2/viz.js" type="application/javascript"></script>
+  <script src="https://unpkg.com/viz.js@2.1.2/full.render.js" type="application/javascript"></script>
+  <script src="https://unpkg.com/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+  <style>
+    /* Layout and Styling */
+    body { font-family: sans-serif; margin: 20px; }
+    #controls { margin-bottom: 10px; }
+    textarea { width: 100%; height: 200px; font-family: monospace; }
+    #graph { width: 100%; height: 80vh; border: 1px solid #ccc; overflow: auto; }
+    button { margin-left: 5px; }
+  </style>
+</head>
+<body>
+  <h2>AmViz (Amass Output Visualizer) by Jason Tools</h2>
+  <div id="controls">
+    <textarea id="inputArea" placeholder="請在此貼上 amass 產出的 output.txt 內容..."></textarea><br>
+    <button id="btnRender">繪製關聯圖</button>
+    <button id="btnSvg" disabled>下載 SVG</button>
+    <button id="btnPng" disabled>下載 PNG</button>
+  </div>
+  <div id="graph"></div>
+
+  <script>
+    // Regular expression to strip ANSI color codes from amass output
+    const ansiRegex = /\x1B\[[0-9;]*m/g;
+    // Mapping of amass relationship names to edge colors
+    const relationColors = {
+      ns_record:'blue', a_record:'green', aaaa_record:'darkgreen',
+      cname_record:'orange', mx_record:'purple', managed_by:'brown',
+      announces:'red', contains:'grey'
+    };
+
+    /**
+     * Convert amass CLI output into a Graphviz DOT string.
+     * @param {string} text - Raw amass enumeration text.
+     * @returns {string} DOT representation of the graph.
+     */
+    function generateDot(text) {
+      const lines = text.replace(ansiRegex, '').split(/\r?\n/);
+      const nodes = new Set();
+      let dot = 'digraph G {\n  rankdir=LR;\n  node [shape=ellipse style=filled fillcolor=white];\n';
+      lines.forEach(line => {
+        if (!line.includes('-->')) return;
+        const [srcFull, rel, tgtFull] = line.trim().split(' --> ');
+        const src = srcFull.replace(/\s+\(.*?\)/, '');
+        const tgt = tgtFull.replace(/\s+\(.*?\)/, '');
+        const srcType = (srcFull.match(/\((.*?)\)/)||[])[1]||'';
+        const tgtType = (tgtFull.match(/\((.*?)\)/)||[])[1]||'';
+        // Define source node box style once
+        if (!nodes.has(src)) {
+          dot += `  "${src}\n(${srcType})" [shape=box fillcolor=lightblue];\n`;
+          nodes.add(src);
+        }
+        // Define target node ellipse style once
+        if (!nodes.has(tgt)) {
+          dot += `  "${tgt}\n(${tgtType})" [shape=ellipse fillcolor=white];\n`;
+          nodes.add(tgt);
+        }
+        // Add directed edge with label and color
+        const color = relationColors[rel] || 'black';
+        dot += `  "${src}\n(${srcType})" -> "${tgt}\n(${tgtType})" [label="${rel}" color="${color}"];\n`;
+      });
+      dot += '}';
+      return dot;
+    }
+
+    /**
+     * Render the DOT graph, attach pan/zoom, and enable export buttons.
+     */
+    document.getElementById('btnRender').onclick = async () => {
+      const text = document.getElementById('inputArea').value;
+      if (!text.trim()) return;
+      const dot = generateDot(text);
+      const viz = new Viz();
+      try {
+        // Render DOT to SVG markup
+        const svgStr = await viz.renderString(dot, { format: 'svg', engine: 'dot' });
+        const graphDiv = document.getElementById('graph');
+        graphDiv.innerHTML = svgStr;
+        const svgEl = graphDiv.querySelector('svg');
+        // Initialize pan/zoom controls on the SVG
+        svgPanZoom(svgEl, { zoomEnabled: true, controlIconsEnabled: true });
+        document.getElementById('btnSvg').disabled = false;
+        document.getElementById('btnPng').disabled = false;
+      } catch (e) {
+        console.error(e);
+        alert('Graphviz render error: ' + e.message);
+      }
+    };
+
+    /**
+     * Download current SVG as a file.
+     */
+    document.getElementById('btnSvg').onclick = () => {
+      const svgEl = document.querySelector('#graph svg');
+      if (!svgEl) return;
+      const xml = new XMLSerializer().serializeToString(svgEl);
+      const blob = new Blob(['<?xml version="1.0"?>\n', xml], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'graph.svg'; a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    /**
+     * Download current graph as PNG by drawing SVG to Canvas.
+     */
+    document.getElementById('btnPng').onclick = () => {
+      const svgEl = document.querySelector('#graph svg');
+      if (!svgEl) return;
+      const svgXml = new XMLSerializer().serializeToString(svgEl);
+      const svg64 = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgXml)));
+      const img = new Image();
+      img.onload = () => {
+        const bbox = svgEl.getBBox();
+        const canvas = document.createElement('canvas');
+        canvas.width = bbox.width;
+        canvas.height = bbox.height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,bbox.width,bbox.height);
+        ctx.drawImage(img, -bbox.x, -bbox.y);
+        const pngUrl = canvas.toDataURL('image/png');
+        const a = document.createElement('a'); a.href = pngUrl; a.download = 'graph.png'; a.click();
+      };
+      img.src = svg64;
+    };
+  </script>
+</body>
+</html>
