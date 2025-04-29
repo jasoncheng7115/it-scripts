@@ -23,14 +23,66 @@
     #graph { width: 100%; height: 80vh; border: 1px solid #ccc; overflow: auto; }
     button { margin-left: 5px; }
   </style>
+
+  <!-- i18n Language Detection and Setup -->
+  <script>
+    (function() {
+      function getQueryParam(name) {
+        const params = new URLSearchParams(window.location.search);
+        return params.get(name);
+      }
+      const supportedLangs = ['zh-tw', 'en-us'];
+      let langParam = getQueryParam('lang');
+      let lang;
+      if (langParam && supportedLangs.includes(langParam.toLowerCase())) {
+        lang = langParam.toLowerCase();
+      } else {
+        const browserLang = navigator.language || navigator.userLanguage || '';
+        lang = browserLang.toLowerCase().startsWith('zh') ? 'zh-tw' : 'en-us';
+      }
+      document.documentElement.lang = (lang === 'zh-tw') ? 'zh-Hant' : 'en';
+      window.appLang = lang;
+
+      window.i18n = {
+        placeholder: {
+          'zh-tw': '請在此貼上 amass 產出的 output.txt 內容...',
+          'en-us': 'Paste amass output.txt content here...'
+        },
+        btnRender: {
+          'zh-tw': '繪製關聯圖',
+          'en-us': 'Render Graph'
+        },
+        btnSvg: {
+          'zh-tw': '下載 SVG',
+          'en-us': 'Download SVG'
+        },
+        btnPng: {
+          'zh-tw': '下載 PNG',
+          'en-us': 'Download PNG'
+        },
+        alertRenderError: {
+          'zh-tw': 'Graphviz 繪製錯誤: ',
+          'en-us': 'Graphviz render error: '
+        }
+      };
+
+      document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('inputArea').placeholder = window.i18n.placeholder[window.appLang];
+        document.getElementById('btnRender').textContent = window.i18n.btnRender[window.appLang];
+        document.getElementById('btnSvg').textContent = window.i18n.btnSvg[window.appLang];
+        document.getElementById('btnPng').textContent = window.i18n.btnPng[window.appLang];
+      });
+    })();
+  </script>
+
 </head>
 <body>
   <h2>AmViz (Amass Output Visualizer) by Jason Tools</h2>
   <div id="controls">
-    <textarea id="inputArea" placeholder="請在此貼上 amass 產出的 output.txt 內容..."></textarea><br>
-    <button id="btnRender">繪製關聯圖</button>
-    <button id="btnSvg" disabled>下載 SVG</button>
-    <button id="btnPng" disabled>下載 PNG</button>
+    <textarea id="inputArea" placeholder=""></textarea><br>
+    <button id="btnRender"> </button>
+    <button id="btnSvg" disabled></button>
+    <button id="btnPng" disabled></button>
   </div>
   <div id="graph"></div>
 
@@ -98,7 +150,7 @@
         document.getElementById('btnPng').disabled = false;
       } catch (e) {
         console.error(e);
-        alert('Graphviz render error: ' + e.message);
+        alert(window.i18n.alertRenderError[window.appLang] + e.message);
       }
     };
 
