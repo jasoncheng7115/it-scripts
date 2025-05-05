@@ -47,7 +47,7 @@ All rights reserved.
 import re
 import csv
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta  
 from collections import defaultdict
 
 def parse_log_file(log_file_path, filter_keyword=None, chunk_size=10*1024*1024):  # 10MB chunk
@@ -143,17 +143,29 @@ def save_to_csv(events_dict, output_file):
             # Write header
             writer.writerow(['Time', 'Count'])
             
-            # Use generator to avoid creating full sorted list
-            for timestamp in sorted(events_dict.keys()):
-                writer.writerow([timestamp, events_dict[timestamp]])
-        
+            # Get all timestamps and find time range
+            sorted_timestamps = sorted(events_dict.keys())
+            
+            if sorted_timestamps:
+                # Get first and last minute
+                min_time = datetime.strptime(sorted_timestamps[0], '%Y-%m-%d %H:%M')
+                max_time = datetime.strptime(sorted_timestamps[-1], '%Y-%m-%d %H:%M')
+                
+                # Generate all minutes in the range
+                current_time = min_time
+                while current_time <= max_time:
+                    timestamp = current_time.strftime('%Y-%m-%d %H:%M')
+                    count = events_dict.get(timestamp, 0)
+                    writer.writerow([timestamp, count])
+                    current_time += timedelta(minutes=1)
+            
         print(f"\nStatistics saved to: {output_file}")
         print()  # 加入空行
         
     except Exception as e:
         print(f"Error: Failed to write CSV file: {e}")
         sys.exit(1)
-
+        
 def create_bar_chart(value, max_value, max_width=50):
     """Create text-based bar chart using blocks"""
     if max_value == 0:
@@ -177,29 +189,44 @@ def display_statistics(events_dict, filter_keyword=None):
     print(f"{'Time':<20} | {'Count':<6} | Bar Chart")
     print("-" * 80)
     
-    # Display all timestamps without skipping any records
+    # Get all timestamps and find time range
     sorted_timestamps = sorted(events_dict.keys())
     
-    # Find max value for bar chart scaling
-    max_value = max(events_dict.values()) if events_dict else 0
-    
-    for timestamp in sorted_timestamps:
-        count = events_dict[timestamp]
-        bar = create_bar_chart(count, max_value)
-        print(f"{timestamp:<20} | {count:<6} | {bar}")
-    
-    print("-" * 80)
-    
-    # Display summary information
-    total_events = sum(events_dict.values())
-    min_time = sorted_timestamps[0] if sorted_timestamps else "None"
-    max_time = sorted_timestamps[-1] if sorted_timestamps else "None"
-    
-    print(f"Total events: {total_events:,}")
-    print(f"Time range: {min_time} to {max_time}")
-    print(f"Total minutes: {len(events_dict):,}")
-    print(f"Max events per minute: {max_value:,}")
-    print("-" * 80)
+    if sorted_timestamps:
+        # Get first and last minute
+        min_time = datetime.strptime(sorted_timestamps[0], '%Y-%m-%d %H:%M')
+        max_time = datetime.strptime(sorted_timestamps[-1], '%Y-%m-%d %H:%M')
+        
+        # Generate all minutes in the range
+        all_minutes = []
+        current_time = min_time
+        while current_time <= max_time:
+            all_minutes.append(current_time.strftime('%Y-%m-%d %H:%M'))
+            current_time += timedelta(minutes=1)
+        
+        # Find max value for bar chart scaling
+        max_value = max(events_dict.values()) if events_dict else 1
+        
+        # Display all minutes including those with 0 events
+        for timestamp in all_minutes:
+            count = events_dict.get(timestamp, 0)
+            bar = create_bar_chart(count, max_value)
+            print(f"{timestamp:<20} | {count:<6} | {bar}")
+        
+        print("-" * 80)
+        
+        # Display summary information
+        total_events = sum(events_dict.values())
+        
+        print(f"Total events: {total_events:,}")
+        print(f"Time range: {sorted_timestamps[0]} to {sorted_timestamps[-1]}")
+        print(f"Total minutes: {len(all_minutes):,}")
+        print(f"Minutes with events: {len(events_dict):,}")
+        print(f"Max events per minute: {max_value:,}")
+        print("-" * 80)
+    else:
+        print("No data to display")
+        print("-" * 80)
 
 def main():
     if len(sys.argv) < 2 or len(sys.argv) > 3:
