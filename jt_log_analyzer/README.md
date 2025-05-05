@@ -65,7 +65,7 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py /path/file.log ERROR -i 30m
 
 # 篩選帳號相關的錯誤，每 24 小時統計
-./jt_log_analyzer.py /path/file.log 'account.*error' -i 24h
+./jt_log_analyzer.py /path/file.log 'account error' -i 24h
 ```
 
 #### 4. 更多實用範例
@@ -77,7 +77,7 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py app.log 'database connection' -i 15m
 
 # 檢查系統錯誤趨勢
-./jt_log_analyzer.py syslog CRITICAL -i 12h
+./jt_log_analyzer.py /var/log/syslog CRITICAL -i 12h
 ```
 
 ![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
