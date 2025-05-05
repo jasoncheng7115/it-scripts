@@ -122,7 +122,7 @@ Time,Count
 2025-04-26 03:00,5
 ```
 
-CSV 檔案可以直接用試算表軟體開啟，例如 Microsoft Excel 或 LibreOffice Calc，如下：
+CSV 檔案可以直接用試算表軟體開啟，例如 Microsoft Excel 或 LibreOffice Calc，即可方便的製作圖表。
 ![demo3.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo3.png?raw=true)
 
 
