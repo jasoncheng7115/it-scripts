@@ -6,6 +6,9 @@
 
 `jt_log_analyzer.py` 採用 Python 撰寫，為 IT 人員在文字介面下方便統計分析記錄而設計，支援自訂時間區間統計事件數，並同時輸出終端顯示和 CSV 格式的分析結果。特別適合用於分析大型記錄檔案，並識別事件發生的趨勢。
 
+
+![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+
 ## 主要功能
 
 - **區間統計**：支援分鐘（1、10、15、30、45、60分鐘）和小時（1、2、12、24小時）區間
@@ -77,6 +80,9 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py syslog CRITICAL -i 12h
 ```
 
+![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+
+
 ## 輸出格式
 
 ### 1. 終端顯示（完整範例）
@@ -115,6 +121,10 @@ Time,Count
 2025-04-26 02:45,0
 2025-04-26 03:00,5
 ```
+
+CSV 檔案可以直接用試算表軟體開啟，例如 Microsoft Excel 或 LibreOffice Calc，如下：
+![demo3.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo3.png?raw=true)
+
 
 ## 支援的時間區間
 
