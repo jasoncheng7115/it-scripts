@@ -28,7 +28,7 @@
 直接下載 `jt_log_analyzer.py` 使用。
 
 ```bash
-curl -O https://raw.githubusercontent.com/your-repo/jt_log_analyzer.py
+curl -O https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_log_analyzer/jt_log_analyzer.py
 chmod +x jt_log_analyzer.py
 ```
 
