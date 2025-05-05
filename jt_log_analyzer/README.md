@@ -80,7 +80,7 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py syslog CRITICAL -i 12h
 ```
 
-![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
 
 
 ## 輸出格式
