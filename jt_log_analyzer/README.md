@@ -111,7 +111,7 @@ Statistics saved to: jt_log_statistics.csv
 
 ### 2. CSV 輸出格式
 
-生成的 `jt_log_statistics.csv` 檔案內容：
+產出的 `jt_log_statistics.csv` 檔案內容：
 
 ```csv
 Time,Count
