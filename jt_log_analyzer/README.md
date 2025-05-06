@@ -143,18 +143,31 @@ CSV 檔案可以直接用試算表軟體開啟，例如 Microsoft Excel 或 Libr
 - `24h` - 每 24 小時
 
 ## 記錄檔案格式需求
+分析器支援的記錄檔案時間戳格式：
 
-分析器預期的記錄檔案時間戳格式：
+1. **標準格式**：`YYYY-MM-DD HH:MM:SS`
+   ```
+   2025-04-26 02:29:35,769 INFO [Pop3SSLServer-24] [ip=127.0.0.1;] account - login success
+   2025-04-26 02:30:12,156 ERROR [ApiHandler-8] [cid=2306516;] authentication failed
+   ```
 
-```
-YYYY-MM-DD HH:MM:SS
-```
+2. **Syslog 格式**：`MMM D HH:MM:SS`（無年份，自動判斷）
+   ```
+   May 6 21:44:57 dc1 slapd[1477]: conn=1151 op=15272 SRCH base="dc=jason,dc=tools" scope=2 deref=0 filter="(&(objectClass=posixAccount)(uid=\2A))"
+   Apr 26 08:12:45 server1 dhclient[2179]: DHCPACK from 10.0.0.1 (xid=0x3b8743e)
+   ```
 
-範例記錄：
-```
-2025-04-26 02:29:35,769 INFO [Pop3SSLServer-24] [ip=127.0.0.1;] account - login success
-2025-04-26 02:30:12,156 ERROR [ApiHandler-8] [cid=2306516;] authentication failed
-```
+3. **Apache 格式**：`DD/MMM/YYYY:HH:MM:SS`
+   ```
+   10.0.0.1 - - [26/Apr/2025:08:21:55 +0800] "GET /index.html HTTP/1.1" 200 2326
+   192.168.1.100 - user [27/Apr/2025:09:43:12 +0800] "POST /api/login HTTP/1.1" 401 172
+   ```
+
+4. **ISO 格式**：`YYYY-MM-DDTHH:MM:SS`
+   ```
+   2025-04-26T08:21:55.123Z INFO [ServerThread-1] Connection established from 192.168.1.5
+   2025-04-26T09:15:22.456Z ERROR [WorkerPool-3] Database connection timeout after 30s
+   ```
 
 ## 效能特性
 
