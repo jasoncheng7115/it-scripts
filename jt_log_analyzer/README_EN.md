@@ -167,6 +167,17 @@ Supported timestamp formats for the analyzer:
 4. All time intervals within the specified range are displayed, including periods with 0 statistics
 
 ## Version History
+
+- **1.1.0** (2025-05-06): Multi-format Timestamp Support
+  - Automatic detection of log file timestamp formats
+  - Added support for Syslog format (MMM D HH:MM:SS)
+  - Added support for Apache format (DD/MMM/YYYY:HH:MM:SS)
+  - Added support for ISO format (YYYY-MM-DDTHH:MM:SS)
+  - Improved handling of timestamps without year (automatically uses current year)
+  - Optimized parsing logic for cross-year log files
+  - Added statistics for unparseable lines
+  - Updated usage instructions and documentation
+  - 
 - **1.0.0** (2025-05-05): First release
   - Basic event statistics functionality
   - Multiple time interval support
