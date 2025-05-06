@@ -3,6 +3,8 @@
 """
 jt_log_analyzer.py - Log File Event Counter and Analyzer
 
+Version - 1.1
+
 This script analyzes log files to generate statistics by time intervals.
 It efficiently processes large log files using chunk reading and optional keyword filtering.
 
