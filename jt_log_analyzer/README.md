@@ -78,7 +78,7 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py /path/file.log -i 10m -r
 # 即時監控特定類型的錯誤並以自定義區間顯示
 ./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
-
+```
 
 #### 5. 更多實用範例
 ```bash
