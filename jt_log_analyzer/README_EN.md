@@ -4,6 +4,8 @@ Quick log analysis tool that calculates event counts within specific time interv
 ## Project Overview
 `jt_log_analyzer.py` is written in Python, designed for IT professionals to conveniently analyze logs in a terminal interface. It supports custom time interval statistics and provides output in both terminal display and CSV format. Particularly suitable for analyzing large log files and identifying event trends.
 
+In addition to the features mentioned above, the tool also supports real-time monitoring mode. When this mode is enabled, after the initial log file analysis is completed, the program continues to monitor file changes. If new log entries are detected, the text-based bar charts will update in real-time to reflect these changes.
+
 ![realtime1.gif](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/realtime1.gif?raw=true)
 
 ## Key Features
