@@ -37,7 +37,7 @@ chmod +x jt_log_analyzer.py
 ### 基本語法
 
 ```bash
-./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval]
+./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval] [-r]
 ```
 
 ### 使用範例
@@ -68,7 +68,19 @@ chmod +x jt_log_analyzer.py
 ./jt_log_analyzer.py /path/file.log 'account error' -i 24h
 ```
 
-#### 4. 更多實用範例
+#### 4. 即時監控功能
+```bash
+# 基本即時監控
+./jt_log_analyzer.py /path/file.log -r
+# 即時監控並篩選錯誤
+./jt_log_analyzer.py /path/file.log ERROR -r
+# 即時監控特定間隔（每 10 分鐘）的事件
+./jt_log_analyzer.py /path/file.log -i 10m -r
+# 即時監控特定類型的錯誤並以自定義區間顯示
+./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
+
+
+#### 5. 更多實用範例
 ```bash
 # 分析登入失敗事件
 ./jt_log_analyzer.py auth.log 'authentication failed' -i 1h
@@ -78,6 +90,12 @@ chmod +x jt_log_analyzer.py
 
 # 檢查系統錯誤趨勢
 ./jt_log_analyzer.py /var/log/syslog CRITICAL -i 12h
+
+# 即時監控系統登入嘗試
+./jt_log_analyzer.py /var/log/auth.log 'Failed password' -i 5m -r
+
+# 即時監控網頁伺服器錯誤
+./jt_log_analyzer.py /var/log/apache2/error.log -r
 ```
 
 ![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
