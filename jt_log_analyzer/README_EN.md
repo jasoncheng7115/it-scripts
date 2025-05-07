@@ -26,40 +26,59 @@ chmod +x jt_log_analyzer.py
 ```
 
 ## Usage
+
 ### Basic Syntax
 ```bash
-./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval]
+./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval] [-r]
 ```
 
 ### Usage Examples
-#### 1. Basic Analysis (default minute-by-minute statistics)
+
+#### 1. Basic Analysis (Default: 1-minute intervals)
 ```bash
 ./jt_log_analyzer.py /path/to/file.log
 ```
 
-#### 2. Specified Time Interval Analysis
+#### 2. Specific Time Interval Analysis
 ```bash
-# Every 15 minutes
+# 15-minute intervals
 ./jt_log_analyzer.py /path/file.log -i 15m
 
-# Every 2 hours
+# 2-hour intervals
 ./jt_log_analyzer.py /path/file.log -i 2h
 
-# Every 24 hours
+# 24-hour intervals
 ./jt_log_analyzer.py /path/file.log -i 24h
 ```
 
-#### 3. Combined with Keyword Filtering
+#### 3. Using Keyword Filtering
 ```bash
-# Filter ERROR related events, every 30 minutes
+# Filter ERROR events with 30-minute intervals
 ./jt_log_analyzer.py /path/file.log ERROR -i 30m
 
-# Filter account-related errors, every 24 hours
+# Filter account-related errors with 24-hour intervals
 ./jt_log_analyzer.py /path/file.log 'account error' -i 24h
 ```
 
-#### 4. More Practical Examples
+#### 4. Real-time Monitoring
 ```bash
+
+# Basic real-time monitoring
+./jt_log_analyzer.py /path/file.log -r
+
+# Real-time monitoring with error filtering
+./jt_log_analyzer.py /path/file.log ERROR -r
+
+# Real-time monitoring with specific interval (10-minute)
+./jt_log_analyzer.py /path/file.log -i 10m -r
+
+# Real-time monitoring of specific error types with custom intervals
+./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
+```
+
+#### 5. More Practical Examples
+```bash
+
 # Analyze login failure events
 ./jt_log_analyzer.py auth.log 'authentication failed' -i 1h
 
@@ -68,6 +87,12 @@ chmod +x jt_log_analyzer.py
 
 # Check system error trends
 ./jt_log_analyzer.py /var/log/syslog CRITICAL -i 12h
+
+# Real-time monitoring of system login attempts
+./jt_log_analyzer.py /var/log/auth.log 'Failed password' -i 5m -r
+
+# Real-time monitoring of web server errors
+./jt_log_analyzer.py /var/log/apache2/error.log -r
 ```
 
 ![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
