@@ -168,6 +168,16 @@ Supported timestamp formats for the analyzer:
 
 ## Version History
 
+- **1.2.0** (2025-05-07): Real-time Monitoring
+   - Added `-r` parameter to enable real-time monitoring mode
+   - Supports continuous monitoring of log file changes with automatic statistics updates
+   - Implements real-time text-based bar chart display
+   - Added user interrupt handling (Ctrl+C) for graceful exit from monitoring
+   - Improved file reading with position tracking to process only new content
+   - Displays last update time and processing progress information
+   - Added polling interval adjustment options to conserve CPU resources
+   - Updated usage instructions and examples
+     
 - **1.1.0** (2025-05-06): Multi-format Timestamp Support
   - Automatic detection of log file timestamp formats
   - Added support for Syslog format (MMM D HH:MM:SS)
