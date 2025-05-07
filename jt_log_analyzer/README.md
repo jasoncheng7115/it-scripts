@@ -6,6 +6,8 @@
 
 `jt_log_analyzer.py` 採用 Python 撰寫，為 IT 人員在文字介面下方便統計分析記錄而設計，支援自訂時間區間統計事件數，並同時輸出終端顯示和 CSV 格式的分析結果，識別事件發生的趨勢。
 
+除此之外，還支援即時監控模式。當啟用此模式時，解析完成記錄檔後會持續監控檔案變化，如果有新的 log 進入文字直條圖會即時變化。
+
 
 ![realtime1.gif](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/realtime1.gif?raw=true)
 
