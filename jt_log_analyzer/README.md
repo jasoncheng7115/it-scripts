@@ -7,7 +7,9 @@
 `jt_log_analyzer.py` 採用 Python 撰寫，為 IT 人員在文字介面下方便統計分析記錄而設計，支援自訂時間區間統計事件數，並同時輸出終端顯示和 CSV 格式的分析結果，識別事件發生的趨勢。
 
 
-![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+![realtime1.gif](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/realtime1.gif?raw=true)
+
+
 
 ## 主要功能
 
@@ -17,6 +19,9 @@
 - **資料匯出**：將結果儲存為 CSV 格式，包含所有時間區間
 - **省記憶體**：採用區塊讀取方式處理大檔案
 - **進度追蹤**：處理大檔案時顯示進度
+
+
+
 
 ## 系統需求
 
@@ -46,6 +51,8 @@ chmod +x jt_log_analyzer.py
 ```bash
 ./jt_log_analyzer.py /path/to/file.log
 ```
+
+![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
 
 #### 2. 指定時間區間分析
 ```bash
