@@ -4,7 +4,7 @@ Quick log analysis tool that calculates event counts within specific time interv
 ## Project Overview
 `jt_log_analyzer.py` is written in Python, designed for IT professionals to conveniently analyze logs in a terminal interface. It supports custom time interval statistics and provides output in both terminal display and CSV format. Particularly suitable for analyzing large log files and identifying event trends.
 
-![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+![realtime1.gif](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/realtime1.gif?raw=true)
 
 ## Key Features
 - **Interval Statistics**: Supports minutes (1, 10, 15, 30, 45, 60 minutes) and hours (1, 2, 12, 24 hours) intervals
@@ -31,6 +31,9 @@ chmod +x jt_log_analyzer.py
 ```bash
 ./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval] [-r]
 ```
+
+![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
+
 
 ### Usage Examples
 
