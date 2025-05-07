@@ -81,10 +81,13 @@ chmod +x jt_log_analyzer.py
 ```bash
 # 基本即時監控
 ./jt_log_analyzer.py /path/file.log -r
+
 # 即時監控並篩選錯誤
 ./jt_log_analyzer.py /path/file.log ERROR -r
+
 # 即時監控特定間隔（每 10 分鐘）的事件
 ./jt_log_analyzer.py /path/file.log -i 10m -r
+
 # 即時監控特定類型的錯誤並以自定義區間顯示
 ./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
 ```
