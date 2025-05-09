@@ -198,6 +198,19 @@ Supported timestamp formats for the analyzer:
 
 ## Version History
 
+- **1.3.1** (2025-05-09): Pipeline Input and Debug Mode
+   - Support for reading data from standard input (stdin) (`cat file.log | ./jt_log_analyzer.py`)
+   - Added `-f <file_path>` parameter to explicitly specify input file
+   - Added `-q <keyword>` parameter to explicitly specify filter keyword
+   - Added `-d` / `--debug` debug mode providing detailed diagnostic information
+   - Added `-e` / `--encoding` option to specify file encoding
+   - Added `-h` / `--help` to display detailed help message
+   - Enhanced error handling and troubleshooting suggestions
+   - Strengthened timestamp detection with support for more formats
+   - Added fallback mechanism when standard patterns fail to match
+   - Structured code for improved readability and maintainability
+   - Updated usage instructions and troubleshooting guidance
+
 - **1.2.0** (2025-05-07): Real-time Monitoring
    - Added `-r` parameter to enable real-time monitoring mode
    - Supports continuous monitoring of log file changes with automatic statistics updates
