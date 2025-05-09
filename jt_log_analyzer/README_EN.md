@@ -27,77 +27,82 @@ curl -O https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/m
 chmod +x jt_log_analyzer.py
 ```
 
-## Usage
+# Usage
 
 ### Basic Syntax
+
 ```bash
+# Concise syntax
 ./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval] [-r]
+
+# Explicit parameter syntax
+./jt_log_analyzer.py -f <log_file_path> [-q filter_keyword] [-i interval] [-r] [-d] [-e encoding]
+
+# Reading from pipeline
+cat logfile.log | ./jt_log_analyzer.py [-q filter_keyword] [-i interval] [-d] [-e encoding]
+```
+
+### Examples
+
+#### 1. Basic Analysis (Default: 1-minute intervals)
+```bash
+./jt_log_analyzer.py -f /path/to/file.log
 ```
 
 ![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
 
-
-### Usage Examples
-
-#### 1. Basic Analysis (Default: 1-minute intervals)
-```bash
-./jt_log_analyzer.py /path/to/file.log
-```
-
-#### 2. Specific Time Interval Analysis
+#### 2. Specifying Time Intervals
 ```bash
 # 15-minute intervals
-./jt_log_analyzer.py /path/file.log -i 15m
+./jt_log_analyzer.py -f /path/file.log -i 15m
 
 # 2-hour intervals
-./jt_log_analyzer.py /path/file.log -i 2h
+./jt_log_analyzer.py -f /path/file.log -i 2h
 
 # 24-hour intervals
-./jt_log_analyzer.py /path/file.log -i 24h
+./jt_log_analyzer.py -f /path/file.log -i 24h
 ```
 
 #### 3. Using Keyword Filtering
 ```bash
-# Filter ERROR events with 30-minute intervals
-./jt_log_analyzer.py /path/file.log ERROR -i 30m
+# Filter for ERROR-related events, 30-minute intervals
+./jt_log_analyzer.py -f /path/file.log -q 'ERROR' -i 30m
 
-# Filter account-related errors with 24-hour intervals
-./jt_log_analyzer.py /path/file.log 'account error' -i 24h
+# Filter for account-related errors, 24-hour intervals
+./jt_log_analyzer.py -f /path/file.log -q 'account error' -i 24h
 ```
 
 #### 4. Real-time Monitoring
 ```bash
-
 # Basic real-time monitoring
-./jt_log_analyzer.py /path/file.log -r
+./jt_log_analyzer.py -f /path/file.log -r
 
 # Real-time monitoring with error filtering
-./jt_log_analyzer.py /path/file.log ERROR -r
+./jt_log_analyzer.py -f /path/file.log -q 'ERROR' -r
 
-# Real-time monitoring with specific interval (10-minute)
-./jt_log_analyzer.py /path/file.log -i 10m -r
+# Real-time monitoring with specific intervals (10-minute)
+./jt_log_analyzer.py -f /path/file.log -i 10m -r
 
-# Real-time monitoring of specific error types with custom intervals
-./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
+# Real-time monitoring for specific error types with custom intervals
+./jt_log_analyzer.py -f /var/log/nginx/access.log -q '404' -i 5m -r
 ```
 
-#### 5. More Practical Examples
+#### 5. Additional Practical Examples
 ```bash
+# Analyzing authentication failure events
+./jt_log_analyzer.py -f auth.log -q 'authentication failed' -i 1h
 
-# Analyze login failure events
-./jt_log_analyzer.py auth.log 'authentication failed' -i 1h
+# Monitoring database connection issues
+./jt_log_analyzer.py -f app.log -q 'database connection' -i 15m
 
-# Monitor database connection issues
-./jt_log_analyzer.py app.log 'database connection' -i 15m
-
-# Check system error trends
-./jt_log_analyzer.py /var/log/syslog CRITICAL -i 12h
+# Checking system error trends
+./jt_log_analyzer.py -f /var/log/syslog -q CRITICAL -i 12h
 
 # Real-time monitoring of system login attempts
-./jt_log_analyzer.py /var/log/auth.log 'Failed password' -i 5m -r
+./jt_log_analyzer.py -f /var/log/auth.log -q 'Failed password' -i 5m -r
 
 # Real-time monitoring of web server errors
-./jt_log_analyzer.py /var/log/apache2/error.log -r
+./jt_log_analyzer.py -f /var/log/apache2/error.log -r
 ```
 
 ![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
