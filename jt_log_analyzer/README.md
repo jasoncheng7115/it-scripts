@@ -44,14 +44,21 @@ chmod +x jt_log_analyzer.py
 ### 基本語法
 
 ```bash
+# 精簡用法
 ./jt_log_analyzer.py <log_file_path> [filter_keyword] [-i interval] [-r]
+
+# 明確參數用法
+./jt_log_analyzer.py -f <log_file_path> [-q filter_keyword] [-i interval] [-r] [-d] [-e encoding]
+
+# 從管線輸入資料
+cat logfile.log | ./jt_log_analyzer.py [-q filter_keyword] [-i interval] [-d] [-e encoding]
 ```
 
 ### 使用範例
 
 #### 1. 基本分析（預設每分鐘統計）
 ```bash
-./jt_log_analyzer.py /path/to/file.log
+./jt_log_analyzer.py -f /path/to/file.log
 ```
 
 ![demo2.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo2.png?raw=true)
@@ -59,55 +66,55 @@ chmod +x jt_log_analyzer.py
 #### 2. 指定時間區間分析
 ```bash
 # 每 15 分鐘統計
-./jt_log_analyzer.py /path/file.log -i 15m
+./jt_log_analyzer.py -f /path/file.log -i 15m
 
 # 每 2 小時統計
-./jt_log_analyzer.py /path/file.log -i 2h
+./jt_log_analyzer.py -f /path/file.log -i 2h
 
 # 每 24 小時統計
-./jt_log_analyzer.py /path/file.log -i 24h
+./jt_log_analyzer.py -f /path/file.log -i 24h
 ```
 
 #### 3. 搭配關鍵字篩選
 ```bash
 # 篩選 ERROR 相關的事件，每 30 分鐘統計
-./jt_log_analyzer.py /path/file.log ERROR -i 30m
+./jt_log_analyzer.py -f /path/file.log -q 'ERROR' -i 30m
 
 # 篩選帳號相關的錯誤，每 24 小時統計
-./jt_log_analyzer.py /path/file.log 'account error' -i 24h
+./jt_log_analyzer.py -f /path/file.log -q 'account error' -i 24h
 ```
 
 #### 4. 即時監控功能
 ```bash
 # 基本即時監控
-./jt_log_analyzer.py /path/file.log -r
+./jt_log_analyzer.py -f /path/file.log -r
 
 # 即時監控並篩選錯誤
-./jt_log_analyzer.py /path/file.log ERROR -r
+./jt_log_analyzer.py -f /path/file.log -q 'ERROR' -r
 
 # 即時監控特定間隔（每 10 分鐘）的事件
-./jt_log_analyzer.py /path/file.log -i 10m -r
+./jt_log_analyzer.py -f /path/file.log -i 10m -r
 
 # 即時監控特定類型的錯誤並以自定義區間顯示
-./jt_log_analyzer.py /var/log/nginx/access.log '404' -i 5m -r
+./jt_log_analyzer.py -f /var/log/nginx/access.log -q '404' -i 5m -r
 ```
 
 #### 5. 更多實用範例
 ```bash
 # 分析登入失敗事件
-./jt_log_analyzer.py auth.log 'authentication failed' -i 1h
+./jt_log_analyzer.py -f auth.log -q 'authentication failed' -i 1h
 
 # 監控資料庫連線問題
-./jt_log_analyzer.py app.log 'database connection' -i 15m
+./jt_log_analyzer.py -f app.log -q 'database connection' -i 15m
 
 # 檢查系統錯誤趨勢
-./jt_log_analyzer.py /var/log/syslog CRITICAL -i 12h
+./jt_log_analyzer.py -f /var/log/syslog -q CRITICAL -i 12h
 
 # 即時監控系統登入嘗試
-./jt_log_analyzer.py /var/log/auth.log 'Failed password' -i 5m -r
+./jt_log_analyzer.py -f /var/log/auth.log -q 'Failed password' -i 5m -r
 
 # 即時監控網頁伺服器錯誤
-./jt_log_analyzer.py /var/log/apache2/error.log -r
+./jt_log_analyzer.py -f /var/log/apache2/error.log -r
 ```
 
 ![demo1.png](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_log_analyzer/demo1.png?raw=true)
