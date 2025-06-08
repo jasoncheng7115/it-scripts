@@ -6,6 +6,8 @@ The key feature is automatic conversion of disks to **Thin-Provisioned VMDK**, s
 
 Supplement: Successfully tested on both VMware Workstation 17 and ESXi 8.0 — imported correctly without issues.
 
+[中文版說明](https://github.com/jasoncheng7115/it-scripts/blob/master/jt_pve2ova/README_zh-TW.md)
+
 ---
 
 ## Features
