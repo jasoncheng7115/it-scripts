@@ -57,7 +57,7 @@ chmod +x /opt/jt_pve2ova.sh
 ## Usage
 
 ```bash
-jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
+/opt/jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 ```
 
 | Parameter      | Description                                                                            |
@@ -71,10 +71,10 @@ jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 
 ```bash
 # 1 – Build OVA and auto-clean temp files
-jt_pve2ova.sh 203 /vmimage/tmp 8.0
+/opt/jt_pve2ova.sh 203 /vmimage/tmp 8.0
 
 # 2 – Build OVA and keep VMX / VMDK for manual testing
-jt_pve2ova.sh 105 /export/ova 7.0u3 keep
+/opt/jt_pve2ova.sh 105 /export/ova 7.0u3 keep
 ```
 
 The resulting file appears in `WORK_DIR`, named after the Proxmox VM:
