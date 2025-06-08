@@ -4,6 +4,7 @@ Package a Proxmox VE virtual machine into an ESXi-importable **OVA**.
 
 The key feature is automatic conversion of disks to **Thin-Provisioned VMDK**, supporting multiple storage back-ends such as **RBD / dir / ZFS / LVM-thin**.
 
+Supplement: Successfully tested on both VMware Workstation 17 and ESXi 8.0 — imported correctly without issues.
 
 ---
 
