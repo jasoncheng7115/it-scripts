@@ -2,7 +2,7 @@
 
 將 Proxmox VE 虛擬機打包成為 ESXi 可匯入的 OVA 檔案，在 Proxmox VE 節點本身執行即可！
 
-最重要的在於磁碟會自動轉成 Thin-Provisioned VMDK，且支援 RBD / dir / ZFS / LVM-thin 等多種儲存來源。
+最重要的在於磁碟會自動轉成 Thin-Provision VMDK，且支援 RBD / dir / ZFS / LVM-thin 等多種儲存來源。
 
 補充：已經在 VMware Workstation 17、ESXi 8.0 測試過，正確匯入無誤
 
