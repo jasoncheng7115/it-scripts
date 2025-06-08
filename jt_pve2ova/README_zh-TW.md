@@ -8,11 +8,11 @@ Proxmox VE 虛擬機打包成為 ESXi 可匯入的 OVA 檔案
 ## 提供功能
 
 - **一行完成**：轉換 VMDK → 產生 VMX → 打包 OVA  
-- **Thin 對應**：使用 `streamOptimized` 子格式 + `--diskMode=thin`
+- **精簡配置**：使用 `streamOptimized` 子格式 + `--diskMode=thin`
 - **自動判斷**：RBD 直接走 `qemu-img`，其它走 `pvesm path` 取得磁碟路徑
 - **暫存清理**：`MODE=clean`（預設）轉完自動刪除 VMX/VMDK  
 - **版本對應**：`virtualHW.version` 依傳入 ESXi 版本自動比對  
-- **UEFI/BIOS**：讀取 `bios:` 欄位，產生對應 `firmware=`  
+- **開機模式**：讀取 `bios:` 欄位，產生對應 `firmware=`  
 
 ---
 
