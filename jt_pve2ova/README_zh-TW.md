@@ -54,7 +54,7 @@ chmod +x /opt/jt_pve2ova.sh
 ## 使用方法
 
 ```bash
-jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
+/opt/jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 ```
 
 | 參數             | 說明                                                 |
@@ -68,10 +68,10 @@ jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 
 ```bash
 # 1. 建立 OVA 並自動清暫存檔
-jt_pve2ova.sh 203 /vmimage/tmp 8.0
+/opt/jt_pve2ova.sh 203 /vmimage/tmp 8.0
 
 # 2. 建立 OVA 並留下 VMX / VMDK 供手動測試
-jt_pve2ova.sh 105 /export/ova 7.0u3 keep
+/opt/jt_pve2ova.sh 105 /export/ova 7.0u3 keep
 ```
 
 完成後會在 `WORK_DIR` 看到如下，檔名自動取用 Proxmox VE 的 VM 名稱：
