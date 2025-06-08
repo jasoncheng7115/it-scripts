@@ -32,13 +32,15 @@ Proxmox VE 虛擬機打包成為 ESXi 可匯入的 OVA 檔案
 ## 安裝工具
 
 
-# 下載與安裝 OVF Tool
+OVF Tool
 ```bash
+# 下載與安裝 OVF Tool
 cd /opt
 wget -O "VMware-ovftool-4.6.3-24031167-lin.x86_64.zip" "https://dp-downloads.broadcom.com/?file=VMware-ovftool-4.6.3-24031167-lin.x86_64.zip&oid=299832&id=hP373_PYch6WxUvNQ315Qr0QaDUSSblCxjvV72aali2lx7GCTMe9LN0VHkoJZug=&specDownload=true&verify=1749382190-pZbDgeWvBK6vCy4oc9Obc3RFquE9OyIrl6Qh7Te8hww%3D"
 unzip VMware-ovftool-4.6.3-24031167-lin.x86_64.zip
 ```
 
+JT_PVE2OVA
 ```bash
 # 下載與安裝 jt_pve2ova
 curl -Lo /opt/jt_pve2ova.sh "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_pve2ova/jt_pve2ova.sh"
