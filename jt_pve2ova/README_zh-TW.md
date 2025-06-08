@@ -1,7 +1,4 @@
-````markdown
-# pve2ova.sh
-
-# jt_pve2ova 
+# JT_PVE2OVA 
 
 Proxmox VE 虛擬機打包成為 ESXi 可匯入的 OVA 檔案
 磁碟自動轉成 **Thin-Provisioned VMDK**，支援 RBD / dir / ZFS / LVM-thin 等多種儲存來源。
