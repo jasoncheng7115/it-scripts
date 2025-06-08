@@ -1,6 +1,6 @@
 # JT_PVE2OVA
 
-Package a Proxmox VE virtual machine into an ESXi-importable OVA.  
+You can package a Proxmox VE virtual machine into an OVA file that can be imported by ESXi — and it can be done **directly on the Proxmox VE node itself**!
 
 The key feature is automatic conversion of disks to **Thin-Provisioned VMDK**, supporting multiple storage back-ends such as RBD / dir / ZFS / LVM-thin.
 
