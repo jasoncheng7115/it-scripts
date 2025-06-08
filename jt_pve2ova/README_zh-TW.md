@@ -17,6 +17,8 @@
 - **版本對應**：`virtualHW.version` 依傳入 ESXi 版本自動比對  
 - **開機模式**：讀取 `bios:` 欄位，產生對應 `firmware=`  
 
+![PVE2OVA_convert](https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_pve2ova/pve_vmdisk_zfs_to_ova.png)
+
 ---
 
 ## 系統需求
