@@ -20,12 +20,10 @@ Proxmox VE 虛擬機打包成為 ESXi 可匯入的 OVA 檔案
 
 | 軟體                | 最低版本 | 備註                                   |
 |---------------------|---------|----------------------------------------|
-| Proxmox VE / Debian | 8.x ↑   | 內附 `pvesm`、`ceph-common`…           |
+| Proxmox VE          | 8.x ↑   | 內附 `pvesm`、`ceph-common`…           |
 | **qemu-img**        | 8.0 ↑   | 建議 8.x 以支援 `subformat=vmfs`       |
 | **VMware OVF Tool** | 4.x ↑   | 安裝至 `/opt/ovftool/` 之下         |
 | bash、numfmt、uuidgen|         | 標準 GNU coreutils                     |
-
-> **Ceph RBD** 需確保 `/etc/pve/ceph.conf` 與金鑰可用。  
 
 ---
 
