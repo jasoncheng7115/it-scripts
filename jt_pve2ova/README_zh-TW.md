@@ -58,7 +58,7 @@ jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 | -------------- | -------------------------------------------------- |
 | `VMID`         | Proxmox VE VM ID（ex. `203`）                               |
 | `WORK_DIR`     | 暫存 / 輸出目錄（必須有足夠空間，程式會自動估算並檢查）          |
-| `ESXI_VERSION` | 目標 ESXi 版本：`8.0` / `7.0u3` / `7.0` / `6.7` / `6.5` |
+| `ESXI_VERSION` | 目標 ESXi 版本：8.0 / 7.0u3 / 7.0 / 6.7 / 6.5 |
 | `MODE`         | `keep` 保留轉換後的 VMX/VMDK；`clean` 轉換完成後刪除，僅留 OVA（預設）                |
 
 ### 快速範例
