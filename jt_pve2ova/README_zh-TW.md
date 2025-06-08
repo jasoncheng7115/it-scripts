@@ -80,6 +80,65 @@ graylog5-customer.ova   ← 可直接在拿到 vSphere Client Deploy
 
 ---
 
+## 執行結果
+
+
+自動讀取 VM 設定，並將存放在 QCOW2 的磁碟轉換後打包為 OVA
+```bash
+root@host-108:/opt# ./jt_pve2ova.sh 203 /vmimage/temp 8.0
+INFO: Detected qemu-img 9.2.0
+2003–2024
+INFO: Target ESXi 8.0  -> virtualHW 20
+INFO: VM 'graylog5-customer'  BIOS=bios  vCPU=4  RAM=8192MB
+INFO: Skip optical: ide2: none,media=cdrom
+INFO: Added disk /vmimage/images/203/vm-203-disk-0.qcow2 (42G)
+INFO: Added disk /vmimage/images/203/vm-203-disk-1.qcow2 (64G)
+INFO: Required space ~128G, Free 1.4T
+INFO: Converting disks to streamOptimized VMDK...
+INFO: [0/2] /vmimage/images/203/vm-203-disk-0.qcow2 -> disk0.vmdk (100.00/100%)
+INFO: [1/2] /vmimage/images/203/vm-203-disk-1.qcow2 -> disk1.vmdk (100.00/100%)
+INFO: All disks converted.
+INFO: VMX generated -> /vmimage/temp/graylog5-customer.vmx
+INFO: Packing OVA with ovftool...
+Opening VMX source: /vmimage/temp/graylog5-customer.vmx
+Opening OVA target: /vmimage/temp/graylog5-customer.ova
+Writing OVA package: /vmimage/temp/graylog5-customer.ova
+Transfer Completed
+Completed successfully
+SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer.ova
+```
+
+自動讀取 VM 設定，並將存放在 Ceph 的磁碟轉換後打包為 OVA
+```
+root@host-108:/opt# ./jt_pve2ova.sh 203 /vmimage/temp 8.0
+INFO: Detected qemu-img 9.2.0
+2003-2024
+INFO: Target ESXi 8.0 -> virtualHW 20
+INFO: VM 'graylog5-customer' BIOS=bios vCPU=4 RAM=8192MB
+INFO: Skip optical: ide2: none,media=cdrom
+INFO: Added disk rbd:ceph1/vm-203-disk-0:conf=/etc/pve/ceph.conf:id=admin:keyring=/etc/pve/priv/ceph/ceph1.keyring (42G)
+INFO: Added disk rbd:ceph1/vm-203-disk-1:conf=/etc/pve/ceph.conf:id=admin:keyring=/etc/pve/priv/ceph/ceph1.keyring (64G)
+INFO: Required space ~128G, Free 1.4T
+INFO: Converting disks to streamOptimized VMDK...
+INFO: [0/2] rbd:ceph1/vm-203-disk-0:conf=/etc/pve/ceph.conf:id=admin:keyring=/etc/pve/priv/ceph/ceph1.keyring -> disk0.vmdk
+    (100.00/100%)
+INFO: [1/2] rbd:ceph1/vm-203-disk-1:conf=/etc/pve/ceph.conf:id=admin:keyring=/etc/pve/priv/ceph/ceph1.keyring -> disk1.vmdk
+    (100.00/100%)
+INFO: All disks converted.
+INFO: VMX generated -> /vmimage/temp/graylog5-customer.vmx
+INFO: Packing OVA with ovftool...
+Opening VMX source: /vmimage/temp/graylog5-customer.vmx
+Opening OVA target: /vmimage/temp/graylog5-customer.ova
+Writing OVA package: /vmimage/temp/graylog5-customer.ova
+Transfer Completed                    
+Completed successfully
+SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer.ova
+INFO: Cleaning temporary VMX/VMDK files...
+INFO: Temporary files removed.
+```
+
+---
+
 ## 工作流程
 
 1. **驗證環境** – 檢查 `ovftool` / `qemu-img` / PVE config
