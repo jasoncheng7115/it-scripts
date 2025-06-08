@@ -56,7 +56,7 @@ jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 
 | 參數             | 說明                                                 |
 | -------------- | -------------------------------------------------- |
-| `VMID`         | PVE VM ID（ex. `203`）                               |
+| `VMID`         | Proxmox VE VM ID（ex. `203`）                               |
 | `WORK_DIR`     | 暫存 / 輸出目錄（必須有足夠空間，程式會自動估算並檢查）          |
 | `ESXI_VERSION` | 目標 ESXi 版本：`8.0` / `7.0u3` / `7.0` / `6.7` / `6.5` |
 | `MODE`         | `keep` 保留轉換後的 VMX/VMDK；`clean` 轉換完成後刪除，僅留 OVA（預設）                |
@@ -74,7 +74,7 @@ jt_pve2ova.sh 105 /export/ova 7.0u3 keep
 完成後會在 `WORK_DIR` 看到如下，檔名自動取用 Proxmox VE 的 VM 名稱：
 
 ```
-graylog5-customer.ova   ← 可直接在拿到 vSphere Client Deploy
+graylog5-customer.ova   ← 可直接拿到 vSphere Client 部署
 ```
 
 ---
