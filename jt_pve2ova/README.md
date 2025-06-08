@@ -19,6 +19,9 @@ Supplement: Successfully tested on both VMware Workstation 17 and ESXi 8.0 — i
 - **Version mapping** – `virtualHW.version` is chosen from the ESXi version passed in  
 - **Boot mode aware** – reads the `bios:` field and writes the matching `firmware=` entry  
 
+
+![PVE2OVA_convert](https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_pve2ova/pve_vmdisk_zfs_to_ova.png)
+
 ---
 
 ## Requirements
