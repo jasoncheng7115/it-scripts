@@ -70,7 +70,7 @@ sudo /opt/pve-disk-led.sh --show-diskid
 
 ## 實機螢幕截圖
 
-![CLI Output Example](screenshot-cli.png)
+![CLI Output Example](https://github.com/jasoncheng7115/it-scripts/blob/master/pve-disk-led/screenshot01.png)
 
 ---
 
