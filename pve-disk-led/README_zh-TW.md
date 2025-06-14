@@ -44,10 +44,10 @@ sudo /opt/pve-disk-led.sh
 ```
 
 * 執行後，列出所有磁碟資訊並自動編號
-* 輸入對應編號可點亮硬碟（強制讀取，LED 會閃爍）
-* 再按 `Q` 離開或繼續點亮其他硬碟
+* 輸入對應編號可點亮硬碟（強制讀取使 LED 閃爍）
+* 按 `Q` 可離開或繼續點亮其他硬碟
 
-### 顯示磁碟 ID（進階指令）
+### 顯示磁碟 ID（進階指令，顯示 /dev/disk/by-id 下的資訊）
 
 ```bash
 sudo /opt/pve-disk-led.sh --show-diskid
