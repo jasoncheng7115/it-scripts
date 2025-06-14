@@ -14,7 +14,7 @@ by Jason Cheng (Jason Tools)
 * List all local physical disks on the PVE host
 * Columns and information align with the WebUI (Model, Serial, Size, SMART, Wear)
 * Supports SSD, HDD, NVMe, USB Disk
-* Light up a specific disk for easy on-site tray identification
+* Light up a specific disk for easy on-site tray identification (leveraging the read activity via dd)
 * Pure Bash script, no extra dependencies required
 
 ---
