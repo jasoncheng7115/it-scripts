@@ -3,6 +3,8 @@
 
 A disk identification utility, designed for software-defined storage environments such as Proxmox VE or TrueNAS. Easily identify disk slot locations directly from the CLI, list all local disk information (matching the Proxmox VE WebUI disk details), and provide a one-click disk LED blinking feature for effortless identification and hot-swap operations.
 
+[繁體中文版說明](https://github.com/jasoncheng7115/it-scripts/blob/master/pve-disk-led/README_zh-TW.md)
+
 by Jason Cheng (Jason Tools)
 
 ---
