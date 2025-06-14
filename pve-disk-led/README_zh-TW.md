@@ -1,10 +1,10 @@
 
-# pve-disk-led
+# pve-disk-led.sh
 
 磁碟識別小工具，適用於採用軟體定義儲存的 Proxmox VE 或 TrueNAS 等系統，從 CLI 即可方便識別磁碟所在槽位，並列出本機所有磁碟資訊（對齊 PVE WebUI 風格），並提供一鍵點亮硬碟功能，讓你輕鬆辨識、無痛抽換。
 
 
-**by Jason Cheng (Jason Tools)
+by Jason Cheng (Jason Tools)
 
 ---
 
@@ -32,14 +32,15 @@
 ### 下載
 
 ```bash
-wget https://raw.githubusercontent.com/your_github/pve-disk-led/main/pve-disk-led.sh
+cd /opt
+wget https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/pve-disk-led/pve-disk-led.sh
 chmod +x pve-disk-led.sh
 ````
 
 ### 使用方式
 
 ```bash
-sudo ./pve-disk-led.sh
+sudo /opt/pve-disk-led.sh
 ```
 
 * 執行後，列出所有磁碟資訊並自動編號
@@ -49,7 +50,7 @@ sudo ./pve-disk-led.sh
 ### 顯示磁碟 ID（進階指令）
 
 ```bash
-sudo ./pve-disk-led.sh --show-diskid
+sudo /opt/pve-disk-led.sh --show-diskid
 ```
 
 ---
