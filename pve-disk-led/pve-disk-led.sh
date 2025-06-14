@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Script      : pve-disk-led.sh
-# Version     : 1.0
+# Version     : 1.1
 # Author      : Jason Cheng (Jason Tools Co., Ltd.)
 # Description : List disks on Proxmox VE host and light up disk LEDs for identification.
 #               Output columns: Model, Serial, Size, SMART, SSD wear %.
@@ -39,27 +39,33 @@ is_ssd() {
 
 get_wear() {
   local dev="/dev/$1"
-  if ! is_ssd "$1"; then
-    echo "N/A"
-    return
-  fi
-  local nvme
-  nvme=$(smartctl -A "$dev" 2>/dev/null | awk '/Percentage Used/ {print $NF; exit}')
-  if [[ -n $nvme && $nvme =~ ^[0-9]+$ && $nvme -le 100 ]]; then
-    echo "$nvme%"
-    return
-  fi
-  local value
-  value=$(smartctl -A "$dev" 2>/dev/null | awk '
-    $2 ~ /Media_Wearout_Indicator|Wear_Leveling_Count|Percent_Lifetime_Remain/ {print $4; exit}
-  ')
-  value=$(echo "$value" | sed 's/^0*//')
-  [[ -z "$value" ]] && value=0
-  if [[ "$value" =~ ^[0-9]+$ ]] && (( value <= 100 )); then
-    local pct=$((100 - value))
-    echo "${pct}%"
-    return
-  fi
+  local val out
+
+  # NVMe
+  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Percentage Used/ {print $NF; exit}')
+  val=$(echo "$out" | sed 's/^0*//;s/%//')
+  [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$val%" && return
+
+  # Media_Wearout_Indicator
+  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Media_Wearout_Indicator/ {print $4; exit}')
+  val=$(echo "$out" | sed 's/^0*//')
+  [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$((100 - val))%" && return
+
+  # Wear_Leveling_Count
+  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Wear_Leveling_Count/ {print $4; exit}')
+  val=$(echo "$out" | sed 's/^0*//')
+  [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$((100 - val))%" && return
+
+  # Percent_Lifetime_Remain
+  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Percent_Lifetime_Remain/ {print $4; exit}')
+  val=$(echo "$out" | sed 's/^0*//')
+  [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$((100 - val))%" && return
+
+  # INTEL DC SSD
+  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Percentage Used Endurance Indicator/ {print $NF; exit}')
+  val=$(echo "$out" | sed 's/^0*//;s/%//')
+  [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$val%" && return
+
   echo "N/A"
 }
 
