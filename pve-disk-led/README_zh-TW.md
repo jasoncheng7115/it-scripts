@@ -1,5 +1,5 @@
 
-# pve-disk-led.sh
+# pve-disk-led
 
 磁碟識別小工具，適用於採用軟體定義儲存的 Proxmox VE 或 TrueNAS 等系統，從 CLI 即可方便識別磁碟所在槽位，並列出本機所有磁碟資訊（對齊 PVE WebUI 風格），並提供一鍵點亮硬碟功能，讓你輕鬆辨識、無痛抽換。
 
