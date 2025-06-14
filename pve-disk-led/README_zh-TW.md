@@ -62,7 +62,7 @@ sudo /opt/pve-disk-led.sh --show-diskid
 | No     | 編號          | 1                       |
 | Model  | 裝置型號（含 USB） | KINGSTON SM2280S3G2240G |
 | Serial | 硬碟序號        | 50026B727902853F        |
-| Size   | 實際容量，自動單位換算 | 240.06 GB、10.00 TB      |
+| Size   | 實際容量，自動單位換算 | 240 GB、1.92 TB      |
 | SMART  | 健康狀態        | PASSED / Unknown        |
 | Wear   | SSD 耗損率  | 0%、N/A                  |
 
