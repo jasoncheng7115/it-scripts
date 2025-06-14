@@ -8,7 +8,7 @@ by Jason Cheng (Jason Tools)
 
 ---
 
-## 特色 Features
+## 功能
 
 - 完整列出 PVE Host 本機所有實體磁碟
 - 欄位資訊與 WebUI 對齊（Model、Serial、Size、SMART、Wear）
@@ -18,7 +18,7 @@ by Jason Cheng (Jason Tools)
 
 ---
 
-## 需求 Requirements
+## 需求
 
 - Proxmox VE (Debian/Ubuntu 相關發行版本的主機亦可)
 - `smartmontools`
@@ -27,7 +27,7 @@ by Jason Cheng (Jason Tools)
 
 ---
 
-## 安裝與使用 Installation & Usage
+## 安裝使用
 
 ### 下載
 
@@ -35,7 +35,7 @@ by Jason Cheng (Jason Tools)
 cd /opt
 wget https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/pve-disk-led/pve-disk-led.sh
 chmod +x pve-disk-led.sh
-````
+```
 
 ### 使用方式
 
@@ -68,20 +68,20 @@ sudo /opt/pve-disk-led.sh --show-diskid
 
 ---
 
-## 實機螢幕截圖
+## 使用擷圖
 
 ![CLI Output Example](https://github.com/jasoncheng7115/it-scripts/blob/master/pve-disk-led/screenshot01.png)
 
 ---
 
-## 常見問題 (FAQ)
+## 常見問題
 
 * 若某些磁碟未顯示型號或序號，通常是該裝置未正確支援 `smartctl` 或 /sys/block 未提供資訊
 * 本 script 不會對磁碟寫入，僅以 dd 強制讀取強迫點亮
 
 ---
 
-## 貢獻與授權 Contribute & License
+## 貢獻與授權
 
 by Jason Cheng, MIT License
 
