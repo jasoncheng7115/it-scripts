@@ -1,4 +1,4 @@
-# MCP Integration with Proxmox VE
+# Proxmox VE MCP Server
 
 This repository contains configuration examples for integrating MCP with Proxmox VE using either username/password authentication or API token-based access.
 
