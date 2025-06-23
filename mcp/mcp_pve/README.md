@@ -89,5 +89,5 @@ Use it at your own risk. The authors and contributors shall not be held liable f
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the MIT License.
 
