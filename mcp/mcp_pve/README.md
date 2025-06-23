@@ -2,7 +2,7 @@
 
 This repository contains configuration examples for integrating MCP with Proxmox VE using either username/password authentication or API token-based access.
 
-[繁體中文版](https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/mcp/mcp_pve/README_zh-TW.md)
+[繁體中文版](https://github.com/jasoncheng7115/it-scripts/blob/master/mcp/mcp_pve/README_zh-TW.md)
 
 ---
 
