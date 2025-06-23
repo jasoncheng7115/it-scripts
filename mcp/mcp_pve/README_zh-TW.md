@@ -1,6 +1,6 @@
 
 
-# MCP 與 Proxmox VE 的整合
+# Proxmox VE MCP 伺服器
 
 本專案提供將 MCP 整合至 Proxmox VE 的設定範例，支援使用帳號密碼或 API 權杖進行認證。
 
