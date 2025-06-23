@@ -6,7 +6,7 @@ Provides comprehensive Proxmox VE management functionality including batch data 
 Author: Jason Cheng (Jason Tools)
 Version: 1.2.1
 License: MIT
-Repository: 
+Repository: https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/mcp/mcp_pve/mcp_pve.py
 """
 
 import asyncio
