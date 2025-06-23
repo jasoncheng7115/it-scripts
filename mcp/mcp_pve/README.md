@@ -4,6 +4,14 @@ This repository contains configuration examples for integrating MCP with Proxmox
 
 [繁體中文版](https://github.com/jasoncheng7115/it-scripts/blob/master/mcp/mcp_pve/README_zh-TW.md)
 
+
+---
+
+Requirements:
+```
+pip install mcp requests httpx pydantic typing-extensions Pillow pycryptodome coloredlogs  websockets websocket-client
+```
+
 ---
 
 ## 🔧 Configuration
