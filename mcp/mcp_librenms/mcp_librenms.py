@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
-MCP server for LibreNMS API – v3.1 Bug Fixed Version
-===================================================
-Author: Jason Cheng (Jason Tools)
+MCP server for LibreNMS API – v3.2 Enhanced Bug Fixed Version
+============================================================
+Author: Jason Cheng (Jason Tools) - Enhanced by Claude
 Created: 2025-06-24
+Updated: 2025-06-30
 License: MIT
 
 FastMCP-based LibreNMS integration with comprehensive batch operations,
 improved error handling, caching, and SLA analytics.
 
-Key Fixes:
+Key Fixes in v3.2:
+- Fixed device pagination to retrieve ALL devices (not just 50)
+- Enhanced _paginate_request with multiple fallback methods
+- Improved _extract_data_from_response with better structure detection
+- Added get_all_devices() function for unlimited device retrieval
+- Added check_device_count() for diagnostics
+- Increased batch sizes and improved safety limits
+- Better error handling for different LibreNMS API versions
+- Enhanced logging for better debugging
+
+Previous Fixes in v3.1:
 - Fixed datetime parsing issues in alert filtering
 - Fixed API response parsing for different endpoint formats
 - Improved error handling for missing or malformed data
@@ -26,6 +37,7 @@ Features:
 - Accurate SLA calculation based on real alert data
 - Performance monitoring and statistics
 - Configuration validation and health checks
+- UNLIMITED device retrieval capabilities
 
 Installation:
 pip install mcp requests
@@ -66,7 +78,7 @@ class Config:
         self.CACHE_TTL = int(os.getenv("LIBRENMS_CACHE_TTL", "300"))
         self.TIMEOUT = int(os.getenv("LIBRENMS_TIMEOUT", "30"))
         self.MAX_RETRIES = int(os.getenv("LIBRENMS_MAX_RETRIES", "3"))
-        self.BATCH_SIZE = int(os.getenv("LIBRENMS_BATCH_SIZE", "100"))
+        self.BATCH_SIZE = int(os.getenv("LIBRENMS_BATCH_SIZE", "200"))  # 增加預設批次大小
         
         self.validate()
     
@@ -137,7 +149,7 @@ cache = SimpleCache(config.CACHE_TTL)
 session = requests.Session()
 session.headers.update({
     "X-Auth-Token": config.TOKEN,
-    "User-Agent": "mcp-librenms/3.1",
+    "User-Agent": "mcp-librenms/3.2",
     "Accept": "application/json",
     "Content-Type": "application/json"
 })
@@ -253,86 +265,179 @@ def _format_timestamp(timestamp_str: str) -> str:
     return str(timestamp_str) if timestamp_str else "N/A"
 
 def _extract_data_from_response(result: Any, expected_keys: List[str] = None) -> List[Dict[str, Any]]:
-    """Extract data array from API response with flexible key detection"""
+    """Extract data array from API response with enhanced flexible key detection"""
     if expected_keys is None:
-        expected_keys = ['devices', 'services', 'alerts', 'data', 'results', 'eventlog']
+        expected_keys = ['devices', 'services', 'alerts', 'data', 'results', 'eventlog', 'alertlog']
+    
+    logger.debug(f"Extracting data from response type: {type(result)}")
     
     if isinstance(result, list):
+        logger.debug(f"Result is list with {len(result)} items")
         return result
     
     if isinstance(result, dict):
-        # Try expected keys first
-        for key in expected_keys:
-            if key in result and isinstance(result[key], list):
-                return result[key]
+        logger.debug(f"Result is dict with keys: {list(result.keys())}")
         
-        # If no expected keys found, look for any list values
+        # 首先嘗試預期的鍵
+        for key in expected_keys:
+            if key in result:
+                value = result[key]
+                if isinstance(value, list):
+                    logger.debug(f"Found data in key '{key}' with {len(value)} items")
+                    return value
+                elif isinstance(value, dict) and 'data' in value:
+                    # 處理巢狀結構
+                    nested_data = value['data']
+                    if isinstance(nested_data, list):
+                        logger.debug(f"Found nested data in '{key}.data' with {len(nested_data)} items")
+                        return nested_data
+        
+        # 如果沒有找到預期的鍵，尋找任何包含陣列的鍵
         for key, value in result.items():
             if isinstance(value, list) and len(value) > 0:
+                # 檢查陣列內容是否看起來像設備資料
+                first_item = value[0]
+                if isinstance(first_item, dict):
+                    # 檢查是否有常見的設備欄位
+                    device_fields = ['device_id', 'hostname', 'ip', 'status', 'type', 'id']
+                    service_fields = ['service_id', 'service_type', 'service_status']
+                    alert_fields = ['alert_id', 'severity', 'timestamp', 'message']
+                    
+                    if any(field in first_item for field in device_fields + service_fields + alert_fields):
+                        logger.debug(f"Found data-like content in key '{key}' with {len(value)} items")
+                        return value
+        
+        # 如果還是沒找到，返回所有陣列
+        for key, value in result.items():
+            if isinstance(value, list):
+                logger.debug(f"Returning list from key '{key}' with {len(value)} items")
                 return value
         
-        # If single item result, wrap in list
+        # 最後，如果是單一項目結果，包裝成陣列
         if result and not any(isinstance(v, list) for v in result.values()):
+            logger.debug("Wrapping single item in list")
             return [result]
     
+    logger.debug("No data found, returning empty list")
     return []
 
 def _paginate_request(endpoint: str, params: Optional[Dict[str, Any]] = None, 
                      max_items: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Handle paginated API requests to get all data with improved error handling"""
+    """Handle paginated API requests to get all data with improved error handling and multiple fallback methods"""
     all_items = []
     offset = 0
-    limit = min(config.BATCH_SIZE, 100)  # Cap at 100 for safety
+    limit = min(config.BATCH_SIZE, 200)  # 增加批次大小到 200
     consecutive_empty = 0
+    total_processed = 0
     
     if params is None:
         params = {}
     
-    while consecutive_empty < 3:  # Stop after 3 consecutive empty responses
+    logger.info(f"Starting pagination for {endpoint}, max_items={max_items}")
+    
+    # 方法 1: 標準分頁
+    while consecutive_empty < 2:  # 減少到 2 次連續空響應就停止
         current_params = params.copy()
         current_params.update({"limit": limit, "offset": offset})
         
         try:
+            logger.debug(f"Requesting {endpoint} with offset={offset}, limit={limit}")
             result = _api_request("GET", endpoint, params=current_params)
             
-            # Extract items using improved method
+            # 嘗試多種方式提取資料
             items = _extract_data_from_response(result)
+            
+            # 如果沒有 items，但有 result 且 result 是字典，檢查是否有特殊格式
+            if not items and isinstance(result, dict):
+                # 直接檢查所有可能的鍵
+                for possible_key in ['devices', 'data', 'results', 'services', 'alerts']:
+                    if possible_key in result:
+                        potential_items = result[possible_key]
+                        if isinstance(potential_items, list):
+                            items = potential_items
+                            logger.debug(f"Found items in {possible_key}")
+                            break
+                        elif isinstance(potential_items, dict) and 'data' in potential_items:
+                            items = potential_items['data']
+                            logger.debug(f"Found items in {possible_key}.data")
+                            break
             
             if not items:
                 consecutive_empty += 1
                 logger.debug(f"Empty response at offset {offset}, consecutive empty: {consecutive_empty}")
+                
+                # 如果是第一次請求就空的，可能是 API 格式問題
+                if offset == 0:
+                    logger.info("First request empty, trying alternative methods...")
+                    break
+                
                 offset += limit
                 continue
             
             consecutive_empty = 0  # Reset counter
+            items_count = len(items)
             all_items.extend(items)
+            total_processed += items_count
             
-            logger.debug(f"Retrieved {len(items)} items at offset {offset}")
+            logger.info(f"Retrieved {items_count} items at offset {offset}, total so far: {total_processed}")
             
             # Check if we've reached the maximum
             if max_items and len(all_items) >= max_items:
                 all_items = all_items[:max_items]
+                logger.info(f"Reached max_items limit: {max_items}")
                 break
             
             # If we got fewer items than requested, we're probably at the end
-            if len(items) < limit:
+            if items_count < limit:
+                logger.info(f"Got {items_count} < {limit}, assuming end of data")
                 break
             
             offset += limit
             
-            # Safety break to prevent infinite loops
-            if offset > 10000:
+            # Safety break to prevent infinite loops - 增加到 50000
+            if offset > 50000:
                 logger.warning(f"Pagination safety break at offset {offset}")
                 break
             
         except Exception as e:
             logger.warning(f"Pagination failed at offset {offset}: {e}")
             consecutive_empty += 1
-            if consecutive_empty >= 3:
+            if consecutive_empty >= 2:
+                logger.error("Too many consecutive failures, stopping pagination")
                 break
             offset += limit
     
-    logger.info(f"Pagination complete: {len(all_items)} total items retrieved")
+    # 方法 2: 如果標準分頁沒有結果，嘗試大量請求
+    if not all_items:
+        logger.info("Standard pagination failed, trying large limit request...")
+        try:
+            large_params = params.copy()
+            large_params.update({"limit": 10000})
+            large_result = _api_request("GET", endpoint, params=large_params)
+            large_items = _extract_data_from_response(large_result)
+            if large_items:
+                all_items.extend(large_items)
+                logger.info(f"Large limit request succeeded: {len(large_items)} items")
+        except Exception as e:
+            logger.warning(f"Large limit request failed: {e}")
+    
+    # 方法 3: 如果還是沒有結果，嘗試無參數請求
+    if not all_items:
+        logger.info("Large limit failed, trying simple request...")
+        try:
+            simple_result = _api_request("GET", endpoint, params=params)
+            if isinstance(simple_result, list):
+                all_items.extend(simple_result)
+                logger.info(f"Simple request returned list: {len(simple_result)} items")
+            elif isinstance(simple_result, dict):
+                simple_items = _extract_data_from_response(simple_result)
+                if simple_items:
+                    all_items.extend(simple_items)
+                    logger.info(f"Simple request extracted items: {len(simple_items)} items")
+        except Exception as e:
+            logger.warning(f"Simple request failed: {e}")
+    
+    logger.info(f"Pagination complete for {endpoint}: {len(all_items)} total items retrieved")
     return all_items
 
 # ───────────────────────── Core MCP Tools ─────────────────────────
@@ -408,12 +513,12 @@ def health_check() -> str:
 # ───────────────────────── Enhanced Device Management ─────────────────────────
 
 @mcp.tool()
-def list_devices(limit: int = 50, status: Optional[str] = None, 
+def list_devices(limit: int = 0, status: Optional[str] = None, 
                 type_filter: Optional[str] = None, location: Optional[str] = None) -> str:
     """List devices with enhanced filtering options
     
     Args:
-        limit: Maximum number of devices to return (default: 50)
+        limit: Maximum number of devices to return (default: 0 = all devices)
         status: Filter by device status (up, down, disabled) (optional)
         type_filter: Filter by device type (optional)
         location: Filter by location (optional)
@@ -434,7 +539,10 @@ def list_devices(limit: int = 50, status: Optional[str] = None,
         if location:
             params["location"] = location
         
-        devices = _paginate_request("devices", params, max_items=limit)
+        # 如果 limit 為 0，則撈取所有設備
+        max_items = None if limit == 0 else limit
+        
+        devices = _paginate_request("devices", params, max_items=max_items)
         
         # Calculate statistics with safe access
         total_devices = len(devices)
@@ -468,7 +576,8 @@ def list_devices(limit: int = 50, status: Optional[str] = None,
                 "type_breakdown": type_counts
             },
             "query_info": {
-                "limit": limit,
+                "limit_requested": limit,
+                "actual_count": total_devices,
                 "filters": {
                     "status": status,
                     "type": type_filter,
@@ -481,6 +590,182 @@ def list_devices(limit: int = 50, status: Optional[str] = None,
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
         logger.error(f"Error in list_devices: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_all_devices() -> str:
+    """Get ALL devices without any limit
+    
+    Returns:
+        JSON string of all devices with complete statistics
+    """
+    logger.info("Getting ALL devices (no limit)")
+    
+    try:
+        # 使用多種方法嘗試獲取所有設備
+        all_devices = []
+        
+        # 方法 1: 使用改進的分頁
+        try:
+            devices_paginated = _paginate_request("devices", max_items=None)
+            all_devices.extend(devices_paginated)
+            logger.info(f"Method 1 (pagination): Got {len(devices_paginated)} devices")
+        except Exception as e:
+            logger.warning(f"Pagination method failed: {e}")
+        
+        # 方法 2: 如果分頁沒有結果，嘗試單次大量請求
+        if not all_devices:
+            try:
+                large_request = _api_request("GET", "devices", params={"limit": 10000})
+                devices_large = _extract_data_from_response(large_request)
+                all_devices.extend(devices_large)
+                logger.info(f"Method 2 (large request): Got {len(devices_large)} devices")
+            except Exception as e:
+                logger.warning(f"Large request method failed: {e}")
+        
+        # 方法 3: 嘗試不帶參數的請求
+        if not all_devices:
+            try:
+                simple_request = _api_request("GET", "devices")
+                devices_simple = _extract_data_from_response(simple_request)
+                all_devices.extend(devices_simple)
+                logger.info(f"Method 3 (simple): Got {len(devices_simple)} devices")
+            except Exception as e:
+                logger.warning(f"Simple request method failed: {e}")
+        
+        # 去重複（基於 device_id）
+        unique_devices = []
+        seen_ids = set()
+        
+        for device in all_devices:
+            if isinstance(device, dict):
+                device_id = device.get('device_id') or device.get('id')
+                if device_id and device_id not in seen_ids:
+                    seen_ids.add(device_id)
+                    unique_devices.append(device)
+                elif not device_id:
+                    # 如果沒有 ID，直接加入（可能是錯誤的資料結構）
+                    unique_devices.append(device)
+        
+        # 計算詳細統計
+        total_devices = len(unique_devices)
+        status_counts = {"up": 0, "down": 0, "disabled": 0, "unknown": 0}
+        type_counts = {}
+        location_counts = {}
+        os_counts = {}
+        
+        for device in unique_devices:
+            if not isinstance(device, dict):
+                continue
+                
+            # 狀態統計
+            device_status_val = device.get("status")
+            if device_status_val == 1 or device_status_val == "1":
+                status_counts["up"] += 1
+            elif device_status_val == 0 or device_status_val == "0":
+                status_counts["down"] += 1
+            elif device_status_val == 2 or device_status_val == "2":
+                status_counts["disabled"] += 1
+            else:
+                status_counts["unknown"] += 1
+            
+            # 類型統計
+            device_type = device.get("type", "unknown")
+            type_counts[device_type] = type_counts.get(device_type, 0) + 1
+            
+            # 位置統計
+            location = device.get("location", "unknown")
+            location_counts[location] = location_counts.get(location, 0) + 1
+            
+            # 作業系統統計
+            os_name = device.get("os", "unknown")
+            os_counts[os_name] = os_counts.get(os_name, 0) + 1
+        
+        result = {
+            "devices": unique_devices,
+            "total_count": total_devices,
+            "statistics": {
+                "status_breakdown": status_counts,
+                "type_breakdown": dict(sorted(type_counts.items(), key=lambda x: x[1], reverse=True)),
+                "location_breakdown": dict(sorted(location_counts.items(), key=lambda x: x[1], reverse=True)[:20]),
+                "os_breakdown": dict(sorted(os_counts.items(), key=lambda x: x[1], reverse=True)[:20])
+            },
+            "query_info": {
+                "method": "get_all_devices",
+                "no_limits_applied": True,
+                "deduplication_applied": True,
+                "unique_device_ids": len(seen_ids),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        logger.info(f"Successfully retrieved {total_devices} unique devices")
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error in get_all_devices: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def check_device_count() -> str:
+    """Check device count using different API methods
+    
+    Returns:
+        JSON string with device count from different methods
+    """
+    logger.info("Checking device count using different methods")
+    
+    try:
+        results = {}
+        
+        # 方法 1: 獲取第一頁看看總數
+        try:
+            first_page = _api_request("GET", "devices", params={"limit": 1, "offset": 0})
+            if isinstance(first_page, dict) and "count" in first_page:
+                results["method_1_api_count"] = first_page["count"]
+            else:
+                results["method_1_api_count"] = "Not available"
+                results["method_1_response_keys"] = list(first_page.keys()) if isinstance(first_page, dict) else "Not a dict"
+        except Exception as e:
+            results["method_1_error"] = str(e)
+        
+        # 方法 2: 嘗試大數字限制
+        try:
+            large_limit = _api_request("GET", "devices", params={"limit": 99999})
+            devices_large = _extract_data_from_response(large_limit)
+            results["method_2_large_limit"] = len(devices_large)
+        except Exception as e:
+            results["method_2_error"] = str(e)
+        
+        # 方法 3: 不帶參數
+        try:
+            no_params = _api_request("GET", "devices")
+            devices_no_params = _extract_data_from_response(no_params)
+            results["method_3_no_params"] = len(devices_no_params)
+        except Exception as e:
+            results["method_3_error"] = str(e)
+        
+        # 方法 4: 使用分頁計算
+        try:
+            paginated = _paginate_request("devices", max_items=None)
+            results["method_4_pagination"] = len(paginated)
+        except Exception as e:
+            results["method_4_error"] = str(e)
+        
+        # 方法 5: 嘗試不同的端點
+        try:
+            devices_count_endpoint = _api_request("GET", "devices/count")
+            results["method_5_count_endpoint"] = devices_count_endpoint
+        except Exception as e:
+            results["method_5_error"] = str(e)
+        
+        return json.dumps({
+            "device_count_methods": results,
+            "recommendation": "使用 get_all_devices() 函數獲取所有設備",
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
@@ -1329,9 +1614,19 @@ def cache_stats() -> str:
 
 if __name__ == "__main__":
     logger.info("=" * 80)
-    logger.info("LibreNMS FastMCP Server v3.1 - Bug Fixed Version")
+    logger.info("LibreNMS FastMCP Server v3.2 - Enhanced Bug Fixed Version")
     logger.info("=" * 80)
-    logger.info("Key Fixes Applied:")
+    logger.info("Major Enhancements in v3.2:")
+    logger.info("  ✓ FIXED device pagination - now retrieves ALL devices (not just 50)")
+    logger.info("  ✓ Enhanced _paginate_request with multiple fallback methods")
+    logger.info("  ✓ Improved _extract_data_from_response with better structure detection")
+    logger.info("  ✓ Added get_all_devices() function for unlimited device retrieval")
+    logger.info("  ✓ Added check_device_count() for API diagnostics")
+    logger.info("  ✓ Increased batch sizes (50→200) and improved safety limits")
+    logger.info("  ✓ Better error handling for different LibreNMS API versions")
+    logger.info("  ✓ Enhanced logging and debugging capabilities")
+    logger.info("=" * 80)
+    logger.info("Previous Fixes in v3.1:")
     logger.info("  ✓ Fixed datetime parsing with multiple format support")
     logger.info("  ✓ Improved API response parsing for different endpoint formats")
     logger.info("  ✓ Enhanced error handling for missing or malformed data")
@@ -1341,7 +1636,7 @@ if __name__ == "__main__":
     logger.info("  ✓ Added input validation for numeric conversions")
     logger.info("  ✓ Fixed alert filtering and sorting logic")
     logger.info("=" * 80)
-    logger.info("Features:")
+    logger.info("Core Features:")
     logger.info("  ✓ Comprehensive alert history with multiple data sources")
     logger.info("  ✓ Batch operations for devices, services, and alerts")
     logger.info("  ✓ Intelligent caching with configurable TTL")
@@ -1349,9 +1644,16 @@ if __name__ == "__main__":
     logger.info("  ✓ Accurate SLA calculation with multiple methods")
     logger.info("  ✓ Performance monitoring and health checks")
     logger.info("  ✓ Backward compatibility with existing tools")
+    logger.info("  ✓ UNLIMITED device retrieval capabilities")
+    logger.info("=" * 80)
+    logger.info("Usage Examples:")
+    logger.info("  • list_devices(limit=0) - Get ALL devices")
+    logger.info("  • get_all_devices() - Dedicated function for all devices")
+    logger.info("  • check_device_count() - Diagnose API limitations")
+    logger.info("  • health_check() - Verify API connectivity")
     logger.info("=" * 80)
     logger.info(f"Configuration: Cache TTL={config.CACHE_TTL}s, Timeout={config.TIMEOUT}s")
-    logger.info(f"Batch Size={config.BATCH_SIZE}, Max Retries={config.MAX_RETRIES}")
+    logger.info(f"Enhanced Batch Size={config.BATCH_SIZE}, Max Retries={config.MAX_RETRIES}")
     logger.info("=" * 80)
     
     mcp.run()
