@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-OPNsense MCP Server
-A Model Context Protocol server for OPNsense firewall management
+OPNsense MCP Server - Config.xml Based
+A Model Context Protocol server for OPNsense firewall management (read-only)
 
 Author: Jason Cheng (Jason Tools)
-Version: 1.0.0
+Version: 1.4.0
 License: MIT
 Created: 2025-06-25
+Updated: 2025-07-04 - Added NAT rules parsing and enhanced alias parsing
 
-This MCP server provides comprehensive OPNsense firewall management capabilities
-including firewall rules, NAT rules, aliases, interfaces, and batch operations.
+This MCP server provides OPNsense firewall rule reading capabilities
+by parsing config.xml directly (read-only operations only).
 """
 
 import asyncio
@@ -22,6 +23,11 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 import aiohttp
+import requests
+import urllib3
+from requests.auth import HTTPBasicAuth
+from defusedxml import ElementTree as ET
+from xml.etree.ElementTree import Element  # For type hints only
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
@@ -40,11 +46,11 @@ from mcp.types import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("opnsense-mcp")
 
-__version__ = "1.0.0"
+__version__ = "1.4.0"
 __author__ = "Jason Cheng (Jason Tools)"
 
 class OPNsenseClient:
-    """OPNsense API client"""
+    """OPNsense API client for config.xml reading"""
     
     def __init__(self):
         self.host = os.getenv("OPNSENSE_HOST", "https://192.168.1.1")
@@ -58,6 +64,10 @@ class OPNsenseClient:
             
         self.session = None
         self._ssl_context = self._create_ssl_context()
+        
+        # Disable SSL warnings if verification is disabled
+        if not self.verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     def _create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context"""
@@ -114,149 +124,456 @@ class OPNsenseClient:
             logger.error(f"API request exception: {str(e)}")
             raise
     
-    # === Firewall Rules Management ===
+    async def download_config_xml(self) -> Element:
+        """Download config.xml using synchronous request (as XML parsing is sync)"""
+        try:
+            # Use synchronous requests for XML download as it's simpler
+            url = f"{self.host}/api/core/backup/download/this"
+            response = requests.get(
+                url, 
+                auth=HTTPBasicAuth(self.api_key, self.api_secret), 
+                verify=self.verify_ssl, 
+                timeout=self.timeout
+            )
+            
+            if response.status_code == 404:
+                raise RuntimeError(
+                    "Could not find /api/core/backup/download/this endpoint. "
+                    "Requires OPNsense ≥ 23.7.8 or os-api-backup plugin"
+                )
+            
+            response.raise_for_status()
+            
+            # Check if response is JSON (error response)
+            if response.headers.get("content-type", "").startswith("application/json"):
+                raise RuntimeError(f"API returned error: {response.text}")
+            
+            try:
+                return ET.fromstring(response.content)
+            except ET.ParseError as exc:
+                raise RuntimeError(f"config.xml parsing failed: {exc}") from exc
+                
+        except Exception as e:
+            logger.error(f"Config XML download failed: {str(e)}")
+            raise
     
-    async def search_firewall_rules(self, search_phrase: str = "", current: int = 1, 
-                                  row_count: int = 100) -> Dict:
-        """Search firewall rules"""
+    def _parse_firewall_rules_from_xml(self, root: Element) -> List[Dict[str, Any]]:
+        """Parse firewall rules from config.xml root element"""
+        def txt(elem: Optional[Element], default="") -> str:
+            return elem.text.strip() if elem is not None and elem.text else default
+        
+        # Build alias index for reference detection
+        alias_names = {txt(a.find("name")) for a in root.findall("./aliases/alias")}
+        
+        rules: List[Dict[str, Any]] = []
+        for node in root.findall("./filter/rule"):
+            src_addr = txt(node.find("source/address"))
+            dst_addr = txt(node.find("destination/address"))
+            
+            # Extract additional fields that might be useful
+            rule_data = {
+                "tracker": txt(node.find("tracker")),
+                "description": txt(node.find("descr")),
+                "interface": txt(node.find("interface")),
+                "action": txt(node.find("type")),
+                "protocol": txt(node.find("protocol")),
+                "src_addr": src_addr,
+                "src_port": txt(node.find("source/port")),
+                "dst_addr": dst_addr,
+                "dst_port": txt(node.find("destination/port")),
+                "src_alias": src_addr if src_addr in alias_names else "",
+                "dst_alias": dst_addr if dst_addr in alias_names else "",
+                "enabled": txt(node.find("disabled")) != "yes",
+                "direction": txt(node.find("direction"), "in"),
+                "ipprotocol": txt(node.find("ipprotocol"), "inet"),
+                "statetype": txt(node.find("statetype")),
+                "created": txt(node.find("created")),
+                "updated": txt(node.find("updated"))
+            }
+            
+            # Add gateway information if present
+            gateway = txt(node.find("gateway"))
+            if gateway:
+                rule_data["gateway"] = gateway
+            
+            # Add log option if present
+            log = txt(node.find("log"))
+            if log:
+                rule_data["log"] = log == "yes"
+            
+            # Add quick option if present
+            quick = txt(node.find("quick"))
+            if quick:
+                rule_data["quick"] = quick == "yes"
+            
+            rules.append(rule_data)
+        
+        return rules
+    
+    def _parse_aliases_from_xml(self, root: Element) -> List[Dict[str, Any]]:
+        """
+        Parse aliases from config.xml root element
+        Enhanced version based on test_alias2.py
+        """
+        def txt(elem: Optional[Element], default="") -> str:
+            return elem.text.strip() if elem is not None and elem.text else default
+        
+        aliases: List[Dict[str, Any]] = []
+        
+        # Use findall(".//alias") to capture all hierarchy levels of alias
+        for node in root.findall(".//alias"):
+            name = txt(node.find("name"))
+            if not name:  # Skip if no name
+                continue
+                
+            alias_type = txt(node.find("type"))
+            
+            # content/address/url three choices, prioritize content
+            content = txt(node.find("content")) or txt(node.find("address")) or txt(node.find("url"))
+            # Convert newlines to comma-separated
+            content = content.replace("\n", ", ").strip()
+            
+            # Try both description and descr
+            description = txt(node.find("description")) or txt(node.find("descr"))
+            
+            alias_data = {
+                "name": name,
+                "type": alias_type,
+                "content": content,
+                "description": description,
+                "enabled": txt(node.find("disabled")) != "yes"
+            }
+            
+            # Parse content into list if it contains multiple entries
+            if content:
+                if ", " in content:
+                    alias_data["content_list"] = [item.strip() for item in content.split(", ") if item.strip()]
+                elif "\n" in content:
+                    alias_data["content_list"] = [item.strip() for item in content.split("\n") if item.strip()]
+                else:
+                    alias_data["content_list"] = [content.strip()] if content.strip() else []
+                alias_data["content_count"] = len(alias_data["content_list"])
+            else:
+                alias_data["content_list"] = []
+                alias_data["content_count"] = 0
+            
+            aliases.append(alias_data)
+        
+        return aliases
+    
+    def _parse_nat_rules_from_xml(self, root: Element, rule_type: str) -> List[Dict[str, Any]]:
+        """
+        Parse NAT rules from config.xml root element
+        Enhanced version based on test_nat.py
+        
+        Args:
+            root: XML root element
+            rule_type: One of 'forward', 'outbound', 'source', 'one_to_one', 'filter'
+        """
+        def txt(elem: Optional[Element], default: str = "") -> str:
+            return elem.text.strip() if elem is not None and elem.text else default
+
+        rules: List[Dict[str, Any]] = []
+
+        if rule_type == "forward":
+            for node in root.findall("./nat/rule"):
+                nat_ip = txt(node.find("target"))
+                nat_port = txt(node.find("local-port"))
+                rules.append({
+                    "uuid": txt(node.find("uuid")),
+                    "description": txt(node.find("descr")),
+                    "interface": txt(node.find("interface")),
+                    "protocol": txt(node.find("protocol")),
+                    "source": txt(node.find("source/address")),
+                    "src_port": txt(node.find("source/port")),
+                    "destination": txt(node.find("destination/address")),
+                    "dst_port": txt(node.find("destination/port")),
+                    "nat_ip": nat_ip,
+                    "nat_port": nat_port,
+                    "enabled": txt(node.find("disabled")) != "yes",
+                })
+
+        elif rule_type == "outbound":
+            for node in root.findall("./nat/outbound/rule"):
+                rules.append({
+                    "uuid": txt(node.find("uuid")),
+                    "description": txt(node.find("descr")),
+                    "source": txt(node.find("source/network")),
+                    "src_port": txt(node.find("source/port")),
+                    "destination": txt(node.find("destination/network")),
+                    "dst_port": txt(node.find("destination/port")),
+                    "translation": txt(node.find("translation/address")),
+                    "interface": txt(node.find("interface")),
+                    "proto": txt(node.find("protocol")),
+                    "enabled": txt(node.find("disabled")) != "yes",
+                })
+
+        elif rule_type == "source":
+            for node in root.findall("./nat/advancedoutbound/rule") + root.findall("./nat/source/rule"):
+                rules.append({
+                    "uuid": txt(node.find("uuid")),
+                    "description": txt(node.find("descr")),
+                    "source": txt(node.find("source/network")),
+                    "translation": txt(node.find("translation/address")),
+                    "interface": txt(node.find("interface")),
+                    "proto": txt(node.find("protocol")),
+                    "enabled": txt(node.find("disabled")) != "yes",
+                })
+
+        elif rule_type == "one_to_one":
+            for node in root.findall("./nat/onetoone/rule"):
+                rules.append({
+                    "uuid": txt(node.find("uuid")),
+                    "description": txt(node.find("descr")),
+                    "external": txt(node.find("external")),
+                    "internal": txt(node.find("internal")),
+                    "interface": txt(node.find("interface")),
+                    "proto": txt(node.find("protocol")),
+                    "enabled": txt(node.find("disabled")) != "yes",
+                })
+
+        elif rule_type == "filter":
+            for node in root.findall("./filter/rule"):
+                rules.append({
+                    "uuid": txt(node.find("uuid")),
+                    "description": txt(node.find("descr")),
+                    "interface": txt(node.find("interface")),
+                    "proto": txt(node.find("protocol")),
+                    "source": txt(node.find("source/network")),
+                    "destination": txt(node.find("destination/network")),
+                    "action": txt(node.find("type")),
+                    "enabled": txt(node.find("disabled")) != "yes",
+                })
+
+        return rules
+    
+    def _parse_interfaces_from_xml(self, root: Element) -> List[Dict[str, Any]]:
+        """Parse interfaces from config.xml root element"""
+        def txt(elem: Optional[Element], default="") -> str:
+            return elem.text.strip() if elem is not None and elem.text else default
+        
+        interfaces: List[Dict[str, Any]] = []
+        
+        # Parse physical interfaces
+        for node in root.findall("./interfaces/*"):
+            if_name = node.tag
+            interface_data = {
+                "name": if_name,
+                "type": "physical",
+                "if": txt(node.find("if")),
+                "descr": txt(node.find("descr")),
+                "enable": txt(node.find("enable")) == "1",
+                "ipaddr": txt(node.find("ipaddr")),
+                "subnet": txt(node.find("subnet")),
+                "gateway": txt(node.find("gateway")),
+                "mtu": txt(node.find("mtu")),
+                "media": txt(node.find("media")),
+                "mediaopt": txt(node.find("mediaopt"))
+            }
+            interfaces.append(interface_data)
+        
+        return interfaces
+    
+    async def get_config_xml_summary(self) -> Dict[str, Any]:
+        """Get comprehensive summary from config.xml"""
+        try:
+            root = await self.download_config_xml()
+            
+            # Parse different sections
+            fw_rules = self._parse_firewall_rules_from_xml(root)
+            aliases = self._parse_aliases_from_xml(root)
+            interfaces = self._parse_interfaces_from_xml(root)
+            
+            # Parse NAT rules for summary
+            nat_forward = self._parse_nat_rules_from_xml(root, "forward")
+            nat_outbound = self._parse_nat_rules_from_xml(root, "outbound")
+            nat_source = self._parse_nat_rules_from_xml(root, "source")
+            nat_one_to_one = self._parse_nat_rules_from_xml(root, "one_to_one")
+            
+            # Extract system information
+            def txt(elem: Optional[Element], default="") -> str:
+                return elem.text.strip() if elem is not None and elem.text else default
+            
+            system_info = {}
+            system_node = root.find("./system")
+            if system_node is not None:
+                system_info = {
+                    "hostname": txt(system_node.find("hostname")),
+                    "domain": txt(system_node.find("domain")),
+                    "timezone": txt(system_node.find("timezone")),
+                    "language": txt(system_node.find("language")),
+                    "version": txt(system_node.find("version"))
+                }
+            
+            summary = {
+                "timestamp": datetime.now().isoformat(),
+                "source": "config.xml",
+                "system_info": system_info,
+                "statistics": {
+                    "firewall_rules": len(fw_rules),
+                    "aliases": len(aliases),
+                    "interfaces": len(interfaces),
+                    "nat_forward_rules": len(nat_forward),
+                    "nat_outbound_rules": len(nat_outbound),
+                    "nat_source_rules": len(nat_source),
+                    "nat_one_to_one_rules": len(nat_one_to_one),
+                    "enabled_rules": len([r for r in fw_rules if r["enabled"]]),
+                    "disabled_rules": len([r for r in fw_rules if not r["enabled"]]),
+                    "enabled_aliases": len([a for a in aliases if a["enabled"]]),
+                    "disabled_aliases": len([a for a in aliases if not a["enabled"]])
+                },
+                "firewall_rules": fw_rules,
+                "aliases": aliases,
+                "interfaces": interfaces,
+                "nat_rules": {
+                    "forward": nat_forward,
+                    "outbound": nat_outbound,
+                    "source": nat_source,
+                    "one_to_one": nat_one_to_one
+                }
+            }
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Config XML summary failed: {str(e)}")
+            raise
+    
+    async def get_aliases_from_config(self, 
+                                    alias_type: str = None,
+                                    enabled_only: bool = None,
+                                    name_filter: str = None) -> List[Dict[str, Any]]:
+        """Get aliases from config.xml with filtering options"""
+        try:
+            root = await self.download_config_xml()
+            aliases = self._parse_aliases_from_xml(root)
+            
+            # Apply filters
+            if alias_type:
+                aliases = [a for a in aliases if a["type"].lower() == alias_type.lower()]
+            
+            if enabled_only is not None:
+                aliases = [a for a in aliases if a["enabled"] == enabled_only]
+            
+            if name_filter:
+                aliases = [a for a in aliases if name_filter.lower() in a["name"].lower()]
+            
+            return aliases
+            
+        except Exception as e:
+            logger.error(f"Getting aliases from config failed: {str(e)}")
+            raise
+    
+    async def get_firewall_rules_from_config(self, 
+                                           interface_filter: str = None,
+                                           action_filter: str = None,
+                                           enabled_only: bool = None,
+                                           with_aliases_only: bool = False) -> List[Dict[str, Any]]:
+        """Get firewall rules from config.xml with filtering options"""
+        try:
+            root = await self.download_config_xml()
+            rules = self._parse_firewall_rules_from_xml(root)
+            
+            # Apply filters
+            if interface_filter:
+                rules = [r for r in rules if r["interface"].lower() == interface_filter.lower()]
+            
+            if action_filter:
+                rules = [r for r in rules if r["action"].lower() == action_filter.lower()]
+            
+            if enabled_only is not None:
+                rules = [r for r in rules if r["enabled"] == enabled_only]
+            
+            if with_aliases_only:
+                rules = [r for r in rules if r["src_alias"] or r["dst_alias"]]
+            
+            return rules
+            
+        except Exception as e:
+            logger.error(f"Getting firewall rules from config failed: {str(e)}")
+            raise
+    
+    async def get_nat_rules_from_config(self, 
+                                      rule_type: str = "forward",
+                                      enabled_only: bool = None,
+                                      search_phrase: str = None) -> List[Dict[str, Any]]:
+        """Get NAT rules from config.xml with filtering options"""
+        valid_types = ["forward", "outbound", "source", "one_to_one", "filter"]
+        if rule_type not in valid_types:
+            raise ValueError(f"Invalid rule_type. Must be one of: {valid_types}")
+        
+        try:
+            root = await self.download_config_xml()
+            rules = self._parse_nat_rules_from_xml(root, rule_type)
+            
+            # Apply filters
+            if enabled_only is not None:
+                rules = [r for r in rules if r["enabled"] == enabled_only]
+            
+            if search_phrase:
+                rules = [r for r in rules if search_phrase.lower() in r.get("description", "").lower()]
+            
+            return rules
+            
+        except Exception as e:
+            logger.error(f"Getting NAT rules from config failed: {str(e)}")
+            raise
+    
+    # === DHCP Management (Read-only) ===
+    
+    async def search_dhcp_leases(self, search_phrase: str = "", current: int = 1, 
+                                row_count: int = 100) -> Dict:
+        """Search DHCP leases"""
         params = {
             "current": current,
             "rowCount": row_count,
             "searchPhrase": search_phrase
         }
-        return await self._request("GET", "/api/firewall/filter/searchRule", params=params)
+        return await self._request("GET", "/api/dhcpv4/leases/searchlease", params=params)
     
-    async def get_firewall_rule(self, uuid: str) -> Dict:
-        """Get specific firewall rule"""
-        return await self._request("GET", f"/api/firewall/filter/getRule/{uuid}")
+    async def get_dhcp_service_status(self) -> Dict:
+        """Get DHCP service status"""
+        return await self._request("GET", "/api/dhcpv4/service/status")
     
-    async def add_firewall_rule(self, rule_data: Dict) -> Dict:
-        """Add firewall rule"""
-        data = {"rule": rule_data}
-        return await self._request("POST", "/api/firewall/filter/addRule", data=data)
+    async def get_dhcp_settings(self) -> Dict:
+        """Get global DHCP settings"""
+        return await self._request("GET", "/api/dhcpv4/settings/get")
     
-    async def update_firewall_rule(self, uuid: str, rule_data: Dict) -> Dict:
-        """Update firewall rule"""
-        data = {"rule": rule_data}
-        return await self._request("POST", f"/api/firewall/filter/setRule/{uuid}", data=data)
+    async def get_dhcp_interface_settings(self, interface: str) -> Dict:
+        """Get DHCP settings for specific interface"""
+        return await self._request("GET", f"/api/dhcpv4/settings/getdhcp/{interface}")
     
-    async def delete_firewall_rule(self, uuid: str) -> Dict:
-        """Delete firewall rule"""
-        return await self._request("POST", f"/api/firewall/filter/delRule/{uuid}")
-    
-    async def toggle_firewall_rule(self, uuid: str, enabled: bool) -> Dict:
-        """Enable/disable firewall rule"""
-        enabled_value = "1" if enabled else "0"
-        return await self._request("POST", f"/api/firewall/filter/toggleRule/{uuid}/{enabled_value}")
-    
-    async def get_all_firewall_rules(self) -> List[Dict]:
-        """Get all firewall rules with pagination"""
-        all_rules = []
+    async def get_all_dhcp_leases(self) -> List[Dict]:
+        """Get all DHCP leases with pagination"""
+        all_leases = []
         current_page = 1
         row_count = 100
         
         while True:
-            result = await self.search_firewall_rules(current=current_page, row_count=row_count)
+            result = await self.search_dhcp_leases(current=current_page, row_count=row_count)
             
             if 'rows' in result and result['rows']:
-                all_rules.extend(result['rows'])
+                all_leases.extend(result['rows'])
                 
+                # Check if we have total count
+                total_count = result.get('total', 0)
+                current_count = len(all_leases)
+                
+                # If we have total count, use it to determine if we need more pages
+                if total_count > 0 and current_count >= total_count:
+                    break
+                
+                # If no total count, check if we got less than requested (end of data)
                 if len(result['rows']) < row_count:
                     break
+                    
                 current_page += 1
             else:
                 break
         
-        return all_rules
+        return all_leases
     
-    # === NAT Rules Management ===
-    
-    async def search_nat_rules(self, nat_type: str = "source_nat", search_phrase: str = "",
-                              current: int = 1, row_count: int = 100) -> Dict:
-        """Search NAT rules"""
-        params = {
-            "current": current,
-            "rowCount": row_count,
-            "searchPhrase": search_phrase
-        }
-        return await self._request("GET", f"/api/firewall/{nat_type}/searchRule", params=params)
-    
-    async def get_nat_rule(self, nat_type: str, uuid: str) -> Dict:
-        """Get specific NAT rule"""
-        return await self._request("GET", f"/api/firewall/{nat_type}/getRule/{uuid}")
-    
-    async def add_nat_rule(self, nat_type: str, rule_data: Dict) -> Dict:
-        """Add NAT rule"""
-        data = {"rule": rule_data}
-        return await self._request("POST", f"/api/firewall/{nat_type}/addRule", data=data)
-    
-    # === Alias Management ===
-    
-    async def search_aliases(self, search_phrase: str = "", current: int = 1, 
-                            row_count: int = 100) -> Dict:
-        """Search aliases"""
-        params = {
-            "current": current,
-            "rowCount": row_count,
-            "searchPhrase": search_phrase
-        }
-        return await self._request("GET", "/api/firewall/alias/searchItem", params=params)
-    
-    async def get_alias(self, uuid: str) -> Dict:
-        """Get specific alias"""
-        return await self._request("GET", f"/api/firewall/alias/getItem/{uuid}")
-    
-    async def add_alias(self, alias_data: Dict) -> Dict:
-        """Add alias"""
-        data = {"alias": alias_data}
-        return await self._request("POST", "/api/firewall/alias/addItem", data=data)
-    
-    async def update_alias(self, uuid: str, alias_data: Dict) -> Dict:
-        """Update alias"""
-        data = {"alias": alias_data}
-        return await self._request("POST", f"/api/firewall/alias/setItem/{uuid}", data=data)
-    
-    async def delete_alias(self, uuid: str) -> Dict:
-        """Delete alias"""
-        return await self._request("POST", f"/api/firewall/alias/delItem/{uuid}")
-    
-    async def get_all_aliases(self) -> List[Dict]:
-        """Get all aliases with pagination"""
-        all_aliases = []
-        current_page = 1
-        row_count = 100
-        
-        while True:
-            result = await self.search_aliases(current=current_page, row_count=row_count)
-            
-            if 'rows' in result and result['rows']:
-                all_aliases.extend(result['rows'])
-                
-                if len(result['rows']) < row_count:
-                    break
-                current_page += 1
-            else:
-                break
-        
-        return all_aliases
-    
-    # === Alias Utility Functions ===
-    
-    async def list_alias_content(self, alias_name: str) -> Dict:
-        """List alias content"""
-        return await self._request("GET", f"/api/firewall/alias_util/list/{alias_name}")
-    
-    async def add_to_alias(self, alias_name: str, address: str) -> Dict:
-        """Add address to alias"""
-        data = {"address": address}
-        return await self._request("POST", f"/api/firewall/alias_util/add/{alias_name}", data=data)
-    
-    async def remove_from_alias(self, alias_name: str, address: str) -> Dict:
-        """Remove address from alias"""
-        data = {"address": address}
-        return await self._request("POST", f"/api/firewall/alias_util/delete/{alias_name}", data=data)
-    
-    # === Interface Management ===
+    # === Interface Management (Read-only) ===
     
     async def get_interface_overview(self) -> Dict:
         """Get interface overview - try multiple endpoints"""
@@ -395,26 +712,71 @@ class OPNsenseClient:
         
         raise Exception("No working routes endpoint found")
     
-    # === Configuration Management ===
+    # === NAT Rules Management (Read-only) ===
     
-    async def create_savepoint(self) -> Dict:
-        """Create configuration savepoint"""
-        return await self._request("POST", "/api/firewall/filter/savepoint", data={})
+    async def search_nat_rules(self, nat_type: str = "source_nat", search_phrase: str = "",
+                              current: int = 1, row_count: int = 100) -> Dict:
+        """Search NAT rules"""
+        params = {
+            "current": current,
+            "rowCount": row_count,
+            "searchPhrase": search_phrase
+        }
+        return await self._request("GET", f"/api/firewall/{nat_type}/searchRule", params=params)
     
-    async def apply_changes(self, rollback_revision: str = None) -> Dict:
-        """Apply changes"""
-        endpoint = "/api/firewall/filter/apply"
-        if rollback_revision:
-            endpoint += f"/{rollback_revision}"
-        return await self._request("POST", endpoint, data={})
+    async def get_nat_rule(self, nat_type: str, uuid: str) -> Dict:
+        """Get specific NAT rule"""
+        return await self._request("GET", f"/api/firewall/{nat_type}/getRule/{uuid}")
     
-    async def cancel_rollback(self, rollback_revision: str) -> Dict:
-        """Cancel automatic rollback"""
-        return await self._request("POST", f"/api/firewall/filter/cancelRollback/{rollback_revision}", data={})
+    # === Alias Management (Read-only) ===
     
-    async def reconfigure_aliases(self) -> Dict:
-        """Reconfigure aliases"""
-        return await self._request("POST", "/api/firewall/alias/reconfigure", data={})
+    async def search_aliases(self, search_phrase: str = "", current: int = 1, 
+                            row_count: int = 100) -> Dict:
+        """Search aliases"""
+        params = {
+            "current": current,
+            "rowCount": row_count,
+            "searchPhrase": search_phrase
+        }
+        return await self._request("GET", "/api/firewall/alias/searchItem", params=params)
+    
+    async def get_alias(self, uuid: str) -> Dict:
+        """Get specific alias"""
+        return await self._request("GET", f"/api/firewall/alias/getItem/{uuid}")
+    
+    async def get_all_aliases(self) -> List[Dict]:
+        """Get all aliases with pagination"""
+        all_aliases = []
+        current_page = 1
+        row_count = 100
+        
+        while True:
+            result = await self.search_aliases(current=current_page, row_count=row_count)
+            
+            if 'rows' in result and result['rows']:
+                all_aliases.extend(result['rows'])
+                
+                # Check if we have total count
+                total_count = result.get('total', 0)
+                current_count = len(all_aliases)
+                
+                # If we have total count, use it to determine if we need more pages
+                if total_count > 0 and current_count >= total_count:
+                    break
+                
+                # If no total count, check if we got less than requested (end of data)
+                if len(result['rows']) < row_count:
+                    break
+                    
+                current_page += 1
+            else:
+                break
+        
+        return all_aliases
+    
+    async def list_alias_content(self, alias_name: str) -> Dict:
+        """List alias content"""
+        return await self._request("GET", f"/api/firewall/alias_util/list/{alias_name}")
 
 # Initialize the MCP server
 server = Server("opnsense-mcp")
@@ -424,364 +786,165 @@ async def handle_list_tools() -> List[Tool]:
     """List available tools"""
     return [
         Tool(
-            name="get_firewall_rules",
-            description="Get all firewall rules or search with filters",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "search_phrase": {
-                        "type": "string",
-                        "description": "Search phrase to filter rules"
-                    },
-                    "interface": {
-                        "type": "string",
-                        "description": "Filter by interface (e.g., WAN, LAN)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of rules to return",
-                        "default": 100
-                    }
-                }
-            }
-        ),
-        Tool(
-            name="get_wan_public_rules",
-            description="Get all WAN interface public-facing firewall rules",
+            name="get_config_xml_summary",
+            description="Download and parse OPNsense config.xml to get comprehensive configuration summary",
             inputSchema={
                 "type": "object",
                 "properties": {}
             }
         ),
         Tool(
-            name="create_firewall_rule",
-            description="Create a new firewall rule",
+            name="get_firewall_rules_from_config",
+            description="Get firewall rules directly from config.xml with detailed information including tracker IDs and alias references",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "description": {
+                    "interface_filter": {
                         "type": "string",
-                        "description": "Rule description"
+                        "description": "Filter by interface (e.g., WAN, LAN, OPT1)"
                     },
-                    "interface": {
+                    "action_filter": {
                         "type": "string",
-                        "description": "Interface (e.g., WAN, LAN)",
-                        "default": "LAN"
+                        "description": "Filter by action (pass, block, reject)"
                     },
-                    "source_net": {
-                        "type": "string",
-                        "description": "Source network",
-                        "default": "any"
-                    },
-                    "destination_net": {
-                        "type": "string",
-                        "description": "Destination network",
-                        "default": "any"
-                    },
-                    "destination_port": {
-                        "type": "string",
-                        "description": "Destination port"
-                    },
-                    "protocol": {
-                        "type": "string",
-                        "description": "Protocol (TCP, UDP, any)",
-                        "default": "any"
-                    },
-                    "action": {
-                        "type": "string",
-                        "description": "Action (pass, block)",
-                        "default": "pass"
-                    },
-                    "enabled": {
+                    "enabled_only": {
                         "type": "boolean",
-                        "description": "Enable rule",
-                        "default": True
+                        "description": "Show only enabled rules (true) or only disabled rules (false), or all rules (null)"
                     },
-                    "apply_changes": {
+                    "with_aliases_only": {
                         "type": "boolean",
-                        "description": "Apply changes after creation",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
+                        "description": "Show only rules that use aliases",
                         "default": False
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Output format",
+                        "enum": ["detailed", "summary", "table"],
+                        "default": "detailed"
                     }
-                },
-                "required": ["description"]
+                }
             }
         ),
         Tool(
-            name="update_firewall_rule",
-            description="Update an existing firewall rule",
+            name="get_aliases_from_config",
+            description="Get aliases directly from config.xml with enhanced parsing (based on test_alias2.py logic)",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "uuid": {
+                    "alias_type": {
                         "type": "string",
-                        "description": "Rule UUID"
+                        "description": "Filter by alias type (e.g., host, network, port)"
                     },
-                    "description": {
-                        "type": "string",
-                        "description": "Rule description"
-                    },
-                    "interface": {
-                        "type": "string",
-                        "description": "Interface"
-                    },
-                    "source_net": {
-                        "type": "string",
-                        "description": "Source network"
-                    },
-                    "destination_net": {
-                        "type": "string",
-                        "description": "Destination network"
-                    },
-                    "destination_port": {
-                        "type": "string",
-                        "description": "Destination port"
-                    },
-                    "protocol": {
-                        "type": "string",
-                        "description": "Protocol"
-                    },
-                    "action": {
-                        "type": "string",
-                        "description": "Action"
-                    },
-                    "enabled": {
+                    "enabled_only": {
                         "type": "boolean",
-                        "description": "Enable rule"
+                        "description": "Show only enabled aliases (true) or only disabled aliases (false), or all aliases (null)"
                     },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after update",
-                        "default": True
+                    "name_filter": {
+                        "type": "string",
+                        "description": "Filter by name (case-insensitive partial match)"
                     },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
+                    "format": {
+                        "type": "string",
+                        "description": "Output format",
+                        "enum": ["detailed", "summary", "table"],
+                        "default": "detailed"
                     }
-                },
-                "required": ["uuid"]
+                }
             }
         ),
         Tool(
-            name="delete_firewall_rule",
-            description="Delete a firewall rule",
+            name="get_nat_rules_from_config",
+            description="Get NAT rules directly from config.xml with detailed information (forward, outbound, source, one_to_one, filter)",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "uuid": {
+                    "rule_type": {
                         "type": "string",
-                        "description": "Rule UUID"
+                        "description": "NAT rule type",
+                        "enum": ["forward", "outbound", "source", "one_to_one", "filter"],
+                        "default": "forward"
                     },
-                    "apply_changes": {
+                    "enabled_only": {
                         "type": "boolean",
-                        "description": "Apply changes after deletion",
-                        "default": True
+                        "description": "Show only enabled rules (true) or only disabled rules (false), or all rules (null)"
                     },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
+                    "search_phrase": {
+                        "type": "string",
+                        "description": "Search phrase to filter rules by description"
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Output format",
+                        "enum": ["detailed", "summary", "table"],
+                        "default": "detailed"
                     }
-                },
-                "required": ["uuid"]
+                }
             }
         ),
         Tool(
-            name="toggle_firewall_rule",
-            description="Enable or disable a firewall rule",
+            name="download_config_xml",
+            description="Download the complete OPNsense config.xml file (requires OPNsense ≥ 23.7.8 or os-api-backup plugin)",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "uuid": {
-                        "type": "string",
-                        "description": "Rule UUID"
-                    },
-                    "enabled": {
+                    "parse": {
                         "type": "boolean",
-                        "description": "Enable or disable the rule"
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after toggle",
+                        "description": "Parse the XML and return structured data",
                         "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
                     }
-                },
-                "required": ["uuid", "enabled"]
+                }
             }
         ),
+        # === DHCP Tools ===
         Tool(
-            name="get_aliases",
-            description="Get all aliases or search with filters",
+            name="get_dhcp_leases",
+            description="Get all DHCP leases or search with filters",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "search_phrase": {
                         "type": "string",
-                        "description": "Search phrase to filter aliases"
+                        "description": "Search phrase to filter leases by IP, MAC, or hostname"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of aliases to return",
+                        "description": "Maximum number of leases to return",
                         "default": 100
                     }
                 }
             }
         ),
         Tool(
-            name="create_alias",
-            description="Create a new alias",
+            name="get_dhcp_service_status",
+            description="Get DHCP service status and information",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Alias name"
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Alias type (host, network, port)",
-                        "default": "host"
-                    },
-                    "content": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Alias content (IPs, networks, ports)"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Alias description"
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Enable alias",
-                        "default": True
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after creation",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
-                    }
-                },
-                "required": ["name", "content"]
+                "properties": {}
             }
         ),
         Tool(
-            name="update_alias",
-            description="Update an existing alias",
+            name="get_dhcp_settings",
+            description="Get global DHCP configuration settings",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "uuid": {
-                        "type": "string",
-                        "description": "Alias UUID"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Alias name"
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Alias type"
-                    },
-                    "content": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Alias content"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Alias description"
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Enable alias"
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after update",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
-                    }
-                },
-                "required": ["uuid"]
+                "properties": {}
             }
         ),
         Tool(
-            name="delete_alias",
-            description="Delete an alias",
+            name="get_dhcp_interface_settings",
+            description="Get DHCP settings for a specific interface",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "uuid": {
+                    "interface": {
                         "type": "string",
-                        "description": "Alias UUID"
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after deletion",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
+                        "description": "Interface name (e.g., lan, opt1)"
                     }
                 },
-                "required": ["uuid"]
+                "required": ["interface"]
             }
         ),
-        Tool(
-            name="manage_alias_content",
-            description="Add or remove items from an alias",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "alias_name": {
-                        "type": "string",
-                        "description": "Alias name"
-                    },
-                    "action": {
-                        "type": "string",
-                        "description": "Action to perform (add, remove, list)",
-                        "enum": ["add", "remove", "list"]
-                    },
-                    "address": {
-                        "type": "string",
-                        "description": "Address to add or remove (required for add/remove)"
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after modification",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the operation (required for safety)",
-                        "default": False
-                    }
-                },
-                "required": ["alias_name", "action"]
-            }
-        ),
+        # === Interface Tools ===
         Tool(
             name="get_interfaces",
             description="Get all network interfaces information",
@@ -885,10 +1048,16 @@ async def handle_list_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "Include routing table",
                         "default": True
+                    },
+                    "include_dhcp": {
+                        "type": "boolean",
+                        "description": "Include DHCP leases and service status",
+                        "default": False
                     }
                 }
             }
         ),
+        # === NAT Rules Tools ===
         Tool(
             name="get_nat_rules",
             description="Get NAT rules (Source NAT or One-to-One NAT)",
@@ -913,497 +1082,391 @@ async def handle_list_tools() -> List[Tool]:
                 }
             }
         ),
+        # === Alias Tools ===
         Tool(
-            name="backup_configuration",
-            description="Backup all OPNsense configuration to JSON",
+            name="get_aliases",
+            description="Get all aliases or search with filters",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "include_rules": {
-                        "type": "boolean",
-                        "description": "Include firewall rules",
-                        "default": True
+                    "search_phrase": {
+                        "type": "string",
+                        "description": "Search phrase to filter aliases"
                     },
-                    "include_aliases": {
-                        "type": "boolean",
-                        "description": "Include aliases",
-                        "default": True
-                    },
-                    "include_nat": {
-                        "type": "boolean",
-                        "description": "Include NAT rules",
-                        "default": True
-                    },
-                    "include_interfaces": {
-                        "type": "boolean",
-                        "description": "Include interface information",
-                        "default": True
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of aliases to return",
+                        "default": 100
                     }
                 }
             }
         ),
         Tool(
-            name="batch_create_rules",
-            description="Batch create multiple firewall rules",
+            name="get_alias_content",
+            description="Get specific alias content",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "rules": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "description": {"type": "string"},
-                                "interface": {"type": "string", "default": "LAN"},
-                                "source_net": {"type": "string", "default": "any"},
-                                "destination_net": {"type": "string", "default": "any"},
-                                "destination_port": {"type": "string"},
-                                "protocol": {"type": "string", "default": "any"},
-                                "action": {"type": "string", "default": "pass"},
-                                "enabled": {"type": "boolean", "default": True}
-                            },
-                            "required": ["description"]
-                        },
-                        "description": "Array of firewall rules to create"
-                    },
-                    "apply_changes": {
-                        "type": "boolean",
-                        "description": "Apply changes after creation",
-                        "default": True
-                    },
-                    "use_savepoint": {
-                        "type": "boolean",
-                        "description": "Use savepoint for rollback protection",
-                        "default": True
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Confirmation to proceed with the batch operation (required for safety)",
-                        "default": False
+                    "alias_name": {
+                        "type": "string",
+                        "description": "Alias name to get content for"
                     }
                 },
-                "required": ["rules"]
+                "required": ["alias_name"]
             }
         )
     ]
 
-def requires_confirmation(tool_name: str, arguments: Dict[str, Any]) -> bool:
-    """Check if tool requires user confirmation before execution"""
-    # Tools that modify OPNsense configuration
-    modification_tools = {
-        "create_firewall_rule",
-        "update_firewall_rule", 
-        "delete_firewall_rule",
-        "toggle_firewall_rule",
-        "create_alias",
-        "update_alias",
-        "delete_alias",
-        "batch_create_rules"
-    }
+def _format_table_output(rows: List[Dict[str, Any]], title: str = "") -> str:
+    """Format data as table similar to test_alias2.py and test_nat.py"""
+    if not rows:
+        return f"({title}: No data)" if title else "(No data)"
     
-    # Special case: manage_alias_content only requires confirmation for add/remove, not list
-    if tool_name == "manage_alias_content":
-        action = arguments.get("action", "")
-        return action in ["add", "remove"]
-    
-    return tool_name in modification_tools
-
-def generate_confirmation_message(tool_name: str, arguments: Dict[str, Any]) -> str:
-    """Generate confirmation message for the tool"""
-    
-    if tool_name == "create_firewall_rule":
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to CREATE a new firewall rule:
-- Description: {arguments.get('description', 'N/A')}
-- Interface: {arguments.get('interface', 'LAN')}
-- Source: {arguments.get('source_net', 'any')}
-- Destination: {arguments.get('destination_net', 'any')}
-- Port: {arguments.get('destination_port', 'any')}
-- Protocol: {arguments.get('protocol', 'any')}
-- Action: {arguments.get('action', 'pass')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense firewall configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "update_firewall_rule":
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to UPDATE firewall rule:
-- Rule UUID: {arguments.get('uuid', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense firewall configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "delete_firewall_rule":
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to DELETE firewall rule:
-- Rule UUID: {arguments.get('uuid', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will permanently remove the rule from your OPNsense firewall.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "toggle_firewall_rule":
-        action = "ENABLE" if arguments.get('enabled', False) else "DISABLE"
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to {action} firewall rule:
-- Rule UUID: {arguments.get('uuid', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense firewall configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "create_alias":
-        content_preview = arguments.get('content', [])[:5]  # Show first 5 items
-        content_str = ', '.join(content_preview)
-        if len(arguments.get('content', [])) > 5:
-            content_str += f" ... (and {len(arguments.get('content', [])) - 5} more)"
-            
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to CREATE a new alias:
-- Name: {arguments.get('name', 'N/A')}
-- Type: {arguments.get('type', 'host')}
-- Content: {content_str}
-- Description: {arguments.get('description', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense alias configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "update_alias":
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to UPDATE alias:
-- Alias UUID: {arguments.get('uuid', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense alias configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "delete_alias":
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to DELETE alias:
-- Alias UUID: {arguments.get('uuid', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will permanently remove the alias from your OPNsense configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "manage_alias_content":
-        action = arguments.get('action', 'N/A').upper()
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to {action} alias content:
-- Alias name: {arguments.get('alias_name', 'N/A')}
-- Action: {action}
-- Address: {arguments.get('address', 'N/A')}
-- Apply changes: {arguments.get('apply_changes', True)}
-
-This will modify your OPNsense alias configuration.
-Please confirm if you want to proceed with this operation."""
-
-    elif tool_name == "batch_create_rules":
-        rules_count = len(arguments.get('rules', []))
-        rules_preview = []
-        for i, rule in enumerate(arguments.get('rules', [])[:3]):
-            rules_preview.append(f"  {i+1}. {rule.get('description', 'N/A')}")
-        
-        preview_text = '\n'.join(rules_preview)
-        if rules_count > 3:
-            preview_text += f"\n  ... (and {rules_count - 3} more rules)"
-            
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
-
-You are about to BATCH CREATE {rules_count} firewall rules:
-{preview_text}
-
-Settings:
-- Apply changes: {arguments.get('apply_changes', True)}
-- Use savepoint: {arguments.get('use_savepoint', True)}
-
-This will modify your OPNsense firewall configuration significantly.
-Please confirm if you want to proceed with this batch operation."""
-
+    # Detect data type and choose appropriate columns
+    if rows and "name" in rows[0] and "type" in rows[0] and "content" in rows[0]:
+        # Alias table format
+        cols = ["name", "type", "content", "description"]
+        cols = [c for c in cols if c in rows[0]]
+    elif rows and "nat_ip" in rows[0]:
+        # NAT forward rules table format
+        nat_cols = ["uuid", "description", "interface", "protocol", "source", "dst_port", "nat_ip", "nat_port", "enabled"]
+        cols = [c for c in nat_cols if c in rows[0]]
+    elif rows and "translation" in rows[0]:
+        # NAT outbound/source rules table format
+        nat_cols = ["uuid", "description", "interface", "source", "destination", "translation", "enabled"]
+        cols = [c for c in nat_cols if c in rows[0]]
+    elif rows and "external" in rows[0] and "internal" in rows[0]:
+        # NAT one-to-one rules table format
+        nat_cols = ["uuid", "description", "interface", "external", "internal", "enabled"]
+        cols = [c for c in nat_cols if c in rows[0]]
     else:
-        return f"""⚠️  CONFIRMATION REQUIRED ⚠️
+        # Common columns for firewall rules or generic format
+        common_cols = [
+            "tracker", "description", "interface", "action", "protocol", 
+            "src_addr", "src_port", "dst_addr", "dst_port", "src_alias", "dst_alias", "enabled"
+        ]
+        
+        # Use only columns that exist in the data
+        available_cols = list(rows[0].keys())
+        cols = [c for c in common_cols if c in available_cols]
+        
+        # Add any remaining columns
+        remaining_cols = [c for c in available_cols if c not in cols]
+        cols.extend(remaining_cols[:5])  # Limit total columns for readability
 
-You are about to perform operation: {tool_name}
-This will modify your OPNsense configuration.
-Please confirm if you want to proceed with this operation."""
+    # Calculate dynamic column widths
+    width = {}
+    for c in cols:
+        col_values = [str(r.get(c, '')) for r in rows]
+        width[c] = max(len(c), max(len(v) for v in col_values) if col_values else 0)
+
+    def format_row(r: Dict[str, Any]) -> str:
+        return "  ".join(f"{str(r.get(c, '')):<{width[c]}}" for c in cols)
+
+    # Build table
+    header = format_row({c: c.upper() for c in cols})
+    separator = "-+-".join("-" * width[c] for c in cols)
+    data_rows = [format_row(r) for r in rows]
+    
+    lines = [header, separator] + data_rows
+    
+    if title:
+        lines.insert(0, f"\n=== {title} ===")
+        lines.append(f"\nTotal: {len(rows)} records")
+    
+    return "\n".join(lines)
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     """Handle tool calls"""
     
-    # Check if tool requires confirmation
-    if requires_confirmation(name, arguments):
-        # Check if user has provided confirmation
-        user_confirmed = arguments.get("confirm", False)
-        
-        if not user_confirmed:
-            confirmation_msg = generate_confirmation_message(name, arguments)
-            return [TextContent(
-                type="text",
-                text=f"{confirmation_msg}\n\n" +
-                     "To proceed, please call this tool again with 'confirm': true in the parameters.\n\n" +
-                     "Example: Use the same parameters but add '\"confirm\": true'"
-            )]
-    
     try:
         async with OPNsenseClient() as client:
             
-            if name == "get_firewall_rules":
-                search_phrase = arguments.get("search_phrase", "")
-                interface_filter = arguments.get("interface", "")
-                limit = arguments.get("limit", 100)
+            if name == "get_config_xml_summary":
+                result = await client.get_config_xml_summary()
                 
-                rules = await client.get_all_firewall_rules()
+                return [TextContent(
+                    type="text",
+                    text=f"OPNsense Configuration Summary (Source: config.xml):\n\n" + 
+                         json.dumps(result, indent=2, ensure_ascii=False)
+                )]
+            
+            elif name == "get_firewall_rules_from_config":
+                interface_filter = arguments.get("interface_filter")
+                action_filter = arguments.get("action_filter")
+                enabled_only = arguments.get("enabled_only")
+                with_aliases_only = arguments.get("with_aliases_only", False)
+                format_type = arguments.get("format", "detailed")
                 
-                # Apply filters
+                rules = await client.get_firewall_rules_from_config(
+                    interface_filter=interface_filter,
+                    action_filter=action_filter,
+                    enabled_only=enabled_only,
+                    with_aliases_only=with_aliases_only
+                )
+                
+                filter_info = []
                 if interface_filter:
-                    rules = [r for r in rules if r.get('interface', '').upper() == interface_filter.upper()]
+                    filter_info.append(f"Interface: {interface_filter}")
+                if action_filter:
+                    filter_info.append(f"Action: {action_filter}")
+                if enabled_only is not None:
+                    filter_info.append(f"Status: {'Enabled' if enabled_only else 'Disabled'}")
+                if with_aliases_only:
+                    filter_info.append("Only rules using aliases")
                 
+                filter_str = f" (Filters: {', '.join(filter_info)})" if filter_info else ""
+                
+                if format_type == "table":
+                    response_text = f"Firewall Rules{filter_str}:\n"
+                    response_text += _format_table_output(rules, "Firewall Rules")
+                elif format_type == "summary":
+                    summary = {
+                        "Total": len(rules),
+                        "Enabled": len([r for r in rules if r.get("enabled", True)]),
+                        "Disabled": len([r for r in rules if not r.get("enabled", True)]),
+                        "Using aliases": len([r for r in rules if r.get("src_alias") or r.get("dst_alias")]),
+                        "Filters applied": filter_info if filter_info else ["None"]
+                    }
+                    response_text = f"Firewall Rules Summary{filter_str}:\n\n" + json.dumps(summary, indent=2, ensure_ascii=False)
+                else:  # detailed
+                    result = {
+                        "Source": "config.xml",
+                        "Total count": len(rules),
+                        "Filters applied": filter_info if filter_info else [],
+                        "Rules": rules
+                    }
+                    response_text = f"Firewall Rules Detailed Information{filter_str}:\n\n" + json.dumps(result, indent=2, ensure_ascii=False)
+                
+                return [TextContent(
+                    type="text",
+                    text=response_text
+                )]
+            
+            elif name == "get_aliases_from_config":
+                alias_type = arguments.get("alias_type")
+                enabled_only = arguments.get("enabled_only")
+                name_filter = arguments.get("name_filter")
+                format_type = arguments.get("format", "detailed")
+                
+                aliases = await client.get_aliases_from_config(
+                    alias_type=alias_type,
+                    enabled_only=enabled_only,
+                    name_filter=name_filter
+                )
+                
+                filter_info = []
+                if alias_type:
+                    filter_info.append(f"Type: {alias_type}")
+                if enabled_only is not None:
+                    filter_info.append(f"Status: {'Enabled' if enabled_only else 'Disabled'}")
+                if name_filter:
+                    filter_info.append(f"Name contains: {name_filter}")
+                
+                filter_str = f" (Filters: {', '.join(filter_info)})" if filter_info else ""
+                
+                if format_type == "table":
+                    response_text = f"Aliases List{filter_str}:\n"
+                    response_text += _format_table_output(aliases, "Aliases")
+                elif format_type == "summary":
+                    type_counts = {}
+                    for alias in aliases:
+                        alias_type = alias.get("type", "unknown")
+                        type_counts[alias_type] = type_counts.get(alias_type, 0) + 1
+                    
+                    summary = {
+                        "Total": len(aliases),
+                        "Enabled": len([a for a in aliases if a.get("enabled", True)]),
+                        "Disabled": len([a for a in aliases if not a.get("enabled", True)]),
+                        "Type statistics": type_counts,
+                        "Filters applied": filter_info if filter_info else ["None"]
+                    }
+                    response_text = f"Aliases Summary{filter_str}:\n\n" + json.dumps(summary, indent=2, ensure_ascii=False)
+                else:  # detailed
+                    result = {
+                        "Source": "config.xml",
+                        "Total count": len(aliases),
+                        "Filters applied": filter_info if filter_info else [],
+                        "Aliases": aliases
+                    }
+                    response_text = f"Aliases Detailed Information{filter_str}:\n\n" + json.dumps(result, indent=2, ensure_ascii=False)
+                
+                return [TextContent(
+                    type="text",
+                    text=response_text
+                )]
+            
+            elif name == "get_nat_rules_from_config":
+                rule_type = arguments.get("rule_type", "forward")
+                enabled_only = arguments.get("enabled_only")
+                search_phrase = arguments.get("search_phrase")
+                format_type = arguments.get("format", "detailed")
+                
+                rules = await client.get_nat_rules_from_config(
+                    rule_type=rule_type,
+                    enabled_only=enabled_only,
+                    search_phrase=search_phrase
+                )
+                
+                filter_info = []
+                filter_info.append(f"Type: {rule_type}")
+                if enabled_only is not None:
+                    filter_info.append(f"Status: {'Enabled' if enabled_only else 'Disabled'}")
                 if search_phrase:
-                    rules = [r for r in rules if search_phrase.lower() in r.get('description', '').lower()]
+                    filter_info.append(f"Search: {search_phrase}")
                 
-                # Apply limit
-                if limit and limit > 0:
-                    rules = rules[:limit]
+                filter_str = f" (Filters: {', '.join(filter_info)})"
                 
-                result = {
-                    "total_rules": len(rules),
-                    "rules": rules
-                }
-                
-                return [TextContent(
-                    type="text",
-                    text=f"Retrieved {len(rules)} firewall rules:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
-            
-            elif name == "get_wan_public_rules":
-                all_rules = await client.get_all_firewall_rules()
-                wan_rules = [
-                    rule for rule in all_rules 
-                    if (rule.get('interface', '').upper() == 'WAN' and 
-                        rule.get('action', '') == 'pass' and
-                        rule.get('direction', '') == 'in')
-                ]
-                
-                result = {
-                    "total_wan_rules": len(wan_rules),
-                    "wan_public_rules": wan_rules
-                }
+                if format_type == "table":
+                    response_text = f"NAT Rules{filter_str}:\n"
+                    response_text += _format_table_output(rules, f"NAT Rules ({rule_type})")
+                elif format_type == "summary":
+                    summary = {
+                        "Total": len(rules),
+                        "Rule type": rule_type,
+                        "Enabled": len([r for r in rules if r.get("enabled", True)]),
+                        "Disabled": len([r for r in rules if not r.get("enabled", True)]),
+                        "Filters applied": filter_info
+                    }
+                    response_text = f"NAT Rules Summary{filter_str}:\n\n" + json.dumps(summary, indent=2, ensure_ascii=False)
+                else:  # detailed
+                    result = {
+                        "Source": "config.xml",
+                        "Rule type": rule_type,
+                        "Total count": len(rules),
+                        "Filters applied": filter_info,
+                        "Rules": rules
+                    }
+                    response_text = f"NAT Rules Detailed Information{filter_str}:\n\n" + json.dumps(result, indent=2, ensure_ascii=False)
                 
                 return [TextContent(
                     type="text",
-                    text=f"Found {len(wan_rules)} WAN public-facing rules:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
+                    text=response_text
                 )]
             
-            elif name == "create_firewall_rule":
-                rule_data = {
-                    "description": arguments["description"],
-                    "interface": arguments.get("interface", "LAN"),
-                    "source_net": arguments.get("source_net", "any"),
-                    "destination_net": arguments.get("destination_net", "any"),
-                    "protocol": arguments.get("protocol", "any"),
-                    "action": arguments.get("action", "pass"),
-                    "direction": "in",
-                    "enabled": "1" if arguments.get("enabled", True) else "0"
-                }
+            elif name == "download_config_xml":
+                parse_xml = arguments.get("parse", True)
                 
-                if arguments.get("destination_port"):
-                    rule_data["destination_port"] = arguments["destination_port"]
-                
-                result = await client.add_firewall_rule(rule_data)
-                
-                if arguments.get("apply_changes", True):
-                    await client.apply_changes()
-                    result["changes_applied"] = True
-                
-                return [TextContent(
-                    type="text",
-                    text=f"Firewall rule created successfully:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
+                if parse_xml:
+                    # Download and parse
+                    root = await client.download_config_xml()
+                    
+                    # Extract key information
+                    def txt(elem, default=""):
+                        return elem.text.strip() if elem is not None and elem.text else default
+                    
+                    system_node = root.find("./system")
+                    system_info = {}
+                    if system_node is not None:
+                        system_info = {
+                            "Hostname": txt(system_node.find("hostname")),
+                            "Domain": txt(system_node.find("domain")),
+                            "Timezone": txt(system_node.find("timezone")),
+                            "Language": txt(system_node.find("language")),
+                            "Version": txt(system_node.find("version"))
+                        }
+                    
+                    # Count major sections including NAT rules
+                    counts = {
+                        "Firewall rules": len(root.findall("./filter/rule")),
+                        "Aliases": len(root.findall(".//alias")),  # Use .//alias to capture all hierarchy levels
+                        "Interfaces": len(root.findall("./interfaces/*")),
+                        "NAT Forward rules": len(root.findall("./nat/rule")),
+                        "NAT Outbound rules": len(root.findall("./nat/outbound/rule")),
+                        "NAT Source rules": len(root.findall("./nat/advancedoutbound/rule")) + len(root.findall("./nat/source/rule")),
+                        "NAT One-to-One rules": len(root.findall("./nat/onetoone/rule"))
+                    }
+                    
+                    result = {
+                        "Download time": datetime.now().isoformat(),
+                        "System information": system_info,
+                        "Configuration statistics": counts,
+                        "Status": "config.xml downloaded and parsed successfully"
+                    }
+                    
+                    return [TextContent(
+                        type="text",
+                        text=f"config.xml downloaded successfully:\n\n" + 
+                             json.dumps(result, indent=2, ensure_ascii=False)
+                    )]
+                else:
+                    # Just download without parsing
+                    await client.download_config_xml()  # This will raise exception if fails
+                    return [TextContent(
+                        type="text",
+                        text="config.xml downloaded successfully (not parsed)"
+                    )]
             
-            elif name == "update_firewall_rule":
-                uuid = arguments["uuid"]
-                rule_data = {}
-                
-                # Only include provided fields
-                for field in ["description", "interface", "source_net", "destination_net", 
-                             "destination_port", "protocol", "action"]:
-                    if field in arguments:
-                        rule_data[field] = arguments[field]
-                
-                if "enabled" in arguments:
-                    rule_data["enabled"] = "1" if arguments["enabled"] else "0"
-                
-                result = await client.update_firewall_rule(uuid, rule_data)
-                
-                if arguments.get("apply_changes", True):
-                    await client.apply_changes()
-                    result["changes_applied"] = True
-                
-                return [TextContent(
-                    type="text",
-                    text=f"Firewall rule updated successfully:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
-            
-            elif name == "delete_firewall_rule":
-                uuid = arguments["uuid"]
-                result = await client.delete_firewall_rule(uuid)
-                
-                if arguments.get("apply_changes", True):
-                    await client.apply_changes()
-                    result["changes_applied"] = True
-                
-                return [TextContent(
-                    type="text",
-                    text=f"Firewall rule deleted successfully:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
-            
-            elif name == "toggle_firewall_rule":
-                uuid = arguments["uuid"]
-                enabled = arguments["enabled"]
-                
-                result = await client.toggle_firewall_rule(uuid, enabled)
-                
-                if arguments.get("apply_changes", True):
-                    await client.apply_changes()
-                    result["changes_applied"] = True
-                
-                action = "enabled" if enabled else "disabled"
-                return [TextContent(
-                    type="text",
-                    text=f"Firewall rule {action} successfully:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
-            
-            elif name == "get_aliases":
+            # === DHCP Management Tools ===
+            elif name == "get_dhcp_leases":
                 search_phrase = arguments.get("search_phrase", "")
                 limit = arguments.get("limit", 100)
                 
-                aliases = await client.get_all_aliases()
+                # Get the data using pagination
+                all_leases = []
+                current_page = 1
                 
-                # Apply search filter
-                if search_phrase:
-                    aliases = [a for a in aliases if search_phrase.lower() in a.get('name', '').lower()]
+                while len(all_leases) < limit:
+                    result = await client.search_dhcp_leases(
+                        search_phrase=search_phrase, 
+                        current=current_page, 
+                        row_count=min(100, limit - len(all_leases))
+                    )
+                    
+                    if 'rows' in result and result['rows']:
+                        all_leases.extend(result['rows'])
+                        
+                        # Check if we have all data or reached the limit
+                        if len(result['rows']) < 100 or len(all_leases) >= limit:
+                            break
+                            
+                        current_page += 1
+                    else:
+                        break
                 
-                # Apply limit
-                if limit and limit > 0:
-                    aliases = aliases[:limit]
-                
-                result = {
-                    "total_aliases": len(aliases),
-                    "aliases": aliases
+                final_result = {
+                    "total_found": result.get('total', len(all_leases)),
+                    "returned_count": len(all_leases),
+                    "search_phrase": search_phrase,
+                    "dhcp_leases": all_leases
                 }
                 
                 return [TextContent(
                     type="text",
-                    text=f"Retrieved {len(aliases)} aliases:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
+                    text=f"DHCP Leases List:\n\n" + 
+                         json.dumps(final_result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "create_alias":
-                alias_data = {
-                    "name": arguments["name"],
-                    "type": arguments.get("type", "host"),
-                    "content": "\n".join(arguments["content"]),
-                    "description": arguments.get("description", ""),
-                    "enabled": "1" if arguments.get("enabled", True) else "0"
-                }
-                
-                result = await client.add_alias(alias_data)
-                
-                if arguments.get("apply_changes", True):
-                    await client.reconfigure_aliases()
-                    result["changes_applied"] = True
+            elif name == "get_dhcp_service_status":
+                result = await client.get_dhcp_service_status()
                 
                 return [TextContent(
                     type="text",
-                    text=f"Alias created successfully:\n\n" + 
+                    text="DHCP Service Status:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "update_alias":
-                uuid = arguments["uuid"]
-                alias_data = {}
-                
-                # Only include provided fields
-                for field in ["name", "type", "description"]:
-                    if field in arguments:
-                        alias_data[field] = arguments[field]
-                
-                if "content" in arguments:
-                    alias_data["content"] = "\n".join(arguments["content"])
-                
-                if "enabled" in arguments:
-                    alias_data["enabled"] = "1" if arguments["enabled"] else "0"
-                
-                result = await client.update_alias(uuid, alias_data)
-                
-                if arguments.get("apply_changes", True):
-                    await client.reconfigure_aliases()
-                    result["changes_applied"] = True
+            elif name == "get_dhcp_settings":
+                result = await client.get_dhcp_settings()
                 
                 return [TextContent(
                     type="text",
-                    text=f"Alias updated successfully:\n\n" + 
+                    text="Global DHCP Settings:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "delete_alias":
-                uuid = arguments["uuid"]
-                result = await client.delete_alias(uuid)
-                
-                if arguments.get("apply_changes", True):
-                    await client.reconfigure_aliases()
-                    result["changes_applied"] = True
+            elif name == "get_dhcp_interface_settings":
+                interface = arguments["interface"]
+                result = await client.get_dhcp_interface_settings(interface)
                 
                 return [TextContent(
                     type="text",
-                    text=f"Alias deleted successfully:\n\n" + 
+                    text=f"DHCP Settings for Interface {interface}:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "manage_alias_content":
-                alias_name = arguments["alias_name"]
-                action = arguments["action"]
-                
-                if action == "list":
-                    # List operation doesn't require confirmation
-                    result = await client.list_alias_content(alias_name)
-                elif action == "add":
-                    address = arguments["address"]
-                    result = await client.add_to_alias(alias_name, address)
-                    if arguments.get("apply_changes", True):
-                        await client.reconfigure_aliases()
-                        result["changes_applied"] = True
-                elif action == "remove":
-                    address = arguments["address"]
-                    result = await client.remove_from_alias(alias_name, address)
-                    if arguments.get("apply_changes", True):
-                        await client.reconfigure_aliases()
-                        result["changes_applied"] = True
-                
-                return [TextContent(
-                    type="text",
-                    text=f"Alias {action} operation completed:\n\n" + 
-                         json.dumps(result, indent=2, ensure_ascii=False)
-                )]
-            
+            # === Interface Tools ===
             elif name == "get_interfaces":
                 interface = arguments.get("interface")
                 include_status = arguments.get("include_status", True)
@@ -1451,7 +1514,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text=f"Interface information retrieved:\n\n" + 
+                    text=f"Interface Information:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1461,7 +1524,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text=f"Configuration for interface {interface}:\n\n" + 
+                    text=f"Interface {interface} Configuration:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1471,7 +1534,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text=f"Status for interface {interface}:\n\n" + 
+                    text=f"Interface {interface} Status:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1480,7 +1543,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text="Interface statistics:\n\n" + 
+                    text="Interface Statistics:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1489,7 +1552,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text="ARP table:\n\n" + 
+                    text="ARP Table:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1498,7 +1561,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text="NDP table (IPv6 neighbors):\n\n" + 
+                    text="NDP Table (IPv6 Neighbors):\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1507,7 +1570,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text="Routing table:\n\n" + 
+                    text="Routing Table:\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
@@ -1515,6 +1578,7 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 include_statistics = arguments.get("include_statistics", False)
                 include_neighbors = arguments.get("include_neighbors", True)
                 include_routes = arguments.get("include_routes", True)
+                include_dhcp = arguments.get("include_dhcp", False)
                 
                 overview = {
                     "timestamp": datetime.now().isoformat(),
@@ -1550,12 +1614,22 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                     except Exception as e:
                         overview["routes_error"] = str(e)
                 
+                # Get DHCP information if requested
+                if include_dhcp:
+                    try:
+                        overview["dhcp_service_status"] = await client.get_dhcp_service_status()
+                        overview["dhcp_leases"] = await client.get_all_dhcp_leases()
+                        overview["dhcp_settings"] = await client.get_dhcp_settings()
+                    except Exception as e:
+                        overview["dhcp_error"] = str(e)
+                
                 return [TextContent(
                     type="text",
-                    text="Comprehensive network overview:\n\n" + 
+                    text="Network Comprehensive Overview:\n\n" + 
                          json.dumps(overview, indent=2, ensure_ascii=False)
                 )]
             
+            # === NAT Rules Tools ===
             elif name == "get_nat_rules":
                 nat_type = arguments.get("nat_type", "source_nat")
                 search_phrase = arguments.get("search_phrase", "")
@@ -1565,125 +1639,59 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                 
                 return [TextContent(
                     type="text",
-                    text=f"Retrieved {nat_type} rules:\n\n" + 
+                    text=f"NAT Rules ({nat_type}):\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "backup_configuration":
-                include_rules = arguments.get("include_rules", True)
-                include_aliases = arguments.get("include_aliases", True)
-                include_nat = arguments.get("include_nat", True)
-                include_interfaces = arguments.get("include_interfaces", True)
+            # === Alias Tools ===
+            elif name == "get_aliases":
+                search_phrase = arguments.get("search_phrase", "")
+                limit = arguments.get("limit", 100)
                 
-                backup_data = {
-                    "timestamp": datetime.now().isoformat(),
-                    "version": __version__
+                # Get the data using pagination
+                all_aliases = []
+                current_page = 1
+                
+                while len(all_aliases) < limit:
+                    result = await client.search_aliases(
+                        search_phrase=search_phrase, 
+                        current=current_page, 
+                        row_count=min(100, limit - len(all_aliases))
+                    )
+                    
+                    if 'rows' in result and result['rows']:
+                        all_aliases.extend(result['rows'])
+                        
+                        # Check if we have all data or reached the limit
+                        if len(result['rows']) < 100 or len(all_aliases) >= limit:
+                            break
+                            
+                        current_page += 1
+                    else:
+                        break
+                
+                final_result = {
+                    "total_found": result.get('total', len(all_aliases)),
+                    "returned_count": len(all_aliases),
+                    "search_phrase": search_phrase,
+                    "aliases": all_aliases
                 }
-                
-                if include_rules:
-                    backup_data["firewall_rules"] = await client.get_all_firewall_rules()
-                
-                if include_aliases:
-                    backup_data["aliases"] = await client.get_all_aliases()
-                
-                if include_nat:
-                    source_nat = await client.search_nat_rules("source_nat", row_count=1000)
-                    one_to_one = await client.search_nat_rules("one_to_one", row_count=1000)
-                    backup_data["source_nat_rules"] = source_nat.get('rows', [])
-                    backup_data["one_to_one_rules"] = one_to_one.get('rows', [])
-                
-                if include_interfaces:
-                    try:
-                        backup_data["interfaces"] = await client.get_all_interfaces()
-                        backup_data["interface_names"] = await client.get_interface_names()
-                        backup_data["arp_table"] = await client.get_arp_table()
-                        backup_data["routes"] = await client.get_routes()
-                    except Exception as e:
-                        backup_data["interfaces_error"] = str(e)
                 
                 return [TextContent(
                     type="text",
-                    text=f"Configuration backup completed:\n\n" + 
-                         json.dumps(backup_data, indent=2, ensure_ascii=False)
+                    text=f"Aliases List:\n\n" + 
+                         json.dumps(final_result, indent=2, ensure_ascii=False)
                 )]
             
-            elif name == "batch_create_rules":
-                rules = arguments["rules"]
-                apply_changes = arguments.get("apply_changes", True)
-                use_savepoint = arguments.get("use_savepoint", True)
+            elif name == "get_alias_content":
+                alias_name = arguments["alias_name"]
+                result = await client.list_alias_content(alias_name)
                 
-                results = []
-                savepoint_data = None
-                
-                try:
-                    if use_savepoint:
-                        savepoint_data = await client.create_savepoint()
-                    
-                    for i, rule in enumerate(rules):
-                        try:
-                            rule_data = {
-                                "description": rule["description"],
-                                "interface": rule.get("interface", "LAN"),
-                                "source_net": rule.get("source_net", "any"),
-                                "destination_net": rule.get("destination_net", "any"),
-                                "protocol": rule.get("protocol", "any"),
-                                "action": rule.get("action", "pass"),
-                                "direction": "in",
-                                "enabled": "1" if rule.get("enabled", True) else "0"
-                            }
-                            
-                            if rule.get("destination_port"):
-                                rule_data["destination_port"] = rule["destination_port"]
-                            
-                            result = await client.add_firewall_rule(rule_data)
-                            results.append({
-                                "index": i,
-                                "rule_description": rule["description"],
-                                "status": "success",
-                                "uuid": result.get("uuid")
-                            })
-                            
-                        except Exception as e:
-                            results.append({
-                                "index": i,
-                                "rule_description": rule["description"],
-                                "status": "error",
-                                "error": str(e)
-                            })
-                    
-                    if apply_changes:
-                        await client.apply_changes(savepoint_data.get('revision') if savepoint_data else None)
-                        
-                        if use_savepoint and savepoint_data:
-                            # Wait 5 seconds then cancel rollback
-                            await asyncio.sleep(5)
-                            await client.cancel_rollback(savepoint_data.get('revision'))
-                    
-                    batch_result = {
-                        "total_rules": len(rules),
-                        "successful": len([r for r in results if r['status'] == 'success']),
-                        "failed": len([r for r in results if r['status'] == 'error']),
-                        "results": results,
-                        "savepoint": savepoint_data.get('revision') if savepoint_data else None,
-                        "changes_applied": apply_changes
-                    }
-                    
-                    return [TextContent(
-                        type="text",
-                        text=f"Batch rule creation completed:\n\n" + 
-                             json.dumps(batch_result, indent=2, ensure_ascii=False)
-                    )]
-                    
-                except Exception as e:
-                    if savepoint_data and use_savepoint:
-                        error_msg = f"Batch operation failed, will auto-rollback in 60 seconds: {str(e)}"
-                    else:
-                        error_msg = f"Batch operation failed: {str(e)}"
-                    
-                    return [TextContent(
-                        type="text",
-                        text=error_msg
-                    )]
+                return [TextContent(
+                    type="text",
+                    text=f"Alias {alias_name} Content:\n\n" + 
+                         json.dumps(result, indent=2, ensure_ascii=False)
+                )]
             
             else:
                 return [TextContent(
