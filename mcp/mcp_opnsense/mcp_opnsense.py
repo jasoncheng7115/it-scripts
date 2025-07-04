@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-OPNsense MCP Server - Config.xml Based
+OPNsense MCP Server - Config.xml Based (Fixed Version)
 A Model Context Protocol server for OPNsense firewall management (read-only)
 
 Author: Jason Cheng (Jason Tools)
-Version: 1.4.0
+Version: 1.4.2
 License: MIT
 Created: 2025-06-25
-Updated: 2025-07-04 - Added NAT rules parsing and enhanced alias parsing
+Updated: 2025-07-04 - Fixed disabled/enabled rule detection logic
 
 This MCP server provides OPNsense firewall rule reading capabilities
 by parsing config.xml directly (read-only operations only).
+
+Fixed Issues:
+- Corrected disabled/enabled rule detection to properly check for <disabled>1</disabled> tags
+- Improved XML parsing logic for various rule types
 """
 
 import asyncio
@@ -46,7 +50,7 @@ from mcp.types import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("opnsense-mcp")
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __author__ = "Jason Cheng (Jason Tools)"
 
 class OPNsenseClient:
@@ -157,6 +161,31 @@ class OPNsenseClient:
             logger.error(f"Config XML download failed: {str(e)}")
             raise
     
+    def _is_disabled(self, elem: Optional[Element]) -> bool:
+        """
+        Check if an element is disabled based on the <disabled> tag
+        
+        Args:
+            elem: XML element to check for disabled status
+            
+        Returns:
+            True if disabled (has <disabled>1</disabled> or <disabled>yes</disabled>)
+            False if enabled (no disabled tag or disabled tag is not "1"/"yes")
+        """
+        if elem is None:
+            return False
+            
+        disabled_elem = elem.find("disabled")
+        if disabled_elem is None:
+            return False
+            
+        disabled_value = disabled_elem.text
+        if disabled_value is None:
+            return False
+            
+        disabled_value = disabled_value.strip().lower()
+        return disabled_value in ("1", "yes", "true")
+    
     def _parse_firewall_rules_from_xml(self, root: Element) -> List[Dict[str, Any]]:
         """Parse firewall rules from config.xml root element"""
         def txt(elem: Optional[Element], default="") -> str:
@@ -183,7 +212,7 @@ class OPNsenseClient:
                 "dst_port": txt(node.find("destination/port")),
                 "src_alias": src_addr if src_addr in alias_names else "",
                 "dst_alias": dst_addr if dst_addr in alias_names else "",
-                "enabled": txt(node.find("disabled")) != "yes",
+                "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 "direction": txt(node.find("direction"), "in"),
                 "ipprotocol": txt(node.find("ipprotocol"), "inet"),
                 "statetype": txt(node.find("statetype")),
@@ -196,16 +225,14 @@ class OPNsenseClient:
             if gateway:
                 rule_data["gateway"] = gateway
             
-            # Add log option if present
-            log = txt(node.find("log"))
-            if log:
-                rule_data["log"] = log == "yes"
-            
-            # Add quick option if present
-            quick = txt(node.find("quick"))
-            if quick:
-                rule_data["quick"] = quick == "yes"
-            
+            # Check if log is enabled (tag exists = enabled, regardless of content)
+            log_elem = node.find("log")
+            rule_data["log"] = log_elem is not None
+
+            # Check if quick is enabled (tag exists = enabled, regardless of content)  
+            quick_elem = node.find("quick")
+            rule_data["quick"] = quick_elem is not None
+
             rules.append(rule_data)
         
         return rules
@@ -213,7 +240,7 @@ class OPNsenseClient:
     def _parse_aliases_from_xml(self, root: Element) -> List[Dict[str, Any]]:
         """
         Parse aliases from config.xml root element
-        Enhanced version based on test_alias2.py
+        Enhanced version based on test_alias2.py with fixed disabled logic
         """
         def txt(elem: Optional[Element], default="") -> str:
             return elem.text.strip() if elem is not None and elem.text else default
@@ -241,7 +268,7 @@ class OPNsenseClient:
                 "type": alias_type,
                 "content": content,
                 "description": description,
-                "enabled": txt(node.find("disabled")) != "yes"
+                "enabled": not self._is_disabled(node)  # Fixed: Use proper disabled check
             }
             
             # Parse content into list if it contains multiple entries
@@ -264,7 +291,7 @@ class OPNsenseClient:
     def _parse_nat_rules_from_xml(self, root: Element, rule_type: str) -> List[Dict[str, Any]]:
         """
         Parse NAT rules from config.xml root element
-        Enhanced version based on test_nat.py
+        Enhanced version based on test_nat.py with fixed disabled logic
         
         Args:
             root: XML root element
@@ -290,7 +317,7 @@ class OPNsenseClient:
                     "dst_port": txt(node.find("destination/port")),
                     "nat_ip": nat_ip,
                     "nat_port": nat_port,
-                    "enabled": txt(node.find("disabled")) != "yes",
+                    "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 })
 
         elif rule_type == "outbound":
@@ -305,7 +332,7 @@ class OPNsenseClient:
                     "translation": txt(node.find("translation/address")),
                     "interface": txt(node.find("interface")),
                     "proto": txt(node.find("protocol")),
-                    "enabled": txt(node.find("disabled")) != "yes",
+                    "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 })
 
         elif rule_type == "source":
@@ -317,7 +344,7 @@ class OPNsenseClient:
                     "translation": txt(node.find("translation/address")),
                     "interface": txt(node.find("interface")),
                     "proto": txt(node.find("protocol")),
-                    "enabled": txt(node.find("disabled")) != "yes",
+                    "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 })
 
         elif rule_type == "one_to_one":
@@ -329,7 +356,7 @@ class OPNsenseClient:
                     "internal": txt(node.find("internal")),
                     "interface": txt(node.find("interface")),
                     "proto": txt(node.find("protocol")),
-                    "enabled": txt(node.find("disabled")) != "yes",
+                    "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 })
 
         elif rule_type == "filter":
@@ -342,7 +369,7 @@ class OPNsenseClient:
                     "source": txt(node.find("source/network")),
                     "destination": txt(node.find("destination/network")),
                     "action": txt(node.find("type")),
-                    "enabled": txt(node.find("disabled")) != "yes",
+                    "enabled": not self._is_disabled(node),  # Fixed: Use proper disabled check
                 })
 
         return rules
