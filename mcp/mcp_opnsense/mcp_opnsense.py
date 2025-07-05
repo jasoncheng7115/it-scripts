@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-OPNsense MCP Server - Config.xml Based (Fixed Version)
+OPNsense MCP Server - Config.xml Based (Enhanced with Service Management)
 A Model Context Protocol server for OPNsense firewall management (read-only)
 
 Author: Jason Cheng (Jason Tools)
-Version: 1.4.2
+Version: 1.5.0
 License: MIT
 Created: 2025-06-25
-Updated: 2025-07-04 - Fixed disabled/enabled rule detection logic
+Updated: 2025-07-05 - Added service management functionality
 
 This MCP server provides OPNsense firewall rule reading capabilities
-by parsing config.xml directly (read-only operations only).
+by parsing config.xml directly and service status monitoring.
 
-Fixed Issues:
-- Corrected disabled/enabled rule detection to properly check for <disabled>1</disabled> tags
-- Improved XML parsing logic for various rule types
+Enhanced Features:
+- Service status monitoring
+- Service search and listing
+- Individual service status check
 """
 
 import asyncio
@@ -50,11 +51,11 @@ from mcp.types import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("opnsense-mcp")
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 __author__ = "Jason Cheng (Jason Tools)"
 
 class OPNsenseClient:
-    """OPNsense API client for config.xml reading"""
+    """OPNsense API client for config.xml reading and service management"""
     
     def __init__(self):
         self.host = os.getenv("OPNSENSE_HOST", "https://192.168.1.1")
@@ -400,6 +401,145 @@ class OPNsenseClient:
             interfaces.append(interface_data)
         
         return interfaces
+    
+    # === Service Management (Read-only) ===
+    
+    async def search_services(self, search_phrase: str = "", current: int = 1, 
+                             row_count: int = 100, sort: Dict = None) -> Dict:
+        """Search services using the core service API"""
+        data = {
+            "current": current,
+            "rowCount": row_count,
+            "searchPhrase": search_phrase,
+            "sort": sort or {}
+        }
+        return await self._request("POST", "/api/core/service/search", data=data)
+    
+    async def get_all_services(self) -> List[Dict]:
+        """Get all services with pagination"""
+        all_services = []
+        current_page = 1
+        row_count = 100
+        
+        while True:
+            result = await self.search_services(current=current_page, row_count=row_count)
+            
+            if 'rows' in result and result['rows']:
+                all_services.extend(result['rows'])
+                
+                # Check if we have total count
+                total_count = result.get('total', 0)
+                current_count = len(all_services)
+                
+                # If we have total count, use it to determine if we need more pages
+                if total_count > 0 and current_count >= total_count:
+                    break
+                
+                # If no total count, check if we got less than requested (end of data)
+                if len(result['rows']) < row_count:
+                    break
+                    
+                current_page += 1
+            else:
+                break
+        
+        return all_services
+    
+    async def get_service_status(self, service_name: str) -> Dict:
+        """Get status of a specific service"""
+        try:
+            # Try multiple possible endpoints for service status
+            endpoints = [
+                f"/api/core/service/status/{service_name}",
+                f"/api/{service_name}/service/status",
+                f"/api/diagnostics/service/status/{service_name}"
+            ]
+            
+            for endpoint in endpoints:
+                try:
+                    result = await self._request("GET", endpoint)
+                    if result:
+                        return {
+                            "service": service_name,
+                            "endpoint_used": endpoint,
+                            "status": result
+                        }
+                except Exception:
+                    continue
+            
+            # If no direct status endpoint works, try to get from service list
+            services = await self.search_services(search_phrase=service_name)
+            
+            matching_services = []
+            if 'rows' in services:
+                matching_services = [s for s in services['rows'] if s.get('name') == service_name or s.get('id') == service_name]
+            
+            if matching_services:
+                return {
+                    "service": service_name,
+                    "found_in_list": True,
+                    "service_info": matching_services[0]
+                }
+            else:
+                return {
+                    "service": service_name,
+                    "error": "Service not found",
+                    "search_result": services
+                }
+                
+        except Exception as e:
+            return {
+                "service": service_name,
+                "error": f"Failed to get service status: {str(e)}"
+            }
+    
+    async def get_services_overview(self) -> Dict:
+        """Get comprehensive services overview"""
+        try:
+            all_services = await self.get_all_services()
+            
+            # Categorize services by status
+            running_services = []
+            stopped_services = []
+            locked_services = []
+            unknown_services = []
+            
+            for service in all_services:
+                running = service.get('running', 0)
+                locked = service.get('locked', 0)
+                
+                if locked:
+                    locked_services.append(service)
+                elif running:
+                    running_services.append(service)
+                elif running == 0:
+                    stopped_services.append(service)
+                else:
+                    unknown_services.append(service)
+            
+            overview = {
+                "timestamp": datetime.now().isoformat(),
+                "total_services": len(all_services),
+                "statistics": {
+                    "running": len(running_services),
+                    "stopped": len(stopped_services),
+                    "locked": len(locked_services),
+                    "unknown": len(unknown_services)
+                },
+                "services_by_status": {
+                    "running": running_services,
+                    "stopped": stopped_services,
+                    "locked": locked_services,
+                    "unknown": unknown_services
+                },
+                "all_services": all_services
+            }
+            
+            return overview
+            
+        except Exception as e:
+            logger.error(f"Services overview failed: {str(e)}")
+            raise
     
     async def get_config_xml_summary(self) -> Dict[str, Any]:
         """Get comprehensive summary from config.xml"""
@@ -922,6 +1062,56 @@ async def handle_list_tools() -> List[Tool]:
                 }
             }
         ),
+        # === Service Management Tools ===
+        Tool(
+            name="get_services_overview",
+            description="Get comprehensive overview of all OPNsense services with status information",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="search_services",
+            description="Search for OPNsense services with optional filters",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search_phrase": {
+                        "type": "string",
+                        "description": "Search phrase to filter services by name or description",
+                        "default": ""
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of services to return",
+                        "default": 100
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="get_service_status",
+            description="Get detailed status information for a specific service",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Name or ID of the service to check"
+                    }
+                },
+                "required": ["service_name"]
+            }
+        ),
+        Tool(
+            name="get_all_services",
+            description="Get complete list of all OPNsense services without filtering",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
         # === DHCP Tools ===
         Tool(
             name="get_dhcp_leases",
@@ -1166,6 +1356,10 @@ def _format_table_output(rows: List[Dict[str, Any]], title: str = "") -> str:
         # NAT one-to-one rules table format
         nat_cols = ["uuid", "description", "interface", "external", "internal", "enabled"]
         cols = [c for c in nat_cols if c in rows[0]]
+    elif rows and "running" in rows[0] and "locked" in rows[0]:
+        # Service table format
+        service_cols = ["id", "name", "description", "running", "locked"]
+        cols = [c for c in service_cols if c in rows[0]]
     else:
         # Common columns for firewall rules or generic format
         common_cols = [
@@ -1217,6 +1411,82 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
                     type="text",
                     text=f"OPNsense Configuration Summary (Source: config.xml):\n\n" + 
                          json.dumps(result, indent=2, ensure_ascii=False)
+                )]
+            
+            # === Service Management Tools ===
+            elif name == "get_services_overview":
+                result = await client.get_services_overview()
+                
+                return [TextContent(
+                    type="text",
+                    text="OPNsense Services Overview:\n\n" + 
+                         json.dumps(result, indent=2, ensure_ascii=False)
+                )]
+            
+            elif name == "search_services":
+                search_phrase = arguments.get("search_phrase", "")
+                limit = arguments.get("limit", 100)
+                
+                # Get the data using pagination
+                all_services = []
+                current_page = 1
+                
+                while len(all_services) < limit:
+                    result = await client.search_services(
+                        search_phrase=search_phrase, 
+                        current=current_page, 
+                        row_count=min(100, limit - len(all_services))
+                    )
+                    
+                    if 'rows' in result and result['rows']:
+                        all_services.extend(result['rows'])
+                        
+                        # Check if we have all data or reached the limit
+                        if len(result['rows']) < 100 or len(all_services) >= limit:
+                            break
+                            
+                        current_page += 1
+                    else:
+                        break
+                
+                final_result = {
+                    "total_found": result.get('total', len(all_services)),
+                    "returned_count": len(all_services),
+                    "search_phrase": search_phrase,
+                    "services": all_services
+                }
+                
+                return [TextContent(
+                    type="text",
+                    text=f"OPNsense Services Search Results:\n\n" + 
+                         json.dumps(final_result, indent=2, ensure_ascii=False)
+                )]
+            
+            elif name == "get_service_status":
+                service_name = arguments["service_name"]
+                result = await client.get_service_status(service_name)
+                
+                return [TextContent(
+                    type="text",
+                    text=f"Service Status for '{service_name}':\n\n" + 
+                         json.dumps(result, indent=2, ensure_ascii=False)
+                )]
+            
+            elif name == "get_all_services":
+                result = await client.get_all_services()
+                
+                summary = {
+                    "total_services": len(result),
+                    "running_services": len([s for s in result if s.get('running', 0) == 1]),
+                    "stopped_services": len([s for s in result if s.get('running', 0) == 0]),
+                    "locked_services": len([s for s in result if s.get('locked', 0) == 1]),
+                    "services": result
+                }
+                
+                return [TextContent(
+                    type="text",
+                    text="All OPNsense Services:\n\n" + 
+                         json.dumps(summary, indent=2, ensure_ascii=False)
                 )]
             
             elif name == "get_firewall_rules_from_config":
