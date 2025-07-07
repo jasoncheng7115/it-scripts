@@ -682,12 +682,12 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
         if not arp_entries:
             try:
                 logger.info("Searching all ARP entries...")
-                all_arp_result = get_arp_table_entries(limit=0, ip_filter=ip_address)
-                all_arp_data = json.loads(all_arp_result)
+                # We can't use get_arp_table_entries anymore, so use direct API
+                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
                 
-                if "arp_entries" in all_arp_data and all_arp_data["arp_entries"]:
+                if all_arp_result:
                     # Filter for exact IP match
-                    for entry in all_arp_data["arp_entries"]:
+                    for entry in all_arp_result:
                         entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
                         if entry_ip == ip_address:
                             arp_entries.append(entry)
@@ -892,12 +892,18 @@ def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
         if not arp_entries:
             try:
                 logger.info("Searching all ARP entries...")
-                all_arp_result = get_arp_table_entries(limit=0, mac_filter=mac_address)
-                all_arp_data = json.loads(all_arp_result)
+                # Use direct API since get_arp_table_entries is removed
+                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
                 
-                if "arp_entries" in all_arp_data and all_arp_data["arp_entries"]:
-                    arp_entries.extend(all_arp_data["arp_entries"])
-                    logger.info(f"ARP table search found {len(all_arp_data['arp_entries'])} matching entries")
+                if all_arp_result:
+                    # Filter for MAC matches
+                    for entry in all_arp_result:
+                        entry_mac = entry.get("mac_address", "")
+                        if (entry_mac.lower() == mac_address.lower() or 
+                            entry_mac.lower() == normalized_mac.lower() or
+                            mac_address.lower() in entry_mac.lower()):
+                            arp_entries.append(entry)
+                    logger.info(f"ARP table search found {len(arp_entries)} matching entries")
                 
             except Exception as e:
                 logger.warning(f"ARP table search failed: {e}")
@@ -1067,13 +1073,13 @@ def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
         if not arp_entries:
             try:
                 logger.info("Filtering all ARP entries by network...")
-                all_arp_result = get_arp_table_entries(limit=0)
-                all_arp_data = json.loads(all_arp_result)
+                # Use direct API since get_arp_table_entries is removed
+                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
                 
-                if "arp_entries" in all_arp_data and all_arp_data["arp_entries"]:
+                if all_arp_result:
                     network = ipaddress.ip_network(network_cidr, strict=False)
                     
-                    for entry in all_arp_data["arp_entries"]:
+                    for entry in all_arp_result:
                         ip_str = entry.get("ipv4_address") or entry.get("ip_address")
                         if ip_str:
                             try:
@@ -1197,188 +1203,6 @@ def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_arp_table_entries(limit: int = 100, device_id: Optional[int] = None, 
-                         ip_filter: Optional[str] = None, mac_filter: Optional[str] = None) -> str:
-    """List ARP table entries with filtering options
-    
-    Args:
-        limit: Maximum number of ARP entries to return (default: 100, 0 = all)
-        device_id: Filter by device ID (optional)
-        ip_filter: Filter by IP address (partial match) (optional)
-        mac_filter: Filter by MAC address (partial match) (optional)
-        
-    Returns:
-        JSON string of ARP entries with statistics
-    """
-    logger.info(f"Listing ARP entries: limit={limit}, device={device_id}, ip={ip_filter}, mac={mac_filter}")
-    
-    try:
-        # Performance limit
-        if limit == 0:
-            logger.warning("Unlimited query requested, setting safety limit to 10000")
-            limit = 10000
-        elif limit > 50000:
-            logger.warning(f"Large limit {limit} requested, setting safety limit to 50000")
-            limit = 50000
-        
-        arp_entries = []
-        
-        # Method 1: Device-specific query if device_id provided
-        if device_id is not None:
-            try:
-                logger.info(f"Using device-specific ARP query for device {device_id}")
-                device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
-                arp_entries = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
-                logger.info(f"Device-specific method found {len(arp_entries)} ARP entries")
-            except Exception as e:
-                logger.warning(f"Device-specific ARP query failed: {e}")
-        
-        # Method 2: General ARP table query
-        if not arp_entries:
-            endpoints_to_try = ["resources/ip/arp", "arp"]
-            
-            for endpoint in endpoints_to_try:
-                try:
-                    logger.info(f"Trying ARP endpoint: {endpoint}")
-                    params = {"limit": limit}
-                    
-                    if device_id is not None:
-                        params["device_id"] = device_id
-                    
-                    arp_result = _paginate_request_optimized(endpoint, params, max_items=limit)
-                    
-                    if arp_result:
-                        arp_entries = arp_result
-                        logger.info(f"Successfully got {len(arp_entries)} entries from {endpoint}")
-                        break
-                    
-                except Exception as e:
-                    logger.warning(f"ARP endpoint {endpoint} failed: {e}")
-                    continue
-        
-        # Client-side filtering
-        if ip_filter and arp_entries:
-            logger.info(f"Applying IP filter: {ip_filter}")
-            original_count = len(arp_entries)
-            arp_entries = [entry for entry in arp_entries 
-                          if ip_filter in (entry.get("ipv4_address", "") or entry.get("ip_address", ""))]
-            logger.info(f"IP filter reduced entries from {original_count} to {len(arp_entries)}")
-        
-        if mac_filter and arp_entries:
-            logger.info(f"Applying MAC filter: {mac_filter}")
-            original_count = len(arp_entries)
-            try:
-                normalized_filter = _normalize_mac_address(mac_filter)
-                arp_entries = [entry for entry in arp_entries 
-                              if normalized_filter in entry.get("mac_address", "")]
-            except Exception as e:
-                logger.warning(f"MAC normalization failed: {e}, using string filter")
-                arp_entries = [entry for entry in arp_entries 
-                              if mac_filter.lower() in entry.get("mac_address", "").lower()]
-            logger.info(f"MAC filter reduced entries from {original_count} to {len(arp_entries)}")
-        
-        # Final limit
-        if len(arp_entries) > limit:
-            arp_entries = arp_entries[:limit]
-        
-        # Calculate statistics (sample-based for performance)
-        sample_size = min(len(arp_entries), 1000)
-        sample_entries = arp_entries[:sample_size]
-        
-        total_entries = len(arp_entries)
-        device_counts = {}
-        ip_networks = {}
-        mac_vendors = {}
-        
-        for entry in sample_entries:
-            if not isinstance(entry, dict):
-                continue
-            
-            # Device statistics
-            device = entry.get("device_id", "unknown")
-            device_counts[str(device)] = device_counts.get(str(device), 0) + 1
-            
-            # Network statistics
-            ip_addr = entry.get("ipv4_address") or entry.get("ip_address")
-            if ip_addr:
-                try:
-                    ip = ipaddress.ip_address(ip_addr)
-                    if ip.is_private:
-                        # Determine network class
-                        if str(ip).startswith("192.168."):
-                            network_class = "192.168.x.x"
-                        elif str(ip).startswith("10."):
-                            network_class = "10.x.x.x"
-                        elif str(ip).startswith("172."):
-                            network_class = "172.16-31.x.x"
-                        else:
-                            network_class = "other_private"
-                    else:
-                        network_class = "public"
-                    ip_networks[network_class] = ip_networks.get(network_class, 0) + 1
-                except Exception:
-                    ip_networks["invalid"] = ip_networks.get("invalid", 0) + 1
-            
-            # MAC vendor statistics
-            mac = entry.get("mac_address", "")
-            if len(mac) >= 6:
-                try:
-                    clean_mac = re.sub(r'[:\-.]', '', mac)
-                    if len(clean_mac) >= 6:
-                        oui = clean_mac[:6].upper()
-                        mac_vendors[oui] = mac_vendors.get(oui, 0) + 1
-                except Exception as e:
-                    logger.debug(f"OUI extraction failed for {mac}: {e}")
-        
-        # Format entries for display (limit to first 500 for performance)
-        display_limit = min(len(arp_entries), 500)
-        formatted_entries = []
-        
-        for i, entry in enumerate(arp_entries[:display_limit]):
-            formatted_entry = entry.copy()
-            if "mac_address" in formatted_entry:
-                try:
-                    formatted_entry["mac_address_formatted"] = _format_mac_address(
-                        formatted_entry["mac_address"], "colon"
-                    )
-                except Exception as e:
-                    formatted_entry["mac_address_formatted"] = formatted_entry["mac_address"]
-                    
-                formatted_entry["created_at_formatted"] = _format_timestamp(
-                    formatted_entry.get("created_at", "")
-                )
-                formatted_entry["updated_at_formatted"] = _format_timestamp(
-                    formatted_entry.get("updated_at", "")
-                )
-            formatted_entries.append(formatted_entry)
-        
-        result = {
-            "arp_entries": formatted_entries,
-            "count": total_entries,
-            "statistics": {
-                "device_breakdown": dict(sorted(device_counts.items(), key=lambda x: x[1], reverse=True)[:20]),
-                "network_distribution": dict(sorted(ip_networks.items(), key=lambda x: x[1], reverse=True)),
-                "top_mac_vendors": dict(sorted(mac_vendors.items(), key=lambda x: x[1], reverse=True)[:10])
-            },
-            "query_info": {
-                "limit_requested": limit,
-                "device_filter": device_id,
-                "ip_filter": ip_filter,
-                "mac_filter": mac_filter,
-                "total_found": total_entries,
-                "displayed_entries": len(formatted_entries),
-                "statistics_sample_size": sample_size,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
-        
-    except Exception as e:
-        logger.error(f"Error in get_arp_table_entries: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
 def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id: Optional[int] = None) -> str:
     """Analyze correlation between layer 2 (FDB) and layer 3 (ARP) network information
     
@@ -1400,16 +1224,20 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
             if "arp_entries" in arp_response:
                 arp_data = arp_response["arp_entries"]
         elif device_id:
-            arp_result = get_arp_table_entries(limit=0, device_id=device_id)
-            arp_response = json.loads(arp_result)
-            if "arp_entries" in arp_response:
-                arp_data = arp_response["arp_entries"]
+            # Use direct API since get_arp_table_entries is removed
+            try:
+                device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
+                arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+            except Exception as e:
+                logger.warning(f"Device ARP lookup failed: {e}")
+                arp_data = []
         else:
             # Get sample of ARP data
-            arp_result = get_arp_table_entries(limit=1000)
-            arp_response = json.loads(arp_result)
-            if "arp_entries" in arp_response:
-                arp_data = arp_response["arp_entries"]
+            try:
+                arp_data = _paginate_request("resources/ip/arp", params={}, max_items=1000)
+            except Exception as e:
+                logger.warning(f"General ARP lookup failed: {e}")
+                arp_data = []
         
         # Get FDB data
         fdb_data = []
@@ -3310,7 +3138,6 @@ if __name__ == "__main__":
     logger.info("  • search_ip_to_mac() - IP to MAC address resolution")
     logger.info("  • search_mac_to_ip() - MAC to IP address lookup")
     logger.info("  • get_network_arp_table() - Network ARP table")
-    logger.info("  • get_arp_table_entries() - List ARP entries")
     logger.info("  • analyze_network_layer2_layer3() - L2/L3 correlation")
     logger.info("  • list_fdb_entries() - List FDB entries")
     logger.info("  • search_fdb_by_mac() - Search MAC addresses")
