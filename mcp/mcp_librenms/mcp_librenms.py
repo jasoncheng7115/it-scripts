@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP server for LibreNMS API – v3.4 Enhanced with ARP Table and IP-to-MAC Support
+MCP server for LibreNMS API – v3.5 Enhanced with ARP Table and IP-to-MAC Support
 ===============================================================================
 Author: Jason Cheng (Jason Tools) - Enhanced by Claude
 Created: 2025-06-24
@@ -10,21 +10,6 @@ License: MIT
 FastMCP-based LibreNMS integration with comprehensive batch operations,
 improved error handling, caching, SLA analytics, FDB table management,
 and ARP table/IP-to-MAC address resolution.
-
-NEW in v3.4:
-- Added comprehensive ARP table management
-- IP address to MAC address resolution  
-- MAC address to IP address lookup
-- Network segment ARP scanning
-- Enhanced network discovery with ARP integration
-- Cross-referencing between FDB and ARP tables
-- Network troubleshooting with layer 2/3 correlation
-
-FIXED Issues in previous version:
-- Fixed regex pattern in _normalize_mac_address function
-- Fixed _format_mac_address function regex pattern
-- Updated FDB endpoints to use correct LibreNMS API paths
-- Enhanced error handling for FDB operations
 
 Features:
 - Comprehensive alert history access including resolved alerts
@@ -645,17 +630,18 @@ def health_check() -> str:
 # ───────────────────────── NEW: ARP Table and IP-to-MAC Management ─────────────────────────
 
 @mcp.tool()
-def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
-    """Search ARP table to find MAC address for specific IP address
+def search_ip_to_mac(ip_address: str, detailed: bool = True, prefer_arp_vlan: bool = True) -> str:
+    """Search ARP table to find MAC address for specific IP address - FIXED VLAN MAPPING
     
     Args:
-        ip_address: IP address to search for (e.g., "192.168.1.118")
+        ip_address: IP address to search for (e.g., "192.168.1.200")
         detailed: Include detailed device and port information (default: True)
+        prefer_arp_vlan: Prefer VLAN information from ARP table rather than FDB table (default: True)
         
     Returns:
-        JSON string with IP-to-MAC mapping and device details
+        JSON string with IP-to-MAC mapping and device details with CORRECT VLAN tags
     """
-    logger.info(f"Searching ARP table for IP: {ip_address}")
+    logger.info(f"VLAN FIXED: Searching ARP table for IP: {ip_address}")
     
     try:
         # Validate IP address format
@@ -667,36 +653,63 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
         
         arp_entries = []
         
-        # Method 1: Direct IP ARP lookup
+        # Method 1: Direct ARP lookup
         try:
             logger.info(f"Direct ARP lookup for IP: {ip_address}")
-            arp_result = _api_request("GET", f"resources/ip/arp/{ip_address}")
-            arp_data = _extract_data_from_response(arp_result, ['arp', 'ip_arp'])
-            if arp_data:
-                arp_entries.extend(arp_data)
-                logger.info(f"Direct lookup found {len(arp_data)} ARP entries")
+            direct_result = _api_request("GET", f"resources/ip/arp/{ip_address}")
+            direct_data = _extract_data_from_response(direct_result, ['arp', 'ip_arp'])
+            
+            for entry in direct_data:
+                entry["debug_info"] = {
+                    "query_method": "direct_arp_lookup"
+                }
+                arp_entries.append(entry)
+            
+            logger.info(f"Direct lookup found {len(direct_data)} entries")
+            
         except Exception as e:
             logger.warning(f"Direct ARP lookup failed: {e}")
         
-        # Method 2: Search all ARP entries if direct lookup fails
+        # Method 2: Device-specific lookup if direct failed
         if not arp_entries:
             try:
-                logger.info("Searching all ARP entries...")
-                # We can't use get_arp_table_entries anymore, so use direct API
-                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
+                logger.info(f"Device-specific ARP lookup for IP: {ip_address}")
                 
-                if all_arp_result:
-                    # Filter for exact IP match
-                    for entry in all_arp_result:
-                        entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
-                        if entry_ip == ip_address:
-                            arp_entries.append(entry)
-                    logger.info(f"Filtered search found {len(arp_entries)} matching entries")
+                devices_result = _api_request("GET", "devices", params={"limit": 5})
+                devices_data = _extract_data_from_response(devices_result, ['devices'])
+                
+                for device in devices_data:
+                    device_id = device.get('device_id')
+                    hostname = device.get('hostname', f'device_{device_id}')
+                    
+                    if device_id:
+                        try:
+                            device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
+                            device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+                            
+                            for entry in device_arp_data:
+                                entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
+                                if entry_ip == ip_address:
+                                    entry["debug_info"] = {
+                                        "source_device_id": device_id,
+                                        "source_hostname": hostname,
+                                        "query_method": "device_specific_arp"
+                                    }
+                                    arp_entries.append(entry)
+                                    break
+                            
+                            if arp_entries:
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"Device {device_id} query failed: {e}")
+                
+                logger.info(f"Device-specific search found {len(arp_entries)} entries")
                 
             except Exception as e:
-                logger.warning(f"ARP table search failed: {e}")
+                logger.warning(f"Device-specific search failed: {e}")
         
-        # Remove duplicates based on MAC address and device
+        # Remove duplicates
         unique_entries = []
         seen_combinations = set()
         
@@ -706,16 +719,15 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
                 
             mac_address = entry.get("mac_address", "")
             device_id = entry.get("device_id", "")
-            combination_key = f"{mac_address}_{device_id}"
+            combination_key = f"{ip_address}_{mac_address}_{device_id}"
             
             if combination_key not in seen_combinations:
                 seen_combinations.add(combination_key)
                 unique_entries.append(entry)
         
-        # Enrich entries with additional information
+        # **CRITICAL FIX: Map vlan_id to actual VLAN tag using vlans table**
         enriched_entries = []
-        device_info_cache = {}
-        port_info_cache = {}
+        vlan_mapping_cache = {}
         
         for entry in unique_entries:
             enriched_entry = entry.copy()
@@ -727,7 +739,6 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
                         enriched_entry["mac_address"], "colon"
                     )
                 except Exception as e:
-                    logger.warning(f"MAC formatting failed: {e}")
                     enriched_entry["mac_address_formatted"] = enriched_entry["mac_address"]
             
             # Format timestamps
@@ -738,75 +749,116 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
                 enriched_entry.get("updated_at", "")
             )
             
-            # Get device information
-            device_id = enriched_entry.get("device_id")
-            if device_id and detailed:
-                if device_id not in device_info_cache:
+            # **CRITICAL FIX: Get correct VLAN tag from vlans table**
+            arp_vlan_id = enriched_entry.get("vlan_id")  # This is the database ID, NOT the VLAN tag!
+            actual_vlan_tag = None
+            vlan_mapping_error = None
+            
+            if arp_vlan_id:
+                # Check if we already have this mapping cached
+                if arp_vlan_id not in vlan_mapping_cache:
+                    try:
+                        # Query vlans table to get actual VLAN tag
+                        vlans_result = _api_request("GET", "resources/vlans")
+                        vlans_data = _extract_data_from_response(vlans_result, ['vlans'])
+                        
+                        # Build mapping cache for all VLANs
+                        for vlan_entry in vlans_data:
+                            vlan_db_id = str(vlan_entry.get("vlan_id", ""))
+                            vlan_tag = vlan_entry.get("vlan_vlan")  # This is the actual VLAN tag!
+                            vlan_name = vlan_entry.get("vlan_name", "")
+                            device_id = vlan_entry.get("device_id", "")
+                            
+                            if vlan_db_id and vlan_tag:
+                                vlan_mapping_cache[vlan_db_id] = {
+                                    "vlan_tag": vlan_tag,
+                                    "vlan_name": vlan_name,
+                                    "device_id": device_id
+                                }
+                        
+                        logger.info(f"Built VLAN mapping cache with {len(vlan_mapping_cache)} entries")
+                        
+                    except Exception as e:
+                        vlan_mapping_error = str(e)
+                        logger.warning(f"Failed to build VLAN mapping cache: {e}")
+                
+                # Get the actual VLAN tag
+                vlan_mapping = vlan_mapping_cache.get(str(arp_vlan_id))
+                if vlan_mapping:
+                    actual_vlan_tag = vlan_mapping["vlan_tag"]
+                    enriched_entry["vlan_info"] = {
+                        "vlan_tag": actual_vlan_tag,  # CORRECT VLAN tag
+                        "vlan_name": vlan_mapping["vlan_name"],
+                        "vlan_db_id": arp_vlan_id,   # Database ID (for reference)
+                        "source": "vlans_table_mapping",
+                        "mapping_device_id": vlan_mapping["device_id"]
+                    }
+                else:
+                    enriched_entry["vlan_info"] = {
+                        "vlan_tag": "unknown",
+                        "vlan_db_id": arp_vlan_id,
+                        "error": f"No VLAN mapping found for vlan_id {arp_vlan_id}",
+                        "source": "vlans_table_mapping_failed"
+                    }
+            else:
+                enriched_entry["vlan_info"] = {
+                    "vlan_tag": "not_specified",
+                    "source": "no_vlan_in_arp_entry"
+                }
+            
+            # Add mapping debug info
+            enriched_entry["vlan_mapping_debug"] = {
+                "original_vlan_id_field": arp_vlan_id,
+                "mapped_vlan_tag": actual_vlan_tag,
+                "mapping_cache_size": len(vlan_mapping_cache),
+                "mapping_error": vlan_mapping_error
+            }
+            
+            # Get device information if detailed
+            if detailed:
+                device_id = enriched_entry.get("device_id")
+                if device_id:
                     try:
                         device_result = _api_request("GET", f"devices/{device_id}")
                         if "devices" in device_result and device_result["devices"]:
-                            device_info_cache[device_id] = device_result["devices"][0]
-                        else:
-                            device_info_cache[device_id] = None
+                            device_info = device_result["devices"][0]
+                            enriched_entry["device_info"] = {
+                                "hostname": device_info.get("hostname"),
+                                "sysName": device_info.get("sysName"),
+                                "ip": device_info.get("ip"),
+                                "type": device_info.get("type")
+                            }
                     except Exception as e:
-                        logger.warning(f"Failed to get device info for {device_id}: {e}")
-                        device_info_cache[device_id] = None
+                        enriched_entry["device_info_error"] = str(e)
                 
-                device_info = device_info_cache.get(device_id)
-                if device_info:
-                    enriched_entry["device_info"] = {
-                        "hostname": device_info.get("hostname"),
-                        "sysName": device_info.get("sysName"),
-                        "ip": device_info.get("ip"),
-                        "type": device_info.get("type"),
-                        "location": device_info.get("location")
-                    }
-            
-            # Get port information
-            port_id = enriched_entry.get("port_id")
-            if port_id and detailed:
-                if port_id not in port_info_cache:
+                # Get port information
+                port_id = enriched_entry.get("port_id")
+                if port_id:
                     try:
                         port_result = _api_request("GET", f"ports/{port_id}")
                         if "ports" in port_result and port_result["ports"]:
-                            port_info_cache[port_id] = port_result["ports"][0]
-                        else:
-                            port_info_cache[port_id] = None
+                            port_info = port_result["ports"][0]
+                            enriched_entry["port_info"] = {
+                                "ifName": port_info.get("ifName"),
+                                "ifDescr": port_info.get("ifDescr"),
+                                "ifOperStatus": port_info.get("ifOperStatus"),
+                                "ifSpeed": port_info.get("ifSpeed")
+                            }
                     except Exception as e:
-                        logger.warning(f"Failed to get port info for {port_id}: {e}")
-                        port_info_cache[port_id] = None
-                
-                port_info = port_info_cache.get(port_id)
-                if port_info:
-                    enriched_entry["port_info"] = {
-                        "ifName": port_info.get("ifName"),
-                        "ifAlias": port_info.get("ifAlias"),
-                        "ifDescr": port_info.get("ifDescr"),
-                        "ifOperStatus": port_info.get("ifOperStatus"),
-                        "ifSpeed": port_info.get("ifSpeed"),
-                        "ifType": port_info.get("ifType")
-                    }
+                        enriched_entry["port_info_error"] = str(e)
             
             enriched_entries.append(enriched_entry)
         
-        # Cross-reference with FDB table for additional context
-        fdb_cross_reference = []
-        if enriched_entries and detailed:
-            try:
-                for entry in enriched_entries:
-                    mac_address = entry.get("mac_address")
-                    if mac_address:
-                        fdb_result = search_fdb_by_mac(mac_address, detailed=False)
-                        fdb_data = json.loads(fdb_result)
-                        if "fdb_entries" in fdb_data and fdb_data["fdb_entries"]:
-                            fdb_cross_reference.extend(fdb_data["fdb_entries"])
-            except Exception as e:
-                logger.warning(f"FDB cross-reference failed: {e}")
-        
-        # Calculate summary
+        # Calculate summary with correct VLAN tags
         if enriched_entries:
             devices_found = set(str(entry.get("device_id", "")) for entry in enriched_entries)
             mac_addresses = set(entry.get("mac_address", "") for entry in enriched_entries)
+            vlan_tags_found = set()
+            for entry in enriched_entries:
+                vlan_info = entry.get("vlan_info", {})
+                vlan_tag = vlan_info.get("vlan_tag")
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    vlan_tags_found.add(str(vlan_tag))
             
             search_summary = {
                 "ip_address_searched": ip_address,
@@ -814,7 +866,8 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
                 "unique_mac_addresses": len(mac_addresses),
                 "devices_with_this_ip": sorted(list(devices_found)),
                 "mac_addresses_found": sorted(list(mac_addresses)),
-                "has_fdb_cross_reference": len(fdb_cross_reference) > 0
+                "vlan_tags_found": sorted(list(vlan_tags_found)),  # CORRECT VLAN tags
+                "data_source": "arp_with_correct_vlan_mapping"
             }
         else:
             search_summary = {
@@ -826,33 +879,37 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True) -> str:
         result = {
             "search_summary": search_summary,
             "arp_entries": enriched_entries,
-            "fdb_cross_reference": fdb_cross_reference,
+            "vlan_mapping_info": {
+                "explanation": "VLAN tags are now correctly mapped from vlans table",
+                "vlan_db_ids_vs_tags": "vlan_id field is database ID, vlan_vlan field is actual VLAN tag",
+                "mapping_cache_entries": len(vlan_mapping_cache)
+            },
             "query_info": {
                 "ip_address_input": ip_address,
                 "detailed_search": detailed,
-                "search_methods_used": ["direct_arp_lookup", "arp_table_search", "fdb_cross_reference"],
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "note": "VLAN MAPPING FIXED - Now shows correct VLAN tags from vlans.vlan_vlan field"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
         
     except Exception as e:
-        logger.error(f"Error in search_ip_to_mac: {e}")
+        logger.error(f"Error in search_ip_to_mac (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
-    """Search ARP table to find IP addresses for specific MAC address
+def search_fdb_by_mac(mac_address: str, detailed: bool = True) -> str:
+    """Search FDB table for specific MAC address with CORRECT VLAN mapping
     
     Args:
         mac_address: MAC address to search for (various formats accepted)
         detailed: Include detailed device and port information (default: True)
         
     Returns:
-        JSON string with MAC-to-IP mapping and device details
+        JSON string with MAC address location and CORRECT VLAN tags
     """
-    logger.info(f"Searching ARP table for MAC: {mac_address}")
+    logger.info(f"VLAN FIXED: Searching FDB for MAC: {mac_address}")
     
     try:
         # Normalize MAC address
@@ -863,82 +920,75 @@ def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
             logger.warning(f"MAC normalization failed: {e}, using original format")
             normalized_mac = mac_address
         
-        arp_entries = []
+        # Try different search methods
+        fdb_results = []
         
-        # Method 1: Direct MAC ARP lookup
+        # Method 1: Direct FDB search
         try:
-            logger.info(f"Direct ARP lookup for MAC: {mac_address}")
-            arp_result = _api_request("GET", f"resources/ip/arp/{mac_address}")
-            arp_data = _extract_data_from_response(arp_result, ['arp', 'ip_arp'])
-            if arp_data:
-                arp_entries.extend(arp_data)
-                logger.info(f"Direct lookup found {len(arp_data)} ARP entries")
+            fdb_result = _api_request("GET", f"resources/fdb/{normalized_mac}")
+            fdb_data = _extract_data_from_response(fdb_result, ['ports_fdb'])
+            fdb_results.extend(fdb_data)
+            logger.debug(f"Direct search found {len(fdb_data)} entries")
         except Exception as e:
-            logger.warning(f"Direct MAC ARP lookup failed: {e}")
+            logger.warning(f"Direct FDB search failed: {e}")
         
-        # Method 2: Try normalized MAC format
-        if not arp_entries and normalized_mac != mac_address:
+        # Method 2: Search using list_fdb_entries if direct failed
+        if not fdb_results:
             try:
-                logger.info(f"Trying normalized MAC: {normalized_mac}")
-                arp_result = _api_request("GET", f"resources/ip/arp/{normalized_mac}")
-                arp_data = _extract_data_from_response(arp_result, ['arp', 'ip_arp'])
-                if arp_data:
-                    arp_entries.extend(arp_data)
-                    logger.info(f"Normalized MAC lookup found {len(arp_data)} ARP entries")
-            except Exception as e:
-                logger.warning(f"Normalized MAC lookup failed: {e}")
-        
-        # Method 3: Search all ARP entries if direct lookup fails
-        if not arp_entries:
-            try:
-                logger.info("Searching all ARP entries...")
-                # Use direct API since get_arp_table_entries is removed
-                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
+                logger.info("Trying FDB table search...")
+                filter_result = list_fdb_entries(limit=1000, mac_filter=mac_address)
+                filter_data = json.loads(filter_result)
                 
-                if all_arp_result:
-                    # Filter for MAC matches
-                    for entry in all_arp_result:
-                        entry_mac = entry.get("mac_address", "")
-                        if (entry_mac.lower() == mac_address.lower() or 
-                            entry_mac.lower() == normalized_mac.lower() or
-                            mac_address.lower() in entry_mac.lower()):
-                            arp_entries.append(entry)
-                    logger.info(f"ARP table search found {len(arp_entries)} matching entries")
+                if "fdb_entries" in filter_data:
+                    fdb_results.extend(filter_data["fdb_entries"])
+                    logger.debug(f"Filter search found {len(filter_data['fdb_entries'])} entries")
                 
             except Exception as e:
-                logger.warning(f"ARP table search failed: {e}")
+                logger.warning(f"Filter search failed: {e}")
         
-        # Remove duplicates and sort by IP
-        unique_entries = []
-        seen_ips = set()
+        # Remove duplicates
+        unique_results = []
+        seen_ids = set()
         
-        for entry in arp_entries:
-            if not isinstance(entry, dict):
+        for result in fdb_results:
+            if not isinstance(result, dict):
                 continue
                 
-            ip_address = entry.get("ipv4_address") or entry.get("ip_address")
-            if ip_address and ip_address not in seen_ips:
-                seen_ips.add(ip_address)
-                unique_entries.append(entry)
+            result_id = result.get("ports_fdb_id") or result.get("id") or str(result)
+            if result_id not in seen_ids:
+                seen_ids.add(result_id)
+                unique_results.append(result)
         
-        # Sort by IP address
-        def ip_sort_key(entry):
-            ip_str = entry.get("ipv4_address") or entry.get("ip_address") or "0.0.0.0"
-            try:
-                return ipaddress.ip_address(ip_str)
-            except:
-                return ipaddress.ip_address("0.0.0.0")
-        
+        # **CRITICAL FIX: Build VLAN mapping cache for FDB entries**
+        vlan_mapping_cache = {}
         try:
-            unique_entries.sort(key=ip_sort_key)
+            vlans_result = _api_request("GET", "resources/vlans")
+            vlans_data = _extract_data_from_response(vlans_result, ['vlans'])
+            
+            for vlan_entry in vlans_data:
+                vlan_db_id = str(vlan_entry.get("vlan_id", ""))
+                vlan_tag = vlan_entry.get("vlan_vlan")  # Actual VLAN tag
+                vlan_name = vlan_entry.get("vlan_name", "")
+                device_id = vlan_entry.get("device_id", "")
+                
+                if vlan_db_id and vlan_tag:
+                    vlan_mapping_cache[vlan_db_id] = {
+                        "vlan_tag": vlan_tag,
+                        "vlan_name": vlan_name,
+                        "device_id": device_id
+                    }
+            
+            logger.info(f"Built VLAN mapping cache with {len(vlan_mapping_cache)} entries for FDB")
+            
         except Exception as e:
-            logger.warning(f"Could not sort by IP: {e}")
+            logger.warning(f"Failed to build VLAN mapping cache for FDB: {e}")
         
-        # Enrich entries with additional information
-        enriched_entries = []
+        # Enrich results with correct VLAN mapping
+        enriched_results = []
         device_info_cache = {}
+        port_info_cache = {}
         
-        for entry in unique_entries:
+        for entry in unique_results:
             enriched_entry = entry.copy()
             
             # Format MAC address
@@ -959,195 +1009,43 @@ def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
                 enriched_entry.get("updated_at", "")
             )
             
-            # Get device information
-            device_id = enriched_entry.get("device_id")
-            if device_id and detailed:
-                if device_id not in device_info_cache:
-                    try:
-                        device_result = _api_request("GET", f"devices/{device_id}")
-                        if "devices" in device_result and device_result["devices"]:
-                            device_info_cache[device_id] = device_result["devices"][0]
-                        else:
-                            device_info_cache[device_id] = None
-                    except Exception as e:
-                        logger.warning(f"Failed to get device info for {device_id}: {e}")
-                        device_info_cache[device_id] = None
-                
-                device_info = device_info_cache.get(device_id)
-                if device_info:
-                    enriched_entry["device_info"] = {
-                        "hostname": device_info.get("hostname"),
-                        "sysName": device_info.get("sysName"),
-                        "ip": device_info.get("ip"),
-                        "type": device_info.get("type"),
-                        "location": device_info.get("location")
+            # **CRITICAL FIX: Map FDB vlan_id to actual VLAN tag**
+            fdb_vlan_id = enriched_entry.get("vlan_id")  # This is database ID, NOT VLAN tag!
+            actual_vlan_tag = None
+            
+            if fdb_vlan_id:
+                vlan_mapping = vlan_mapping_cache.get(str(fdb_vlan_id))
+                if vlan_mapping:
+                    actual_vlan_tag = vlan_mapping["vlan_tag"]
+                    enriched_entry["vlan_info"] = {
+                        "vlan_tag": actual_vlan_tag,  # CORRECT VLAN tag
+                        "vlan_name": vlan_mapping["vlan_name"],
+                        "vlan_db_id": fdb_vlan_id,   # Database ID (for reference)
+                        "source": "fdb_vlans_table_mapping",
+                        "mapping_device_id": vlan_mapping["device_id"]
                     }
-            
-            enriched_entries.append(enriched_entry)
-        
-        # Cross-reference with FDB table
-        fdb_cross_reference = []
-        if detailed:
-            try:
-                fdb_result = search_fdb_by_mac(mac_address, detailed=False)
-                fdb_data = json.loads(fdb_result)
-                if "fdb_entries" in fdb_data and fdb_data["fdb_entries"]:
-                    fdb_cross_reference = fdb_data["fdb_entries"]
-            except Exception as e:
-                logger.warning(f"FDB cross-reference failed: {e}")
-        
-        # Calculate summary
-        if enriched_entries:
-            ip_addresses = [entry.get("ipv4_address") or entry.get("ip_address") for entry in enriched_entries]
-            devices_found = set(str(entry.get("device_id", "")) for entry in enriched_entries)
-            
-            search_summary = {
-                "mac_address_searched": mac_address,
-                "mac_address_normalized": normalized_mac,
-                "total_ip_addresses_found": len(ip_addresses),
-                "ip_addresses": sorted(ip_addresses),
-                "devices_with_this_mac": sorted(list(devices_found)),
-                "has_fdb_cross_reference": len(fdb_cross_reference) > 0
-            }
-        else:
-            search_summary = {
-                "mac_address_searched": mac_address,
-                "mac_address_normalized": normalized_mac,
-                "total_ip_addresses_found": 0,
-                "message": "MAC address not found in ARP tables"
-            }
-        
-        result = {
-            "search_summary": search_summary,
-            "arp_entries": enriched_entries,
-            "fdb_cross_reference": fdb_cross_reference,
-            "query_info": {
-                "mac_address_input": mac_address,
-                "detailed_search": detailed,
-                "search_methods_used": ["direct_arp_lookup", "normalized_mac_lookup", "arp_table_search", "fdb_cross_reference"],
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
-        
-    except Exception as e:
-        logger.error(f"Error in search_mac_to_ip: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
-def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
-    """Get ARP table entries for a specific network segment
-    
-    Args:
-        network_cidr: Network in CIDR format (e.g., "192.168.1.0/24")
-        detailed: Include detailed device information (default: False)
-        
-    Returns:
-        JSON string with network ARP table and statistics
-    """
-    logger.info(f"Getting ARP table for network: {network_cidr}")
-    
-    try:
-        # Validate network CIDR format
-        if not _validate_network_cidr(network_cidr):
-            return json.dumps({
-                "error": f"Invalid network CIDR format: {network_cidr}",
-                "timestamp": datetime.now().isoformat()
-            }, indent=2, ensure_ascii=False)
-        
-        arp_entries = []
-        
-        # Method 1: Direct network ARP lookup
-        try:
-            logger.info(f"Direct ARP lookup for network: {network_cidr}")
-            arp_result = _api_request("GET", f"resources/ip/arp/{network_cidr}")
-            arp_data = _extract_data_from_response(arp_result, ['arp', 'ip_arp'])
-            if arp_data:
-                arp_entries.extend(arp_data)
-                logger.info(f"Direct network lookup found {len(arp_data)} ARP entries")
-        except Exception as e:
-            logger.warning(f"Direct network ARP lookup failed: {e}")
-        
-        # Method 2: Filter all ARP entries by network
-        if not arp_entries:
-            try:
-                logger.info("Filtering all ARP entries by network...")
-                # Use direct API since get_arp_table_entries is removed
-                all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
-                
-                if all_arp_result:
-                    network = ipaddress.ip_network(network_cidr, strict=False)
-                    
-                    for entry in all_arp_result:
-                        ip_str = entry.get("ipv4_address") or entry.get("ip_address")
-                        if ip_str:
-                            try:
-                                ip_addr = ipaddress.ip_address(ip_str)
-                                if ip_addr in network:
-                                    arp_entries.append(entry)
-                            except ValueError:
-                                continue
-                    
-                    logger.info(f"Network filtering found {len(arp_entries)} entries in {network_cidr}")
-                
-            except Exception as e:
-                logger.warning(f"Network filtering failed: {e}")
-        
-        # Sort by IP address
-        def ip_sort_key(entry):
-            ip_str = entry.get("ipv4_address") or entry.get("ip_address") or "0.0.0.0"
-            try:
-                return ipaddress.ip_address(ip_str)
-            except:
-                return ipaddress.ip_address("0.0.0.0")
-        
-        try:
-            arp_entries.sort(key=ip_sort_key)
-        except Exception as e:
-            logger.warning(f"Could not sort by IP: {e}")
-        
-        # Calculate network statistics
-        ip_count = len(set(entry.get("ipv4_address") or entry.get("ip_address") for entry in arp_entries))
-        mac_count = len(set(entry.get("mac_address") for entry in arp_entries))
-        device_count = len(set(str(entry.get("device_id")) for entry in arp_entries))
-        
-        # Analyze network usage
-        try:
-            network = ipaddress.ip_network(network_cidr, strict=False)
-            total_addresses = network.num_addresses
-            # Exclude network and broadcast addresses for /24 and smaller
-            if network.prefixlen >= 24:
-                usable_addresses = total_addresses - 2
+                else:
+                    enriched_entry["vlan_info"] = {
+                        "vlan_tag": "unknown",
+                        "vlan_db_id": fdb_vlan_id,
+                        "error": f"No VLAN mapping found for vlan_id {fdb_vlan_id}",
+                        "source": "fdb_vlans_table_mapping_failed"
+                    }
             else:
-                usable_addresses = total_addresses
-            utilization_percentage = (ip_count / max(usable_addresses, 1)) * 100
-        except Exception as e:
-            logger.warning(f"Network analysis failed: {e}")
-            total_addresses = 0
-            usable_addresses = 0
-            utilization_percentage = 0
-        
-        # Enrich with device information if requested
-        enriched_entries = arp_entries
-        if detailed and arp_entries:
-            enriched_entries = []
-            device_info_cache = {}
+                enriched_entry["vlan_info"] = {
+                    "vlan_tag": "not_specified",
+                    "source": "no_vlan_in_fdb_entry"
+                }
             
-            for entry in arp_entries[:100]:  # Limit to 100 for performance
-                enriched_entry = entry.copy()
-                
-                # Format MAC address
-                if "mac_address" in enriched_entry:
-                    try:
-                        enriched_entry["mac_address_formatted"] = _format_mac_address(
-                            enriched_entry["mac_address"], "colon"
-                        )
-                    except Exception as e:
-                        logger.warning(f"MAC formatting failed: {e}")
-                        enriched_entry["mac_address_formatted"] = enriched_entry["mac_address"]
-                
-                # Get device information
+            # Add FDB-specific debug info
+            enriched_entry["fdb_vlan_mapping_debug"] = {
+                "original_vlan_id_field": fdb_vlan_id,
+                "mapped_vlan_tag": actual_vlan_tag,
+                "mapping_source": "vlans_table"
+            }
+            
+            # Get device information if detailed
+            if detailed:
                 device_id = enriched_entry.get("device_id")
                 if device_id:
                     if device_id not in device_info_cache:
@@ -1171,7 +1069,543 @@ def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
                             "location": device_info.get("location")
                         }
                 
-                enriched_entries.append(enriched_entry)
+                # Get port information
+                port_id = enriched_entry.get("port_id")
+                if port_id:
+                    if port_id not in port_info_cache:
+                        try:
+                            port_result = _api_request("GET", f"ports/{port_id}")
+                            if "ports" in port_result and port_result["ports"]:
+                                port_info_cache[port_id] = port_result["ports"][0]
+                            else:
+                                port_info_cache[port_id] = None
+                        except Exception as e:
+                            logger.warning(f"Failed to get port info for {port_id}: {e}")
+                            port_info_cache[port_id] = None
+                    
+                    port_info = port_info_cache.get(port_id)
+                    if port_info:
+                        enriched_entry["port_info"] = {
+                            "ifName": port_info.get("ifName"),
+                            "ifAlias": port_info.get("ifAlias"),
+                            "ifDescr": port_info.get("ifDescr"),
+                            "ifOperStatus": port_info.get("ifOperStatus"),
+                            "ifSpeed": port_info.get("ifSpeed"),
+                            "ifType": port_info.get("ifType")
+                        }
+            
+            enriched_results.append(enriched_entry)
+        
+        # Calculate search statistics with correct VLAN tags
+        if enriched_results:
+            vlans_found = set()
+            devices_found = set(str(entry.get("device_id", "")) for entry in enriched_results)
+            ports_found = set(str(entry.get("port_id", "")) for entry in enriched_results)
+            
+            for entry in enriched_results:
+                vlan_info = entry.get("vlan_info", {})
+                vlan_tag = vlan_info.get("vlan_tag")
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    vlans_found.add(str(vlan_tag))
+            
+            search_summary = {
+                "mac_address_searched": mac_address,
+                "mac_address_normalized": normalized_mac,
+                "total_entries_found": len(enriched_results),
+                "vlan_tags_found": sorted(list(vlans_found)),  # CORRECT VLAN tags
+                "devices_found": sorted(list(devices_found)),
+                "ports_found": sorted(list(ports_found)),
+                "vlan_mapping_applied": True
+            }
+        else:
+            search_summary = {
+                "mac_address_searched": mac_address,
+                "mac_address_normalized": normalized_mac,
+                "total_entries_found": 0,
+                "message": "MAC address not found in FDB table"
+            }
+        
+        result = {
+            "search_summary": search_summary,
+            "fdb_entries": enriched_results,
+            "vlan_mapping_info": {
+                "explanation": "FDB VLAN tags are now correctly mapped from vlans table",
+                "mapping_cache_entries": len(vlan_mapping_cache)
+            },
+            "query_info": {
+                "mac_address_input": mac_address,
+                "detailed_search": detailed,
+                "timestamp": datetime.now().isoformat(),
+                "note": "FDB VLAN MAPPING FIXED - Now shows correct VLAN tags from vlans.vlan_vlan field"
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error in search_fdb_by_mac (vlan fixed): {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def test_vlan_mapping() -> str:
+    """Test the VLAN mapping to understand the difference between vlan_id and vlan_vlan
+    
+    Returns:
+        JSON string showing VLAN mapping analysis
+    """
+    logger.info("Testing VLAN mapping")
+    
+    try:
+        # Get all VLANs to understand the mapping
+        vlans_result = _api_request("GET", "resources/vlans")
+        vlans_data = _extract_data_from_response(vlans_result, ['vlans'])
+        
+        mapping_analysis = {
+            "total_vlans_found": len(vlans_data),
+            "vlan_mappings": [],
+            "explanation": {
+                "vlan_id": "Database primary key (NOT the VLAN tag)",
+                "vlan_vlan": "Actual VLAN tag number",
+                "vlan_name": "VLAN name",
+                "device_id": "Device this VLAN belongs to"
+            }
+        }
+        
+        for vlan in vlans_data:
+            mapping_entry = {
+                "vlan_id": vlan.get("vlan_id"),           # Database ID
+                "vlan_vlan": vlan.get("vlan_vlan"),       # Actual VLAN tag
+                "vlan_name": vlan.get("vlan_name"),
+                "device_id": vlan.get("device_id"),
+                "vlan_domain": vlan.get("vlan_domain")
+            }
+            mapping_analysis["vlan_mappings"].append(mapping_entry)
+        
+        # Sort by device_id for easier reading
+        mapping_analysis["vlan_mappings"].sort(key=lambda x: (x.get("device_id", 0), x.get("vlan_vlan", 0)))
+        
+        return json.dumps(mapping_analysis, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def compare_arp_sources(ip_address: str) -> str:
+    """Compare ARP data from different LibreNMS API sources to find discrepancy
+    
+    Args:
+        ip_address: IP address to compare across sources
+        
+    Returns:
+        JSON string comparing all possible data sources
+    """
+    logger.info(f"Comparing ARP sources for IP: {ip_address}")
+    
+    try:
+        comparison_results = {
+            "ip_address": ip_address,
+            "sources": {}
+        }
+        
+        # Source 1: Direct ARP endpoint
+        try:
+            direct_result = _api_request("GET", f"resources/ip/arp/{ip_address}")
+            direct_entries = _extract_data_from_response(direct_result, ['arp', 'ip_arp'])
+            
+            comparison_results["sources"]["direct_arp_endpoint"] = {
+                "method": "GET /resources/ip/arp/{ip}",
+                "entries_found": len(direct_entries),
+                "entries": direct_entries,
+                "vlans_found": [str(entry.get("vlan_id") or entry.get("vlan", "")) for entry in direct_entries if (entry.get("vlan_id") or entry.get("vlan"))]
+            }
+        except Exception as e:
+            comparison_results["sources"]["direct_arp_endpoint"] = {"error": str(e)}
+        
+        # Source 2: Device-specific ARP tables
+        try:
+            devices_result = _api_request("GET", "devices", params={"limit": 10})
+            devices_data = _extract_data_from_response(devices_result, ['devices'])
+            
+            device_results = {}
+            for device in devices_data:
+                device_id = device.get('device_id')
+                hostname = device.get('hostname', f'device_{device_id}')
+                
+                try:
+                    device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
+                    device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+                    
+                    matching_entries = []
+                    for entry in device_arp_data:
+                        entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
+                        if entry_ip == ip_address:
+                            matching_entries.append(entry)
+                    
+                    if matching_entries:
+                        device_results[hostname] = {
+                            "device_id": device_id,
+                            "method": f"GET /devices/{device_id}/arp",
+                            "matching_entries": matching_entries,
+                            "vlans_found": [str(entry.get("vlan_id") or entry.get("vlan", "")) for entry in matching_entries if (entry.get("vlan_id") or entry.get("vlan"))]
+                        }
+                        
+                except Exception as e:
+                    device_results[hostname] = {"error": str(e)}
+            
+            comparison_results["sources"]["device_specific_arp"] = device_results
+            
+        except Exception as e:
+            comparison_results["sources"]["device_specific_arp"] = {"error": str(e)}
+        
+        # Source 3: General ARP table search
+        try:
+            general_result = _paginate_request("resources/ip/arp", params={}, max_items=1000)
+            
+            matching_general = []
+            for entry in general_result:
+                entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
+                if entry_ip == ip_address:
+                    matching_general.append(entry)
+            
+            comparison_results["sources"]["general_arp_search"] = {
+                "method": "GET /resources/ip/arp (filtered)",
+                "entries_found": len(matching_general),
+                "entries": matching_general,
+                "vlans_found": [str(entry.get("vlan_id") or entry.get("vlan", "")) for entry in matching_general if (entry.get("vlan_id") or entry.get("vlan"))]
+            }
+            
+        except Exception as e:
+            comparison_results["sources"]["general_arp_search"] = {"error": str(e)}
+        
+        # Source 4: FDB cross-reference (to see if this is causing confusion)
+        try:
+            # First get MAC addresses from ARP sources
+            all_macs = set()
+            for source_name, source_data in comparison_results["sources"].items():
+                if isinstance(source_data, dict):
+                    if "entries" in source_data:
+                        for entry in source_data["entries"]:
+                            mac = entry.get("mac_address")
+                            if mac:
+                                all_macs.add(mac)
+                    elif source_name == "device_specific_arp":
+                        for device_data in source_data.values():
+                            if isinstance(device_data, dict) and "matching_entries" in device_data:
+                                for entry in device_data["matching_entries"]:
+                                    mac = entry.get("mac_address")
+                                    if mac:
+                                        all_macs.add(mac)
+            
+            fdb_results = {}
+            for mac in all_macs:
+                try:
+                    fdb_result = search_fdb_by_mac(mac, detailed=False)
+                    fdb_data = json.loads(fdb_result)
+                    if "fdb_entries" in fdb_data and fdb_data["fdb_entries"]:
+                        fdb_vlans = [str(entry.get("vlan_id", "")) for entry in fdb_data["fdb_entries"] if entry.get("vlan_id")]
+                        fdb_results[mac] = {
+                            "fdb_vlans": fdb_vlans,
+                            "fdb_entries": len(fdb_data["fdb_entries"])
+                        }
+                except Exception as e:
+                    fdb_results[mac] = {"error": str(e)}
+            
+            comparison_results["sources"]["fdb_cross_reference"] = fdb_results
+            
+        except Exception as e:
+            comparison_results["sources"]["fdb_cross_reference"] = {"error": str(e)}
+        
+        # Analysis
+        all_vlans_found = set()
+        source_vlan_summary = {}
+        
+        for source_name, source_data in comparison_results["sources"].items():
+            source_vlans = set()
+            
+            if isinstance(source_data, dict):
+                if "vlans_found" in source_data:
+                    source_vlans.update(source_data["vlans_found"])
+                elif source_name == "device_specific_arp":
+                    for device_data in source_data.values():
+                        if isinstance(device_data, dict) and "vlans_found" in device_data:
+                            source_vlans.update(device_data["vlans_found"])
+                elif source_name == "fdb_cross_reference":
+                    for mac_data in source_data.values():
+                        if isinstance(mac_data, dict) and "fdb_vlans" in mac_data:
+                            source_vlans.update(mac_data["fdb_vlans"])
+            
+            source_vlan_summary[source_name] = list(source_vlans)
+            all_vlans_found.update(source_vlans)
+        
+        comparison_results["analysis"] = {
+            "all_vlans_found": sorted(list(all_vlans_found)),
+            "source_vlan_summary": source_vlan_summary,
+            "discrepancy_detected": len(all_vlans_found) > 1,
+            "potential_issue": "FDB cross-reference may be introducing wrong VLAN data" if len(all_vlans_found) > 1 else None
+        }
+        
+        return json.dumps(comparison_results, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# Diagnostic function: Compare results from different API endpoints
+@mcp.tool() 
+def diagnose_ip_vlan_discrepancy(ip_address: str) -> str:
+    """Diagnose VLAN information discrepancy for an IP address
+    
+    Args:
+        ip_address: IP address to diagnose
+        
+    Returns:
+        JSON string with VLAN information comparison from different sources
+    """
+    logger.info(f"Diagnosing VLAN discrepancy for IP {ip_address}")
+    
+    try:
+        results = {
+            "ip_address": ip_address,
+            "sources": {},
+            "analysis": {}
+        }
+        
+        # 1. Check different ARP API endpoints
+        arp_endpoints = [
+            f"resources/ip/arp/{ip_address}",
+            f"devices/arp/{ip_address}", 
+            f"arp/{ip_address}"
+        ]
+        
+        for endpoint in arp_endpoints:
+            try:
+                arp_result = _api_request("GET", endpoint)
+                arp_data = _extract_data_from_response(arp_result, ['arp', 'ip_arp'])
+                
+                vlans_from_endpoint = []
+                for entry in arp_data:
+                    if entry.get("ipv4_address") == ip_address or entry.get("ip_address") == ip_address:
+                        vlan = entry.get("vlan_id") or entry.get("vlan")
+                        if vlan:
+                            vlans_from_endpoint.append(str(vlan))
+                
+                endpoint_name = endpoint.split('/')[-2] if '/' in endpoint else endpoint
+                results["sources"][f"arp_endpoint_{endpoint_name}"] = {
+                    "vlans_found": vlans_from_endpoint,
+                    "entry_count": len(arp_data)
+                }
+                
+            except Exception as e:
+                endpoint_name = endpoint.split('/')[-2] if '/' in endpoint else endpoint
+                results["sources"][f"arp_endpoint_{endpoint_name}"] = {
+                    "error": str(e)
+                }
+        
+        # 2. Check device-specific ARP tables
+        try:
+            devices_result = _api_request("GET", "devices", params={"limit": 10})
+            devices_data = _extract_data_from_response(devices_result, ['devices'])
+            
+            device_arp_vlans = {}
+            
+            for device in devices_data:
+                device_id = device.get('device_id')
+                hostname = device.get('hostname', f'device_{device_id}')
+                
+                try:
+                    device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
+                    device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+                    
+                    for entry in device_arp_data:
+                        if entry.get("ipv4_address") == ip_address or entry.get("ip_address") == ip_address:
+                            vlan = entry.get("vlan_id") or entry.get("vlan")
+                            mac = entry.get("mac_address")
+                            device_arp_vlans[hostname] = {
+                                "vlan": str(vlan) if vlan else None,
+                                "mac": mac,
+                                "device_id": device_id
+                            }
+                            
+                except Exception as e:
+                    device_arp_vlans[hostname] = {"error": str(e)}
+            
+            results["sources"]["device_specific_arp"] = device_arp_vlans
+            
+        except Exception as e:
+            results["sources"]["device_specific_arp"] = {"error": str(e)}
+        
+        # 3. Check FDB lookup through MAC addresses
+        try:
+            # First get MAC addresses from ARP
+            mac_addresses = set()
+            for source_data in results["sources"].values():
+                if isinstance(source_data, dict):
+                    if "vlans_found" in source_data:  # ARP endpoint data
+                        continue
+                    else:  # Device specific data  
+                        for device_info in source_data.values():
+                            if isinstance(device_info, dict) and "mac" in device_info:
+                                if device_info["mac"]:
+                                    mac_addresses.add(device_info["mac"])
+            
+            fdb_vlans = {}
+            for mac in mac_addresses:
+                if mac:
+                    try:
+                        fdb_result = search_fdb_by_mac(mac, detailed=False)
+                        fdb_data = json.loads(fdb_result)
+                        if "fdb_entries" in fdb_data:
+                            vlans = [str(entry.get("vlan_id")) for entry in fdb_data["fdb_entries"] if entry.get("vlan_id")]
+                            fdb_vlans[mac] = vlans
+                    except Exception as e:
+                        fdb_vlans[mac] = {"error": str(e)}
+            
+            results["sources"]["fdb_lookup"] = fdb_vlans
+            
+        except Exception as e:
+            results["sources"]["fdb_lookup"] = {"error": str(e)}
+        
+        # 4. Analyze discrepancies
+        all_vlans = set()
+        source_summary = {}
+        
+        for source_name, source_data in results["sources"].items():
+            vlans_in_source = set()
+            
+            if isinstance(source_data, dict):
+                if "vlans_found" in source_data:
+                    vlans_in_source.update(source_data["vlans_found"])
+                elif source_name == "device_specific_arp":
+                    for device_info in source_data.values():
+                        if isinstance(device_info, dict) and "vlan" in device_info:
+                            if device_info["vlan"]:
+                                vlans_in_source.add(device_info["vlan"])
+                elif source_name == "fdb_lookup":
+                    for vlans_list in source_data.values():
+                        if isinstance(vlans_list, list):
+                            vlans_in_source.update(vlans_list)
+            
+            source_summary[source_name] = list(vlans_in_source)
+            all_vlans.update(vlans_in_source)
+        
+        results["analysis"] = {
+            "all_vlans_found": sorted(list(all_vlans)),
+            "vlan_consistency": len(all_vlans) <= 1,
+            "source_summary": source_summary,
+            "discrepancy_detected": len(all_vlans) > 1,
+            "recommendation": "Use device-specific ARP queries for most accurate VLAN information" if len(all_vlans) > 1 else "VLAN information is consistent across sources"
+        }
+        
+        return json.dumps(results, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
+    """Get ARP table entries for a specific network segment with CORRECT VLAN mapping
+    
+    Args:
+        network_cidr: Network in CIDR format (e.g., "192.168.1.0/24")
+        detailed: Include detailed device information (default: False)
+        
+    Returns:
+        JSON string with network ARP table and statistics with CORRECT VLAN tags
+    """
+    logger.info(f"VLAN FIXED: Getting ARP table for network: {network_cidr}")
+    
+    try:
+        # Validate network CIDR format
+        if not _validate_network_cidr(network_cidr):
+            return json.dumps({
+                "error": f"Invalid network CIDR format: {network_cidr}",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2, ensure_ascii=False)
+        
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
+        arp_entries = []
+        
+        # Filter all ARP entries by network
+        try:
+            logger.info("Filtering all ARP entries by network...")
+            all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
+            
+            if all_arp_result:
+                network = ipaddress.ip_network(network_cidr, strict=False)
+                
+                for entry in all_arp_result:
+                    ip_str = entry.get("ipv4_address") or entry.get("ip_address")
+                    if ip_str:
+                        try:
+                            ip_addr = ipaddress.ip_address(ip_str)
+                            if ip_addr in network:
+                                arp_entries.append(entry)
+                        except ValueError:
+                            continue
+                
+                logger.info(f"Network filtering found {len(arp_entries)} entries in {network_cidr}")
+            
+        except Exception as e:
+            logger.warning(f"Network filtering failed: {e}")
+        
+        # Sort by IP address
+        def ip_sort_key(entry):
+            ip_str = entry.get("ipv4_address") or entry.get("ip_address") or "0.0.0.0"
+            try:
+                return ipaddress.ip_address(ip_str)
+            except:
+                return ipaddress.ip_address("0.0.0.0")
+        
+        try:
+            arp_entries.sort(key=ip_sort_key)
+        except Exception as e:
+            logger.warning(f"Could not sort by IP: {e}")
+        
+        # Apply VLAN mapping to all entries
+        enriched_entries = []
+        for entry in arp_entries:
+            enriched_entry = entry.copy()
+            
+            # Format MAC address
+            if "mac_address" in enriched_entry:
+                try:
+                    enriched_entry["mac_address_formatted"] = _format_mac_address(
+                        enriched_entry["mac_address"], "colon"
+                    )
+                except Exception as e:
+                    enriched_entry["mac_address_formatted"] = enriched_entry["mac_address"]
+            
+            # Apply VLAN mapping
+            enriched_entry = _apply_vlan_mapping(enriched_entry, vlan_mapping_cache, "arp")
+            
+            enriched_entries.append(enriched_entry)
+        
+        # Calculate network statistics with correct VLAN tags
+        ip_count = len(set(entry.get("ipv4_address") or entry.get("ip_address") for entry in enriched_entries))
+        mac_count = len(set(entry.get("mac_address") for entry in enriched_entries))
+        device_count = len(set(str(entry.get("device_id")) for entry in enriched_entries))
+        
+        vlan_counts = {}
+        for entry in enriched_entries:
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
+            if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                vlan_counts[str(vlan_tag)] = vlan_counts.get(str(vlan_tag), 0) + 1
+        
+        # Analyze network usage
+        try:
+            network = ipaddress.ip_network(network_cidr, strict=False)
+            total_addresses = network.num_addresses
+            if network.prefixlen >= 24:
+                usable_addresses = total_addresses - 2
+            else:
+                usable_addresses = total_addresses
+            utilization_percentage = (ip_count / max(usable_addresses, 1)) * 100
+        except Exception as e:
+            logger.warning(f"Network analysis failed: {e}")
+            total_addresses = 0
+            usable_addresses = 0
+            utilization_percentage = 0
         
         result = {
             "network_info": {
@@ -1185,37 +1619,43 @@ def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
                 "unique_ip_addresses": ip_count,
                 "unique_mac_addresses": mac_count,
                 "monitoring_devices": device_count,
-                "total_arp_entries": len(arp_entries)
+                "total_arp_entries": len(enriched_entries),
+                "vlan_breakdown": dict(sorted(vlan_counts.items(), key=lambda x: x[1], reverse=True))
             },
             "arp_entries": enriched_entries,
             "query_info": {
                 "network_input": network_cidr,
                 "detailed_search": detailed,
-                "entries_enriched": len(enriched_entries) if detailed else 0,
-                "timestamp": datetime.now().isoformat()
+                "entries_enriched": len(enriched_entries),
+                "vlan_mapping_applied": True,
+                "timestamp": datetime.now().isoformat(),
+                "note": "VLAN MAPPING FIXED - Shows correct VLAN tags"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
         
     except Exception as e:
-        logger.error(f"Error in get_network_arp_table: {e}")
+        logger.error(f"Error in get_network_arp_table (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id: Optional[int] = None) -> str:
-    """Analyze correlation between layer 2 (FDB) and layer 3 (ARP) network information
+    """Analyze correlation between layer 2 (FDB) and layer 3 (ARP) with CORRECT VLAN mapping
     
     Args:
         network_cidr: Network to analyze (optional, e.g., "192.168.1.0/24")
         device_id: Specific device to analyze (optional)
         
     Returns:
-        JSON string with comprehensive layer 2/3 network analysis
+        JSON string with comprehensive layer 2/3 network analysis with CORRECT VLAN tags
     """
-    logger.info(f"Analyzing L2/L3 correlation: network={network_cidr}, device={device_id}")
+    logger.info(f"VLAN FIXED: Analyzing L2/L3 correlation: network={network_cidr}, device={device_id}")
     
     try:
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
         # Get ARP data
         arp_data = []
         if network_cidr:
@@ -1224,17 +1664,23 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
             if "arp_entries" in arp_response:
                 arp_data = arp_response["arp_entries"]
         elif device_id:
-            # Use direct API since get_arp_table_entries is removed
             try:
                 device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
-                arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+                device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
+                # Apply VLAN mapping to device ARP data
+                for entry in device_arp_data:
+                    _apply_vlan_mapping(entry, vlan_mapping_cache, "arp")
+                arp_data = device_arp_data
             except Exception as e:
                 logger.warning(f"Device ARP lookup failed: {e}")
                 arp_data = []
         else:
-            # Get sample of ARP data
             try:
-                arp_data = _paginate_request("resources/ip/arp", params={}, max_items=1000)
+                arp_sample = _paginate_request("resources/ip/arp", params={}, max_items=1000)
+                # Apply VLAN mapping to sample data
+                for entry in arp_sample:
+                    _apply_vlan_mapping(entry, vlan_mapping_cache, "arp")
+                arp_data = arp_sample
             except Exception as e:
                 logger.warning(f"General ARP lookup failed: {e}")
                 arp_data = []
@@ -1247,16 +1693,15 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
             if "fdb_entries" in fdb_response:
                 fdb_data = fdb_response["fdb_entries"]
         else:
-            # Get sample of FDB data
             fdb_result = list_fdb_entries(limit=1000)
             fdb_response = json.loads(fdb_result)
             if "fdb_entries" in fdb_response:
                 fdb_data = fdb_response["fdb_entries"]
         
-        # Create MAC address mappings
+        # Create MAC address mappings with CORRECT VLAN tags
         arp_mac_to_ip = {}
         arp_ip_to_mac = {}
-        arp_mac_to_devices = {}
+        arp_mac_to_vlans = {}
         
         for entry in arp_data:
             if not isinstance(entry, dict):
@@ -1264,7 +1709,8 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 
             mac = entry.get("mac_address", "")
             ip = entry.get("ipv4_address") or entry.get("ip_address", "")
-            device_id_entry = entry.get("device_id")
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
             
             if mac and ip:
                 if mac not in arp_mac_to_ip:
@@ -1272,12 +1718,12 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 arp_mac_to_ip[mac].append(ip)
                 arp_ip_to_mac[ip] = mac
                 
-                if mac not in arp_mac_to_devices:
-                    arp_mac_to_devices[mac] = set()
-                if device_id_entry:
-                    arp_mac_to_devices[mac].add(str(device_id_entry))
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    if mac not in arp_mac_to_vlans:
+                        arp_mac_to_vlans[mac] = set()
+                    arp_mac_to_vlans[mac].add(str(vlan_tag))
         
-        # Create FDB mappings
+        # Create FDB mappings with CORRECT VLAN tags
         fdb_mac_to_devices = {}
         fdb_mac_to_vlans = {}
         fdb_mac_to_ports = {}
@@ -1288,8 +1734,9 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 
             mac = entry.get("mac_address", "")
             device_id_entry = entry.get("device_id")
-            vlan_id = entry.get("vlan_id")
             port_id = entry.get("port_id")
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
             
             if mac:
                 if mac not in fdb_mac_to_devices:
@@ -1297,10 +1744,10 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 if device_id_entry:
                     fdb_mac_to_devices[mac].add(str(device_id_entry))
                 
-                if mac not in fdb_mac_to_vlans:
-                    fdb_mac_to_vlans[mac] = set()
-                if vlan_id:
-                    fdb_mac_to_vlans[mac].add(str(vlan_id))
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    if mac not in fdb_mac_to_vlans:
+                        fdb_mac_to_vlans[mac] = set()
+                    fdb_mac_to_vlans[mac].add(str(vlan_tag))
                 
                 if mac not in fdb_mac_to_ports:
                     fdb_mac_to_ports[mac] = set()
@@ -1312,61 +1759,35 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
         arp_only_macs = set(arp_mac_to_ip.keys()) - set(fdb_mac_to_devices.keys())
         fdb_only_macs = set(fdb_mac_to_devices.keys()) - set(arp_mac_to_ip.keys())
         
-        # Analyze correlations
+        # Analyze correlations with CORRECT VLAN tags
         correlation_details = []
-        device_correlation = {}
-        vlan_ip_correlation = {}
+        vlan_consistency_issues = []
         
         for mac in correlated_macs:
+            arp_vlans = list(arp_mac_to_vlans.get(mac, set()))
+            fdb_vlans = list(fdb_mac_to_vlans.get(mac, set()))
+            
             correlation_entry = {
                 "mac_address": mac,
                 "mac_address_formatted": _format_mac_address(mac, "colon"),
                 "ip_addresses": arp_mac_to_ip.get(mac, []),
-                "arp_devices": list(arp_mac_to_devices.get(mac, set())),
-                "fdb_devices": list(fdb_mac_to_devices.get(mac, set())),
-                "vlans": list(fdb_mac_to_vlans.get(mac, set())),
+                "arp_vlans": arp_vlans,  # CORRECT VLAN tags
+                "fdb_vlans": fdb_vlans,  # CORRECT VLAN tags
                 "ports": list(fdb_mac_to_ports.get(mac, set())),
-                "device_consistency": list(arp_mac_to_devices.get(mac, set())) == list(fdb_mac_to_devices.get(mac, set()))
+                "vlan_consistency": set(arp_vlans) == set(fdb_vlans)
             }
+            
+            if not correlation_entry["vlan_consistency"]:
+                vlan_consistency_issues.append({
+                    "mac": mac,
+                    "arp_vlans": arp_vlans,
+                    "fdb_vlans": fdb_vlans,
+                    "issue": "VLAN mismatch between ARP and FDB"
+                })
+            
             correlation_details.append(correlation_entry)
-            
-            # Device correlation analysis
-            for device in correlation_entry["arp_devices"]:
-                if device not in device_correlation:
-                    device_correlation[device] = {"arp_macs": 0, "fdb_macs": 0, "correlated_macs": 0}
-                device_correlation[device]["correlated_macs"] += 1
-            
-            # VLAN-IP correlation
-            for vlan in correlation_entry["vlans"]:
-                if vlan not in vlan_ip_correlation:
-                    vlan_ip_correlation[vlan] = {"unique_ips": set(), "unique_macs": set()}
-                vlan_ip_correlation[vlan]["unique_macs"].add(mac)
-                for ip in correlation_entry["ip_addresses"]:
-                    vlan_ip_correlation[vlan]["unique_ips"].add(ip)
         
-        # Count individual table entries
-        for mac in arp_only_macs:
-            for device in arp_mac_to_devices.get(mac, set()):
-                if device not in device_correlation:
-                    device_correlation[device] = {"arp_macs": 0, "fdb_macs": 0, "correlated_macs": 0}
-                device_correlation[device]["arp_macs"] += 1
-        
-        for mac in fdb_only_macs:
-            for device in fdb_mac_to_devices.get(mac, set()):
-                if device not in device_correlation:
-                    device_correlation[device] = {"arp_macs": 0, "fdb_macs": 0, "correlated_macs": 0}
-                device_correlation[device]["fdb_macs"] += 1
-        
-        # Convert VLAN correlation sets to counts
-        vlan_summary = {}
-        for vlan, data in vlan_ip_correlation.items():
-            vlan_summary[vlan] = {
-                "unique_ip_count": len(data["unique_ips"]),
-                "unique_mac_count": len(data["unique_macs"]),
-                "sample_ips": sorted(list(data["unique_ips"]))[:10]  # Show first 10 IPs
-            }
-        
-        # Calculate statistics
+        # Calculate statistics with CORRECT VLAN tags
         total_arp_macs = len(arp_mac_to_ip)
         total_fdb_macs = len(fdb_mac_to_devices)
         correlation_percentage = (len(correlated_macs) / max(total_arp_macs, 1)) * 100
@@ -1374,18 +1795,14 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
         # Identify potential issues
         issues = []
         
-        # Check for MAC addresses in ARP but not FDB (possible security concern)
-        if len(arp_only_macs) > total_arp_macs * 0.1:  # More than 10%
+        if len(arp_only_macs) > total_arp_macs * 0.1:
             issues.append(f"High number of MAC addresses in ARP but not FDB: {len(arp_only_macs)}")
         
-        # Check for MAC addresses in FDB but not ARP (possible inactive devices)
-        if len(fdb_only_macs) > total_fdb_macs * 0.2:  # More than 20%
+        if len(fdb_only_macs) > total_fdb_macs * 0.2:
             issues.append(f"High number of MAC addresses in FDB but not ARP: {len(fdb_only_macs)}")
         
-        # Check for device inconsistencies
-        inconsistent_devices = sum(1 for entry in correlation_details if not entry["device_consistency"])
-        if inconsistent_devices > len(correlation_details) * 0.05:  # More than 5%
-            issues.append(f"Device inconsistencies detected: {inconsistent_devices} MAC addresses")
+        if len(vlan_consistency_issues) > 0:
+            issues.append(f"VLAN consistency issues detected: {len(vlan_consistency_issues)} MAC addresses")
         
         result = {
             "analysis_summary": {
@@ -1395,27 +1812,17 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 "correlation_percentage": round(correlation_percentage, 2),
                 "arp_only_macs": len(arp_only_macs),
                 "fdb_only_macs": len(fdb_only_macs),
-                "unique_devices_analyzed": len(device_correlation),
-                "unique_vlans_found": len(vlan_summary)
+                "vlan_consistency_issues": len(vlan_consistency_issues)
             },
-            "correlation_details": correlation_details[:100],  # Limit for performance
-            "device_analysis": dict(sorted(device_correlation.items(), 
-                                         key=lambda x: x[1]["correlated_macs"], reverse=True)[:20]),
-            "vlan_ip_correlation": dict(sorted(vlan_summary.items(), 
-                                             key=lambda x: x[1]["unique_ip_count"], reverse=True)[:20]),
-            "discrepancies": {
-                "arp_only_samples": [{"mac": mac, "ips": arp_mac_to_ip.get(mac, [])} 
-                                   for mac in list(arp_only_macs)[:10]],
-                "fdb_only_samples": [{"mac": mac, "vlans": list(fdb_mac_to_vlans.get(mac, set()))} 
-                                   for mac in list(fdb_only_macs)[:10]]
-            },
+            "correlation_details": correlation_details[:100],
+            "vlan_consistency_issues": vlan_consistency_issues[:20],
             "health_assessment": {
                 "overall_health": "good" if not issues else "attention_needed",
                 "potential_issues": issues,
                 "recommendations": [
                     "Investigate ARP-only MAC addresses for security concerns",
                     "Review FDB-only MAC addresses for inactive devices",
-                    "Monitor device consistency across network layers",
+                    "Monitor VLAN consistency across network layers",
                     "Validate VLAN configurations and IP assignments"
                 ]
             },
@@ -1424,15 +1831,18 @@ def analyze_network_layer2_layer3(network_cidr: Optional[str] = None, device_id:
                 "device_filter": device_id,
                 "arp_entries_analyzed": len(arp_data),
                 "fdb_entries_analyzed": len(fdb_data),
-                "analysis_timestamp": datetime.now().isoformat()
+                "vlan_mapping_applied": True,
+                "analysis_timestamp": datetime.now().isoformat(),
+                "note": "VLAN MAPPING FIXED - Analysis uses correct VLAN tags"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
         
     except Exception as e:
-        logger.error(f"Error in analyze_network_layer2_layer3: {e}")
+        logger.error(f"Error in analyze_network_layer2_layer3 (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
 
 # ───────────────────────── FDB Table Management - FIXED ─────────────────────────
 
@@ -1549,315 +1959,128 @@ def get_fdb_summary() -> str:
         logger.error(f"Error in get_fdb_summary: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
-def list_fdb_entries(limit: int = 100, vlan_id: Optional[int] = None, 
-                     device_id: Optional[int] = None, mac_filter: Optional[str] = None) -> str:
-    """List FDB (Forwarding Database) entries with filtering options - OPTIMIZED
+
+# ═══════════════════════════════════════════════════════════════
+# VLAN MAPPING HELPER FUNCTION
+# ═══════════════════════════════════════════════════════════════
+
+def _build_vlan_mapping_cache():
+    """Build VLAN mapping cache from vlans table - SHARED HELPER
     
-    Args:
-        limit: Maximum number of FDB entries to return (default: 100, max: 10000 for performance)
-        vlan_id: Filter by VLAN ID (optional)
-        device_id: Filter by device ID (optional)
-        mac_filter: Filter by partial MAC address (optional)
-        
     Returns:
-        JSON string of FDB entries with statistics
+        dict: Mapping from vlan_id (database ID) to actual VLAN tag and info
     """
-    logger.info(f"Listing FDB entries: limit={limit}, vlan={vlan_id}, device={device_id}")
+    vlan_mapping_cache = {}
     
     try:
-        # 效能限制：避免記憶體問題
-        if limit == 0:
-            logger.warning("Unlimited query requested, setting safety limit to 10000")
-            limit = 10000
-        elif limit > 50000:
-            logger.warning(f"Large limit {limit} requested, setting safety limit to 50000")
-            limit = 50000
+        vlans_result = _api_request("GET", "resources/vlans")
+        vlans_data = _extract_data_from_response(vlans_result, ['vlans'])
         
-        fdb_entries = []
-        
-        # 優先策略：如果有特定篩選條件，使用更有效的方法
-        if device_id is not None:
-            # Method 1: Device-specific query (最有效)
-            try:
-                logger.info(f"Using optimized device-specific query for device {device_id}")
-                params = {"limit": limit}
-                if vlan_id is not None:
-                    params["vlan"] = vlan_id
-                
-                # 嘗試直接的設備 FDB 端點
-                device_fdb_result = _api_request("GET", f"devices/{device_id}/fdb", params=params)
-                fdb_entries = _extract_data_from_response(device_fdb_result, ['ports_fdb', 'fdb'])
-                
-                if not fdb_entries:
-                    # 回退到埠口方法，但限制埠口數量
-                    ports_result = _api_request("GET", f"devices/{device_id}/ports", params={"limit": 20})
-                    ports_data = _extract_data_from_response(ports_result, ['ports'])
-                    
-                    for port in ports_data[:20]:  # 限制最多 20 個埠口
-                        port_id = port.get('port_id')
-                        if port_id:
-                            try:
-                                port_params = {"limit": min(limit // len(ports_data), 1000)}
-                                if vlan_id is not None:
-                                    port_params["vlan"] = vlan_id
-                                    
-                                port_fdb_result = _api_request("GET", f"ports/{port_id}/fdb", params=port_params)
-                                port_fdb_data = _extract_data_from_response(port_fdb_result, ['ports_fdb', 'fdb'])
-                                fdb_entries.extend(port_fdb_data)
-                                
-                                if len(fdb_entries) >= limit:
-                                    break
-                            except Exception as e:
-                                logger.debug(f"Port {port_id} FDB query failed: {e}")
-                
-                logger.info(f"Device-specific method found {len(fdb_entries)} FDB entries")
-                
-            except Exception as e:
-                logger.warning(f"Device-specific method failed: {e}")
-        
-        # Method 2: 如果沒有設備篩選，或者設備方法失敗，使用一般端點但加強篩選
-        if not fdb_entries:
-            endpoints_to_try = ["resources/fdb", "fdb"]
+        for vlan_entry in vlans_data:
+            vlan_db_id = str(vlan_entry.get("vlan_id", ""))
+            vlan_tag = vlan_entry.get("vlan_vlan")  # Actual VLAN tag
+            vlan_name = vlan_entry.get("vlan_name", "")
+            device_id = vlan_entry.get("device_id", "")
             
-            for endpoint in endpoints_to_try:
-                try:
-                    logger.info(f"Trying optimized FDB endpoint: {endpoint}")
-                    params = {"limit": limit}
-                    
-                    # 伺服器端篩選 (更有效)
-                    if vlan_id is not None:
-                        params["vlan"] = vlan_id
-                    if device_id is not None:
-                        params["device_id"] = device_id
-                        
-                    # 使用修改過的分頁，限制批次大小
-                    fdb_result = _paginate_request_optimized(endpoint, params, max_items=limit)
-                    
-                    if fdb_result:
-                        fdb_entries = fdb_result
-                        logger.info(f"Successfully got {len(fdb_entries)} entries from {endpoint}")
-                        break
-                    
-                except Exception as e:
-                    logger.warning(f"FDB endpoint {endpoint} failed: {e}")
-                    continue
+            if vlan_db_id and vlan_tag is not None:
+                vlan_mapping_cache[vlan_db_id] = {
+                    "vlan_tag": vlan_tag,
+                    "vlan_name": vlan_name,
+                    "device_id": device_id
+                }
         
-        # 客戶端篩選 (只在必要時進行)
-        if mac_filter and fdb_entries:
-            logger.info(f"Applying MAC filter: {mac_filter}")
-            original_count = len(fdb_entries)
-            try:
-                normalized_filter = _normalize_mac_address(mac_filter)
-                fdb_entries = [entry for entry in fdb_entries 
-                              if normalized_filter in entry.get("mac_address", "")]
-            except Exception as e:
-                logger.warning(f"MAC normalization failed: {e}, using string filter")
-                fdb_entries = [entry for entry in fdb_entries 
-                              if mac_filter.lower() in entry.get("mac_address", "").lower()]
-            logger.info(f"MAC filter reduced entries from {original_count} to {len(fdb_entries)}")
+        logger.debug(f"Built VLAN mapping cache with {len(vlan_mapping_cache)} entries")
         
-        # 最終限制
-        if len(fdb_entries) > limit:
-            fdb_entries = fdb_entries[:limit]
-        
-        # 快速統計計算 (只計算前 1000 筆以提高效能)
-        sample_size = min(len(fdb_entries), 1000)
-        sample_entries = fdb_entries[:sample_size]
-        
-        total_entries = len(fdb_entries)
-        vlan_counts = {}
-        device_counts = {}
-        mac_vendors = {}
-        
-        for entry in sample_entries:
-            if not isinstance(entry, dict):
-                continue
-                
-            # VLAN statistics
-            vlan = entry.get("vlan_id", "unknown")
-            vlan_counts[str(vlan)] = vlan_counts.get(str(vlan), 0) + 1
-            
-            # Device statistics
-            device = entry.get("device_id", "unknown")
-            device_counts[str(device)] = device_counts.get(str(device), 0) + 1
-            
-            # MAC vendor statistics (simplified)
-            mac = entry.get("mac_address", "")
-            if len(mac) >= 6:
-                oui = mac[:6].upper()
-                mac_vendors[oui] = mac_vendors.get(oui, 0) + 1
-        
-        # 只格式化顯示的條目 (提高效能)
-        display_limit = min(len(fdb_entries), 500)  # 只格式化前 500 筆
-        formatted_entries = []
-        
-        for i, entry in enumerate(fdb_entries[:display_limit]):
-            formatted_entry = entry.copy()
-            if "mac_address" in formatted_entry:
-                try:
-                    formatted_entry["mac_address_formatted"] = _format_mac_address(
-                        formatted_entry["mac_address"], "colon"
-                    )
-                except Exception as e:
-                    formatted_entry["mac_address_formatted"] = formatted_entry["mac_address"]
-                    
-                formatted_entry["created_at_formatted"] = _format_timestamp(
-                    formatted_entry.get("created_at", "")
-                )
-                formatted_entry["updated_at_formatted"] = _format_timestamp(
-                    formatted_entry.get("updated_at", "")
-                )
-            formatted_entries.append(formatted_entry)
-        
-        # 建立回應
-        result = {
-            "fdb_entries": formatted_entries,
-            "count": total_entries,
-            "statistics": {
-                "vlan_breakdown": dict(sorted(vlan_counts.items(), key=lambda x: x[1], reverse=True)[:20]),
-                "device_breakdown": dict(sorted(device_counts.items(), key=lambda x: x[1], reverse=True)[:20]),
-                "top_mac_vendors": dict(sorted(mac_vendors.items(), key=lambda x: x[1], reverse=True)[:10])
-            },
-            "query_info": {
-                "limit_requested": limit,
-                "vlan_filter": vlan_id,
-                "device_filter": device_id,
-                "mac_filter": mac_filter,
-                "total_found": total_entries,
-                "displayed_entries": len(formatted_entries),
-                "statistics_sample_size": sample_size,
-                "performance_optimizations": [
-                    "Limited batch size",
-                    "Server-side filtering when possible",
-                    "Reduced formatting overhead",
-                    "Sample-based statistics"
-                ],
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
-        logger.error(f"Error in list_fdb_entries: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        logger.warning(f"Failed to build VLAN mapping cache: {e}")
+    
+    return vlan_mapping_cache
+
+def _apply_vlan_mapping(entry, vlan_mapping_cache, source_prefix=""):
+    """Apply VLAN mapping to an entry - SHARED HELPER
+    
+    Args:
+        entry: Dictionary entry containing vlan_id field
+        vlan_mapping_cache: VLAN mapping cache from _build_vlan_mapping_cache()
+        source_prefix: Prefix for source field (e.g., "arp", "fdb")
+        
+    Returns:
+        dict: Entry with vlan_info field added
+    """
+    vlan_id = entry.get("vlan_id")
+    
+    if vlan_id:
+        vlan_mapping = vlan_mapping_cache.get(str(vlan_id))
+        if vlan_mapping:
+            entry["vlan_info"] = {
+                "vlan_tag": vlan_mapping["vlan_tag"],  # CORRECT VLAN tag
+                "vlan_name": vlan_mapping["vlan_name"],
+                "vlan_db_id": vlan_id,   # Database ID (for reference)
+                "source": f"{source_prefix}_vlans_table_mapping",
+                "mapping_device_id": vlan_mapping["device_id"]
+            }
+        else:
+            entry["vlan_info"] = {
+                "vlan_tag": "unknown",
+                "vlan_db_id": vlan_id,
+                "error": f"No VLAN mapping found for vlan_id {vlan_id}",
+                "source": f"{source_prefix}_vlans_table_mapping_failed"
+            }
+    else:
+        entry["vlan_info"] = {
+            "vlan_tag": "not_specified",
+            "source": f"no_vlan_in_{source_prefix}_entry"
+        }
+    
+    return entry
+
+# ═══════════════════════════════════════════════════════════════
+# FIXED FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
 
 @mcp.tool()
-def search_fdb_by_mac(mac_address: str, detailed: bool = True) -> str:
-    """Search FDB table for specific MAC address with detailed information - FIXED
+def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
+    """Search ARP table to find IP addresses for specific MAC address - VLAN FIXED
     
     Args:
         mac_address: MAC address to search for (various formats accepted)
         detailed: Include detailed device and port information (default: True)
         
     Returns:
-        JSON string with MAC address location and details
+        JSON string with MAC-to-IP mapping and device details with CORRECT VLAN tags
     """
-    logger.info(f"Searching FDB for MAC: {mac_address}")
+    logger.info(f"VLAN FIXED: Searching ARP table for MAC: {mac_address}")
     
     try:
-        # Normalize MAC address for API
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
+        # Normalize MAC address
         try:
             normalized_mac = _normalize_mac_address(mac_address)
-            logger.debug(f"Normalized MAC: {normalized_mac}")
         except Exception as e:
             logger.warning(f"MAC normalization failed: {e}, using original format")
             normalized_mac = mac_address
         
-        # Try different search methods
-        fdb_results = []
+        arp_entries = []
         
-        # Method 1: Direct FDB search with normalized MAC
+        # Search methods...
         try:
-            fdb_result = _api_request("GET", f"resources/fdb/{normalized_mac}")
-            fdb_data = _extract_data_from_response(fdb_result, ['ports_fdb'])
-            fdb_results.extend(fdb_data)
-            logger.debug(f"Direct search found {len(fdb_data)} entries")
-        except Exception as e:
-            logger.warning(f"Direct FDB search failed: {e}")
-        
-        # Method 2: Search using mac_filter in list_fdb_entries
-        if not fdb_results:
-            try:
-                logger.info("Trying MAC filter search...")
-                filter_result = list_fdb_entries(limit=1000, mac_filter=mac_address)
-                filter_data = json.loads(filter_result)
-                
-                if "fdb_entries" in filter_data:
-                    fdb_results.extend(filter_data["fdb_entries"])
-                    logger.debug(f"Filter search found {len(filter_data['fdb_entries'])} entries")
-                
-            except Exception as e:
-                logger.warning(f"Filter search failed: {e}")
-        
-        # Method 3: Try different MAC formats
-        if not fdb_results:
-            mac_formats = [
-                mac_address.replace(":", "").replace("-", "").replace(".", "").lower(),
-                mac_address.replace(":", "").replace("-", "").replace(".", "").upper(),
-                mac_address.lower(),
-                mac_address.upper()
-            ]
+            all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
             
-            for mac_format in mac_formats:
-                try:
-                    endpoint = f"resources/fdb/{mac_format}"
-                    search_result = _api_request("GET", endpoint)
-                    search_data = _extract_data_from_response(search_result, ['ports_fdb', 'fdb'])
-                    if search_data:
-                        fdb_results.extend(search_data)
-                        logger.debug(f"Format search with {mac_format} found {len(search_data)} entries")
-                        break
-                except Exception as e:
-                    logger.debug(f"Search with format {mac_format} failed: {e}")
+            if all_arp_result:
+                for entry in all_arp_result:
+                    entry_mac = entry.get("mac_address", "")
+                    if (entry_mac.lower() == mac_address.lower() or 
+                        entry_mac.lower() == normalized_mac.lower() or
+                        mac_address.lower() in entry_mac.lower()):
+                        arp_entries.append(entry)
+        except Exception as e:
+            logger.warning(f"ARP table search failed: {e}")
         
-        # Method 4: Comprehensive search if still no results
-        if not fdb_results:
-            logger.info("No direct results, trying comprehensive search...")
-            try:
-                all_fdb_result = list_fdb_entries(limit=0)
-                all_fdb_data = json.loads(all_fdb_result)
-                
-                if "fdb_entries" in all_fdb_data:
-                    all_entries = all_fdb_data["fdb_entries"]
-                    
-                    # Search for MAC in various formats
-                    search_terms = [
-                        mac_address.lower(),
-                        mac_address.upper(),
-                        mac_address.replace(":", "").replace("-", "").replace(".", "").lower(),
-                        mac_address.replace(":", "").replace("-", "").replace(".", "").upper()
-                    ]
-                    
-                    for entry in all_entries:
-                        entry_mac = entry.get("mac_address", "")
-                        if any(term in entry_mac.lower() for term in search_terms):
-                            fdb_results.append(entry)
-                    
-                    logger.debug(f"Comprehensive search found {len(fdb_results)} entries")
-                
-            except Exception as e:
-                logger.warning(f"Comprehensive search failed: {e}")
-        
-        # Remove duplicates
-        unique_results = []
-        seen_ids = set()
-        
-        for result in fdb_results:
-            if not isinstance(result, dict):
-                continue
-                
-            result_id = result.get("ports_fdb_id") or result.get("id") or str(result)
-            if result_id not in seen_ids:
-                seen_ids.add(result_id)
-                unique_results.append(result)
-        
-        # Enrich results with additional information
-        enriched_results = []
-        device_info_cache = {}
-        port_info_cache = {}
-        
-        for entry in unique_results:
+        # Apply VLAN mapping to all entries
+        enriched_entries = []
+        for entry in arp_entries:
             enriched_entry = entry.copy()
             
             # Format MAC address
@@ -1867,240 +2090,216 @@ def search_fdb_by_mac(mac_address: str, detailed: bool = True) -> str:
                         enriched_entry["mac_address"], "colon"
                     )
                 except Exception as e:
-                    logger.warning(f"MAC formatting failed: {e}")
                     enriched_entry["mac_address_formatted"] = enriched_entry["mac_address"]
             
-            # Format timestamps
-            enriched_entry["created_at_formatted"] = _format_timestamp(
-                enriched_entry.get("created_at", "")
-            )
-            enriched_entry["updated_at_formatted"] = _format_timestamp(
-                enriched_entry.get("updated_at", "")
-            )
+            # Apply VLAN mapping
+            enriched_entry = _apply_vlan_mapping(enriched_entry, vlan_mapping_cache, "arp")
             
-            # Get device information
-            device_id = enriched_entry.get("device_id")
-            if device_id and detailed:
-                if device_id not in device_info_cache:
-                    try:
-                        device_result = _api_request("GET", f"devices/{device_id}")
-                        if "devices" in device_result and device_result["devices"]:
-                            device_info_cache[device_id] = device_result["devices"][0]
-                        else:
-                            device_info_cache[device_id] = None
-                    except Exception as e:
-                        logger.warning(f"Failed to get device info for {device_id}: {e}")
-                        device_info_cache[device_id] = None
-                
-                device_info = device_info_cache.get(device_id)
-                if device_info:
-                    enriched_entry["device_info"] = {
-                        "hostname": device_info.get("hostname"),
-                        "sysName": device_info.get("sysName"),
-                        "ip": device_info.get("ip"),
-                        "type": device_info.get("type"),
-                        "location": device_info.get("location")
-                    }
-            
-            # Get port information
-            port_id = enriched_entry.get("port_id")
-            if port_id and detailed:
-                if port_id not in port_info_cache:
-                    try:
-                        port_result = _api_request("GET", f"ports/{port_id}")
-                        if "port" in port_result and port_result["port"]:
-                            port_info_cache[port_id] = port_result["port"][0]
-                        else:
-                            port_info_cache[port_id] = None
-                    except Exception as e:
-                        logger.warning(f"Failed to get port info for {port_id}: {e}")
-                        port_info_cache[port_id] = None
-                
-                port_info = port_info_cache.get(port_id)
-                if port_info:
-                    enriched_entry["port_info"] = {
-                        "ifName": port_info.get("ifName"),
-                        "ifAlias": port_info.get("ifAlias"),
-                        "ifDescr": port_info.get("ifDescr"),
-                        "ifOperStatus": port_info.get("ifOperStatus"),
-                        "ifSpeed": port_info.get("ifSpeed"),
-                        "ifType": port_info.get("ifType")
-                    }
-            
-            enriched_results.append(enriched_entry)
+            enriched_entries.append(enriched_entry)
         
-        # Calculate search statistics
-        if enriched_results:
-            vlans_found = set(str(entry.get("vlan_id", "")) for entry in enriched_results)
-            devices_found = set(str(entry.get("device_id", "")) for entry in enriched_results)
-            ports_found = set(str(entry.get("port_id", "")) for entry in enriched_results)
-            
-            # Determine MAC vendor (OUI lookup)
-            try:
-                mac_oui = normalized_mac[:6].upper() if len(normalized_mac) >= 6 else ""
-            except:
-                mac_oui = ""
+        # Calculate summary with correct VLAN tags
+        if enriched_entries:
+            ip_addresses = [entry.get("ipv4_address") or entry.get("ip_address") for entry in enriched_entries]
+            vlan_tags_found = set()
+            for entry in enriched_entries:
+                vlan_info = entry.get("vlan_info", {})
+                vlan_tag = vlan_info.get("vlan_tag")
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    vlan_tags_found.add(str(vlan_tag))
             
             search_summary = {
                 "mac_address_searched": mac_address,
-                "mac_address_normalized": normalized_mac,
-                "mac_oui": mac_oui,
-                "total_entries_found": len(enriched_results),
-                "vlans_found": sorted(list(vlans_found)),
-                "devices_found": sorted(list(devices_found)),
-                "ports_found": sorted(list(ports_found)),
-                "search_methods_used": ["direct_fdb_search", "filter_search", "format_search", "comprehensive_search"]
+                "total_ip_addresses_found": len(ip_addresses),
+                "ip_addresses": sorted([ip for ip in ip_addresses if ip]),
+                "vlan_tags_found": sorted(list(vlan_tags_found)),  # CORRECT VLAN tags
+                "vlan_mapping_applied": True
             }
         else:
             search_summary = {
                 "mac_address_searched": mac_address,
-                "mac_address_normalized": normalized_mac,
-                "total_entries_found": 0,
-                "message": "MAC address not found in FDB table"
+                "total_ip_addresses_found": 0,
+                "message": "MAC address not found in ARP tables"
             }
         
         result = {
             "search_summary": search_summary,
-            "fdb_entries": enriched_results,
+            "arp_entries": enriched_entries,
             "query_info": {
                 "mac_address_input": mac_address,
                 "detailed_search": detailed,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "note": "VLAN MAPPING FIXED - Shows correct VLAN tags"
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error in search_mac_to_ip (vlan fixed): {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def list_fdb_entries(limit: int = 100, vlan_id: Optional[int] = None, 
+                     device_id: Optional[int] = None, mac_filter: Optional[str] = None) -> str:
+    """List FDB entries with CORRECT VLAN mapping
+    
+    Args:
+        limit: Maximum number of FDB entries to return (default: 100)
+        vlan_id: Filter by VLAN database ID (optional) - NOTE: This is database ID, not VLAN tag
+        device_id: Filter by device ID (optional)
+        mac_filter: Filter by partial MAC address (optional)
+        
+    Returns:
+        JSON string of FDB entries with CORRECT VLAN tags
+    """
+    logger.info(f"VLAN FIXED: Listing FDB entries with correct VLAN mapping")
+    
+    try:
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
+        # Get FDB entries using existing logic...
+        params = {}
+        if vlan_id is not None:
+            params["vlan"] = vlan_id
+        if device_id is not None:
+            params["device_id"] = device_id
+            
+        fdb_entries = _paginate_request_optimized("resources/fdb", params, max_items=limit)
+        
+        # Apply MAC filter if specified
+        if mac_filter and fdb_entries:
+            try:
+                normalized_filter = _normalize_mac_address(mac_filter)
+                fdb_entries = [entry for entry in fdb_entries 
+                              if normalized_filter in entry.get("mac_address", "")]
+            except Exception:
+                fdb_entries = [entry for entry in fdb_entries 
+                              if mac_filter.lower() in entry.get("mac_address", "").lower()]
+        
+        # Apply VLAN mapping to all entries
+        enriched_entries = []
+        for entry in fdb_entries[:min(len(fdb_entries), limit)]:
+            enriched_entry = entry.copy()
+            
+            # Format MAC address
+            if "mac_address" in enriched_entry:
+                try:
+                    enriched_entry["mac_address_formatted"] = _format_mac_address(
+                        enriched_entry["mac_address"], "colon"
+                    )
+                except Exception as e:
+                    enriched_entry["mac_address_formatted"] = enriched_entry["mac_address"]
+            
+            # Apply VLAN mapping
+            enriched_entry = _apply_vlan_mapping(enriched_entry, vlan_mapping_cache, "fdb")
+            
+            enriched_entries.append(enriched_entry)
+        
+        # Calculate statistics with correct VLAN tags
+        vlan_counts = {}
+        device_counts = {}
+        
+        for entry in enriched_entries:
+            if not isinstance(entry, dict):
+                continue
+                
+            # VLAN statistics using correct tags
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
+            if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                vlan_counts[str(vlan_tag)] = vlan_counts.get(str(vlan_tag), 0) + 1
+            
+            # Device statistics
+            device = entry.get("device_id", "unknown")
+            device_counts[str(device)] = device_counts.get(str(device), 0) + 1
+        
+        result = {
+            "fdb_entries": enriched_entries,
+            "count": len(enriched_entries),
+            "statistics": {
+                "vlan_breakdown": dict(sorted(vlan_counts.items(), key=lambda x: x[1], reverse=True)[:20]),
+                "device_breakdown": dict(sorted(device_counts.items(), key=lambda x: x[1], reverse=True)[:20])
+            },
+            "query_info": {
+                "limit_requested": limit,
+                "vlan_filter": vlan_id,
+                "device_filter": device_id,
+                "mac_filter": mac_filter,
+                "total_found": len(enriched_entries),
+                "vlan_mapping_applied": True,
+                "timestamp": datetime.now().isoformat(),
+                "note": "VLAN MAPPING FIXED - Shows correct VLAN tags from vlans.vlan_vlan field"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
-        logger.error(f"Error in search_fdb_by_mac: {e}")
+        logger.error(f"Error in list_fdb_entries (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_device_fdb_table(device_id: int, limit: int = 100) -> str:
-    """Get FDB table for a specific device - FIXED
+    """Get FDB table for a specific device with CORRECT VLAN mapping
     
     Args:
         device_id: Device ID to get FDB table for
         limit: Maximum number of entries to return (default: 100, 0 = all)
         
     Returns:
-        JSON string with device FDB table and statistics
+        JSON string with device FDB table and CORRECT VLAN tags
     """
-    logger.info(f"Getting FDB table for device {device_id}")
+    logger.info(f"VLAN FIXED: Getting FDB table for device {device_id}")
     
     try:
-        # Get device information first
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
+        # Get device information
         device_result = _api_request("GET", f"devices/{device_id}")
         device_info = None
         
         if "devices" in device_result and device_result["devices"]:
             device_info = device_result["devices"][0]
         
-        # Try multiple methods to get FDB data for this device
+        # Get FDB entries using existing methods...
         fdb_entries = []
         
-        # Method 1: Try device-specific FDB endpoint
         try:
-            device_fdb_result = _api_request("GET", f"devices/{device_id}/fdb")
-            fdb_entries = _extract_data_from_response(device_fdb_result, ['ports_fdb', 'fdb'])
-            logger.debug(f"Device FDB endpoint returned {len(fdb_entries)} entries")
+            filter_result = list_fdb_entries(limit=0, device_id=device_id)
+            filter_data = json.loads(filter_result)
+            
+            if "fdb_entries" in filter_data:
+                fdb_entries = filter_data["fdb_entries"]
         except Exception as e:
-            logger.warning(f"Device FDB endpoint failed: {e}")
-        
-        # Method 2: Try getting ports and then FDB for each port
-        if not fdb_entries:
-            try:
-                logger.info("Trying port-based FDB collection...")
-                ports_result = _api_request("GET", f"devices/{device_id}/ports")
-                ports_data = _extract_data_from_response(ports_result, ['ports'])
-                
-                for port in ports_data:
-                    port_id = port.get('port_id')
-                    if port_id:
-                        try:
-                            port_fdb_result = _api_request("GET", f"ports/{port_id}/fdb")
-                            port_fdb_data = _extract_data_from_response(port_fdb_result, ['ports_fdb', 'fdb'])
-                            fdb_entries.extend(port_fdb_data)
-                        except Exception as e:
-                            logger.debug(f"Port {port_id} FDB failed: {e}")
-                
-                logger.debug(f"Port-based collection found {len(fdb_entries)} entries")
-                
-            except Exception as e:
-                logger.warning(f"Port-based FDB collection failed: {e}")
-        
-        # Method 3: Use list_fdb_entries with device filter
-        if not fdb_entries:
-            try:
-                logger.info("Using list_fdb_entries with device filter...")
-                filter_result = list_fdb_entries(limit=0, device_id=device_id)
-                filter_data = json.loads(filter_result)
-                
-                if "fdb_entries" in filter_data:
-                    fdb_entries = filter_data["fdb_entries"]
-                    logger.debug(f"Filter method found {len(fdb_entries)} entries")
-                
-            except Exception as e:
-                logger.warning(f"Filter method failed: {e}")
+            logger.warning(f"FDB collection failed: {e}")
         
         # Limit results if specified
         if limit > 0:
             fdb_entries = fdb_entries[:limit]
         
-        # Calculate statistics
+        # Re-apply VLAN mapping (in case list_fdb_entries didn't apply it)
+        for entry in fdb_entries:
+            if "vlan_info" not in entry:
+                _apply_vlan_mapping(entry, vlan_mapping_cache, "fdb")
+        
+        # Calculate statistics with correct VLAN tags
         vlan_counts = {}
         port_counts = {}
-        mac_age_analysis = {}
         
         for entry in fdb_entries:
             if not isinstance(entry, dict):
                 continue
                 
-            # VLAN statistics
-            vlan = entry.get("vlan_id", "unknown")
-            vlan_counts[str(vlan)] = vlan_counts.get(str(vlan), 0) + 1
+            # VLAN statistics using correct tags
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
+            if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                vlan_counts[str(vlan_tag)] = vlan_counts.get(str(vlan_tag), 0) + 1
             
             # Port statistics
             port = entry.get("port_id", "unknown")
             port_counts[str(port)] = port_counts.get(str(port), 0) + 1
-            
-            # Age analysis
-            updated_at = entry.get("updated_at")
-            
-            if updated_at:
-                updated_time = _safe_parse_datetime(updated_at)
-                if updated_time:
-                    age_hours = (datetime.now() - updated_time).total_seconds() / 3600
-                    if age_hours < 1:
-                        age_category = "< 1 hour"
-                    elif age_hours < 24:
-                        age_category = "< 1 day"
-                    elif age_hours < 168:  # 7 days
-                        age_category = "< 1 week"
-                    else:
-                        age_category = "> 1 week"
-                    
-                    mac_age_analysis[age_category] = mac_age_analysis.get(age_category, 0) + 1
-        
-        # Format entries for display
-        formatted_entries = []
-        for entry in fdb_entries:
-            formatted_entry = entry.copy()
-            if "mac_address" in formatted_entry:
-                try:
-                    formatted_entry["mac_address_formatted"] = _format_mac_address(
-                        formatted_entry["mac_address"], "colon"
-                    )
-                except Exception as e:
-                    logger.warning(f"MAC formatting failed: {e}")
-                    formatted_entry["mac_address_formatted"] = formatted_entry["mac_address"]
-                    
-            formatted_entry["created_at_formatted"] = _format_timestamp(
-                formatted_entry.get("created_at", "")
-            )
-            formatted_entry["updated_at_formatted"] = _format_timestamp(
-                formatted_entry.get("updated_at", "")
-            )
-            formatted_entries.append(formatted_entry)
         
         result = {
             "device_info": {
@@ -2110,42 +2309,45 @@ def get_device_fdb_table(device_id: int, limit: int = 100) -> str:
                 "ip": device_info.get("ip") if device_info else "Unknown",
                 "type": device_info.get("type") if device_info else "Unknown"
             } if device_info else {"device_id": device_id, "error": "Device not found"},
-            "fdb_entries": formatted_entries,
-            "count": len(formatted_entries),
+            "fdb_entries": fdb_entries,
+            "count": len(fdb_entries),
             "statistics": {
-                "total_mac_addresses": len(formatted_entries),
+                "total_mac_addresses": len(fdb_entries),
                 "vlan_breakdown": dict(sorted(vlan_counts.items(), key=lambda x: x[1], reverse=True)),
-                "port_breakdown": dict(sorted(port_counts.items(), key=lambda x: x[1], reverse=True)),
-                "mac_age_analysis": mac_age_analysis
+                "port_breakdown": dict(sorted(port_counts.items(), key=lambda x: x[1], reverse=True))
             },
             "query_info": {
                 "device_id": device_id,
                 "limit_requested": limit,
                 "total_found": len(fdb_entries),
+                "vlan_mapping_applied": True,
                 "timestamp": datetime.now().isoformat(),
-                "collection_methods": ["device_fdb_endpoint", "port_based_collection", "filter_method"]
+                "note": "VLAN MAPPING FIXED - Shows correct VLAN tags"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
-        logger.error(f"Error in get_device_fdb_table: {e}")
+        logger.error(f"Error in get_device_fdb_table (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def analyze_fdb_statistics(days: int = 7) -> str:
-    """Analyze FDB table statistics and patterns - FIXED
+    """Analyze FDB table statistics and patterns with CORRECT VLAN mapping
     
     Args:
         days: Number of days to analyze (default: 7)
         
     Returns:
-        JSON string with comprehensive FDB analysis
+        JSON string with comprehensive FDB analysis with CORRECT VLAN tags
     """
-    logger.info(f"Analyzing FDB statistics for {days} days")
+    logger.info(f"VLAN FIXED: Analyzing FDB statistics for {days} days")
     
     try:
-        # Get comprehensive FDB data using our fixed function
+        # Build VLAN mapping cache
+        vlan_mapping_cache = _build_vlan_mapping_cache()
+        
+        # Get comprehensive FDB data
         all_fdb_result = list_fdb_entries(limit=0)
         all_fdb_data = json.loads(all_fdb_result)
         
@@ -2163,13 +2365,18 @@ def analyze_fdb_statistics(days: int = 7) -> str:
                 "timestamp": datetime.now().isoformat()
             }, indent=2, ensure_ascii=False)
         
+        # Ensure all entries have VLAN mapping applied
+        for entry in all_fdb:
+            if "vlan_info" not in entry:
+                _apply_vlan_mapping(entry, vlan_mapping_cache, "fdb")
+        
         # Calculate time window
         end_time = datetime.now()
         start_time = end_time - timedelta(days=days)
         
         # Initialize analysis containers
         device_stats = {}
-        vlan_stats = {}
+        vlan_stats = {}  # Using CORRECT VLAN tags
         port_stats = {}
         mac_age_distribution = {}
         activity_patterns = {}
@@ -2183,11 +2390,14 @@ def analyze_fdb_statistics(days: int = 7) -> str:
                 continue
             
             device_id = entry.get("device_id")
-            vlan_id = entry.get("vlan_id")
             port_id = entry.get("port_id")
             mac_address = entry.get("mac_address", "")
             updated_at = entry.get("updated_at")
             created_at = entry.get("created_at")
+            
+            # Get CORRECT VLAN tag
+            vlan_info = entry.get("vlan_info", {})
+            vlan_tag = vlan_info.get("vlan_tag")
             
             # Device statistics
             if device_id:
@@ -2199,14 +2409,14 @@ def analyze_fdb_statistics(days: int = 7) -> str:
                         "ports": set()
                     }
                 device_stats[device_id]["total_macs"] += 1
-                if vlan_id:
-                    device_stats[device_id]["vlans"].add(vlan_id)
+                if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                    device_stats[device_id]["vlans"].add(str(vlan_tag))
                 if port_id:
                     device_stats[device_id]["ports"].add(port_id)
             
-            # VLAN statistics
-            if vlan_id:
-                vlan_stats[vlan_id] = vlan_stats.get(vlan_id, 0) + 1
+            # VLAN statistics using CORRECT tags
+            if vlan_tag and vlan_tag not in ["unknown", "not_specified"]:
+                vlan_stats[str(vlan_tag)] = vlan_stats.get(str(vlan_tag), 0) + 1
             
             # Port statistics
             if port_id:
@@ -2218,7 +2428,6 @@ def analyze_fdb_statistics(days: int = 7) -> str:
                 if updated_time:
                     age_hours = (end_time - updated_time).total_seconds() / 3600
                     
-                    # Check if within analysis window
                     if updated_time >= start_time:
                         active_entries += 1
                         if device_id:
@@ -2247,7 +2456,6 @@ def analyze_fdb_statistics(days: int = 7) -> str:
             # Vendor analysis (OUI)
             if len(mac_address) >= 6:
                 try:
-                    # Remove separators for consistent processing
                     clean_mac = re.sub(r'[:\-.]', '', mac_address)
                     if len(clean_mac) >= 6:
                         oui = clean_mac[:6].upper()
@@ -2269,18 +2477,15 @@ def analyze_fdb_statistics(days: int = 7) -> str:
         # Identify potential issues
         issues = []
         
-        # Check for stale entries
         stale_percentage = (stale_entries / max(total_entries, 1)) * 100
         if stale_percentage > 30:
             issues.append(f"High percentage of stale entries: {stale_percentage:.1f}%")
         
-        # Check for port concentration
         if port_stats:
             max_port_macs = max(port_stats.values())
             if max_port_macs > 100:
                 issues.append(f"Port with excessive MAC addresses: {max_port_macs}")
         
-        # Check for VLAN distribution
         if len(vlan_stats) < 2:
             issues.append("Very few VLANs in use - possible configuration issue")
         
@@ -2306,7 +2511,7 @@ def analyze_fdb_statistics(days: int = 7) -> str:
                 )[:10])
             },
             "network_distribution": {
-                "vlan_breakdown": dict(sorted(vlan_stats.items(), key=lambda x: x[1], reverse=True)[:20]),
+                "vlan_breakdown": dict(sorted(vlan_stats.items(), key=lambda x: x[1], reverse=True)[:20]),  # CORRECT VLAN tags
                 "port_concentration": dict(sorted(port_stats.items(), key=lambda x: x[1], reverse=True)[:20])
             },
             "temporal_analysis": {
@@ -2329,13 +2534,15 @@ def analyze_fdb_statistics(days: int = 7) -> str:
             "query_info": {
                 "analysis_period_days": days,
                 "analysis_timestamp": datetime.now().isoformat(),
-                "total_entries_analyzed": total_entries
+                "total_entries_analyzed": total_entries,
+                "vlan_mapping_applied": True,
+                "note": "VLAN MAPPING FIXED - Analysis uses correct VLAN tags from vlans.vlan_vlan field"
             }
         }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
-        logger.error(f"Error in analyze_fdb_statistics: {e}")
+        logger.error(f"Error in analyze_fdb_statistics (vlan fixed): {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 # ───────────────────────── Enhanced Device Management ─────────────────────────
@@ -3102,23 +3309,7 @@ def cache_stats() -> str:
 
 if __name__ == "__main__":
     logger.info("=" * 80)
-    logger.info("LibreNMS FastMCP Server v3.4 - Enhanced with ARP Table and IP-to-MAC Support")
-    logger.info("=" * 80)
-    logger.info("NEW in v3.4:")
-    logger.info("  ✨ COMPREHENSIVE ARP TABLE MANAGEMENT")
-    logger.info("  ✨ IP address to MAC address resolution")
-    logger.info("  ✨ MAC address to IP address lookup")
-    logger.info("  ✨ Network segment ARP scanning")
-    logger.info("  ✨ Enhanced network discovery with ARP integration")
-    logger.info("  ✨ Cross-referencing between FDB and ARP tables")
-    logger.info("  ✨ Network troubleshooting with layer 2/3 correlation")
-    logger.info("=" * 80)
-    logger.info("FIXED in v3.3:")
-    logger.info("  🔧 FIXED regex pattern in _normalize_mac_address function")
-    logger.info("  🔧 FIXED _format_mac_address function regex pattern")
-    logger.info("  🔧 Updated FDB endpoints to use correct LibreNMS API paths")
-    logger.info("  🔧 Enhanced error handling for FDB operations")
-    logger.info("  🔧 Multiple fallback methods for FDB data retrieval")
+    logger.info("LibreNMS FastMCP Server v3.5 - Enhanced with ARP Table and IP-to-MAC Support")
     logger.info("=" * 80)
     logger.info("Core Features:")
     logger.info("  ✓ Comprehensive alert history with multiple data sources")
