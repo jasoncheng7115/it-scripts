@@ -3,10 +3,15 @@
 Proxmox VE MCP Server - Enhanced Edition with Batch Operations
 Provides comprehensive Proxmox VE management functionality including batch data collection
 
-Author: Jason Cheng (Jason Tools)
-Version: 1.2.1
+Author: Jason Cheng (jason@jason.tools)
+Version: 1.2.2
 License: MIT
 Repository: https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/mcp/mcp_pve/mcp_pve.py
+
+Changelog:
+v1.2.2 - Fixed get_node_resources and get_ceph_osds functions
+         - get_node_resources: Now uses /cluster/resources with node filtering
+         - get_ceph_osds: Enhanced with multiple endpoint fallbacks and OSD tree parsing
 """
 
 import asyncio
@@ -34,7 +39,7 @@ from pydantic import AnyUrl
 import mcp.types as types
 
 # Version information
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 __author__ = "Jason Cheng"
 __email__ = "jason@jason.tools"
 __license__ = "MIT"
@@ -405,7 +410,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_node_resources",
-            description="Get node resource usage including VMs, containers, and storage",
+            description="Get node resource usage including VMs, containers, and storage from cluster resources filtered by node",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1116,7 +1121,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_ceph_osds",
-            description="Get Ceph OSD (Object Storage Daemon) status",
+            description="Get Ceph OSD (Object Storage Daemon) status from all nodes in the cluster",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -2344,7 +2349,30 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         elif name == "get_node_resources":
             node = arguments["node"]
-            return await client.get(f"/nodes/{node}/resources")
+            # Get cluster resources filtered by node
+            cluster_resources = await client.get("/cluster/resources")
+            node_resources = []
+            
+            # Filter resources for the specific node
+            for resource in cluster_resources.get("data", []):
+                if resource.get("node") == node:
+                    node_resources.append(resource)
+            
+            # Also get node-specific information
+            node_status = await client.get(f"/nodes/{node}/status")
+            
+            return {
+                "data": {
+                    "resources": node_resources,
+                    "node_status": node_status.get("data", {}),
+                    "summary": {
+                        "total_resources": len(node_resources),
+                        "vms": len([r for r in node_resources if r.get("type") == "qemu"]),
+                        "containers": len([r for r in node_resources if r.get("type") == "lxc"]),
+                        "storage": len([r for r in node_resources if r.get("type") == "storage"])
+                    }
+                }
+            }
         
         elif name == "get_node_tasks":
             node = arguments["node"]
@@ -2581,7 +2609,128 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             return await client.get("/cluster/ceph/status")
         
         elif name == "get_ceph_osds":
-            return await client.get("/cluster/ceph/osd")
+            # First, try the cluster-wide endpoint
+            all_osds = []
+            osd_tree = None
+            ceph_status = None
+            nodes_with_osds = set()
+            
+            try:
+                # Try cluster-wide OSD endpoint first
+                logger.info("Trying cluster-wide Ceph OSD endpoint")
+                osd_result = await client.get("/cluster/ceph/osd")
+                all_osds = osd_result.get("data", [])
+                logger.info(f"Found {len(all_osds)} OSDs from cluster endpoint")
+            except Exception as e:
+                logger.warning(f"Cluster OSD endpoint failed: {e}, trying per-node approach")
+                
+                # If cluster endpoint fails, try per-node approach
+                nodes_result = await client.get("/nodes")
+                
+                for node_info in nodes_result.get("data", []):
+                    node = node_info["node"]
+                    try:
+                        # Try multiple possible endpoints
+                        endpoints = [
+                            f"/nodes/{node}/ceph/osd",
+                            f"/nodes/{node}/ceph/osds"
+                        ]
+                        
+                        for endpoint in endpoints:
+                            try:
+                                logger.debug(f"Trying endpoint: {endpoint}")
+                                osds_result = await client.get(endpoint)
+                                node_osds = osds_result.get("data", [])
+                                
+                                if node_osds:
+                                    logger.info(f"Found {len(node_osds)} OSDs on node {node}")
+                                    for osd in node_osds:
+                                        # Ensure we have consistent data structure
+                                        if "node" not in osd:
+                                            osd["node"] = node
+                                        all_osds.append(osd)
+                                        nodes_with_osds.add(node)
+                                    break  # Success, no need to try other endpoints
+                            except Exception as endpoint_error:
+                                logger.debug(f"Endpoint {endpoint} failed: {endpoint_error}")
+                                continue
+                    except Exception as node_error:
+                        logger.debug(f"Cannot get Ceph OSDs from node {node}: {node_error}")
+            
+            # Try to get OSD tree for additional information
+            try:
+                logger.info("Getting OSD tree information")
+                osd_tree_result = await client.get("/cluster/ceph/osd/tree")
+                osd_tree = osd_tree_result.get("data", {})
+                
+                # If we didn't get OSDs from previous methods, try to extract from tree
+                if not all_osds and osd_tree:
+                    logger.info("Extracting OSD information from OSD tree")
+                    tree_nodes = osd_tree.get("nodes", [])
+                    for node in tree_nodes:
+                        if node.get("type") == "osd":
+                            osd_info = {
+                                "id": node.get("id"),
+                                "name": node.get("name", f"osd.{node.get('id')}"),
+                                "status": "up" if node.get("status") == "up" else "down",
+                                "in": node.get("in", 0) == 1,
+                                "up": node.get("status") == "up",
+                                "reweight": node.get("reweight", 1.0),
+                                "primary_affinity": node.get("primary_affinity", 1.0),
+                                "host": node.get("host", "unknown")
+                            }
+                            all_osds.append(osd_info)
+            except Exception as e:
+                logger.debug(f"Cannot get OSD tree: {e}")
+            
+            # Get cluster-wide Ceph status for summary
+            try:
+                ceph_status_result = await client.get("/cluster/ceph/status")
+                ceph_status = ceph_status_result.get("data", {})
+            except Exception as e:
+                logger.debug(f"Cannot get cluster Ceph status: {e}")
+            
+            # If still no OSDs found but Ceph status shows OSDs exist, log error
+            if not all_osds and ceph_status:
+                osdmap = ceph_status.get("osdmap", {})
+                num_osds = osdmap.get("num_osds", 0)
+                if num_osds > 0:
+                    logger.error(f"Ceph status shows {num_osds} OSDs but unable to retrieve OSD details")
+            
+            # Build comprehensive summary
+            summary = {
+                "total_osds": len(all_osds),
+                "nodes_checked": len(nodes_result.get("data", [])) if 'nodes_result' in locals() else 0,
+                "nodes_with_osds": len(nodes_with_osds) if nodes_with_osds else 0
+            }
+            
+            # Add status information if available
+            if ceph_status:
+                osdmap = ceph_status.get("osdmap", {})
+                summary.update({
+                    "cluster_osd_count": osdmap.get("num_osds", 0),
+                    "up_osds": osdmap.get("num_up_osds", 0),
+                    "in_osds": osdmap.get("num_in_osds", 0),
+                    "ceph_healthy": ceph_status.get("health", {}).get("status") == "HEALTH_OK"
+                })
+            
+            # Validate and enrich OSD data
+            for osd in all_osds:
+                # Ensure consistent data structure
+                if "id" in osd and isinstance(osd["id"], str) and osd["id"].startswith("osd."):
+                    osd["id"] = int(osd["id"].replace("osd.", ""))
+                elif "osd" in osd and "id" not in osd:
+                    osd["id"] = osd["osd"]
+                
+                # Add missing fields with defaults
+                osd.setdefault("in", True)
+                osd.setdefault("up", True)
+                osd.setdefault("status", "up" if osd.get("up", True) else "down")
+            
+            return {
+                "data": all_osds,
+                "summary": summary
+            }
         
         elif name == "get_ceph_pools":
             return await client.get("/cluster/ceph/pool")
@@ -3901,7 +4050,30 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         elif name == "get_node_resources":
             node = arguments["node"]
-            return await client.get(f"/nodes/{node}/resources")
+            # Get cluster resources filtered by node
+            cluster_resources = await client.get("/cluster/resources")
+            node_resources = []
+            
+            # Filter resources for the specific node
+            for resource in cluster_resources.get("data", []):
+                if resource.get("node") == node:
+                    node_resources.append(resource)
+            
+            # Also get node-specific information
+            node_status = await client.get(f"/nodes/{node}/status")
+            
+            return {
+                "data": {
+                    "resources": node_resources,
+                    "node_status": node_status.get("data", {}),
+                    "summary": {
+                        "total_resources": len(node_resources),
+                        "vms": len([r for r in node_resources if r.get("type") == "qemu"]),
+                        "containers": len([r for r in node_resources if r.get("type") == "lxc"]),
+                        "storage": len([r for r in node_resources if r.get("type") == "storage"])
+                    }
+                }
+            }
         
         elif name == "get_node_tasks":
             node = arguments["node"]
