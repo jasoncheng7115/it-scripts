@@ -1,24 +1,29 @@
-#!/usr/bin/env python3
 """
-MCP server for Odoo API – v1.2 Complete Implementation with Enhanced Partner Management and URL Generation
-=============================================================================================================
+MCP server for Odoo API – v1.3 Enhanced with Delivery Orders & Purchase Orders
+===============================================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-07-14
 Updated: 2025-07-14
-Version: 1.2.0
+Version: 1.3.0
 License: MIT
 
-FastMCP-based Odoo integration with comprehensive quotation, sales, purchase,
-and contact management capabilities with multi-language and multi-currency support.
+FastMCP-based Odoo integration with comprehensive business management capabilities.
+
+NEW in v1.3.0:
+- Complete Delivery Orders (出貨單) management
+- Complete Purchase Orders (採購單) management
+- Enhanced URL generation for all new modules
+- Multi-language support for new features
+- Comprehensive search and filtering capabilities
 
 Features:
 - Complete quotation management with all fields
-- Direct URL links to quotation pages in Odoo (NEW in v1.2)
-- Multi-language support (English/Chinese) based on customer settings
+- Complete delivery orders management (NEW)
+- Complete purchase orders management (NEW)
+- Direct URL links to all records in Odoo
+- Multi-language support (English/Chinese) based on settings
 - Multi-currency support with proper currency display
-- Enhanced contact/customer/supplier management with proper filtering
-- Purchase order handling
-- Invoice management (sales/purchase)
+- Enhanced contact/customer/supplier management
 - Intelligent caching to reduce API load
 - Enhanced error handling and retry logic
 - Performance monitoring and statistics
@@ -76,7 +81,7 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 # Version information
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "Jason Cheng (Jason Tools)"
 
 # Configure logging
@@ -299,7 +304,12 @@ class OdooConnection:
     
     def _initialize_field_cache(self):
         """Initialize field cache for critical models"""
-        critical_models = ['sale.order', 'sale.order.line', 'res.partner', 'purchase.order', 'account.move']
+        critical_models = [
+            'sale.order', 'sale.order.line', 'res.partner', 
+            'purchase.order', 'purchase.order.line',
+            'stock.picking', 'stock.move', 'stock.move.line',
+            'account.move'
+        ]
         
         for model in critical_models:
             try:
@@ -379,6 +389,72 @@ class OdooConnection:
                     'sequence', 'product_id', 'name', 'product_uom_qty',
                     'product_uom', 'price_unit', 'price_subtotal', 'price_total',
                     'discount', 'tax_id', 'price_reduce', 'price_reduce_taxinc'
+                ]
+            },
+            'purchase.order': {
+                'basic': [
+                    'name', 'partner_id', 'date_order', 'state',
+                    'amount_untaxed', 'amount_tax', 'amount_total', 'currency_id',
+                    'create_date', 'write_date'
+                ],
+                'standard': [
+                    'name', 'partner_id', 'date_order', 'date_planned', 'state',
+                    'amount_untaxed', 'amount_tax', 'amount_total', 'currency_id',
+                    'payment_term_id', 'user_id', 'company_id', 'notes',
+                    'partner_ref', 'origin', 'invoice_status', 'receipt_reminder_email',
+                    'reminder_date_before_receipt', 'create_date', 'write_date'
+                ],
+                'extended': [
+                    'name', 'partner_id', 'date_order', 'date_planned', 'state',
+                    'amount_untaxed', 'amount_tax', 'amount_total', 'currency_id',
+                    'payment_term_id', 'fiscal_position_id', 'user_id', 'company_id',
+                    'notes', 'partner_ref', 'origin', 'invoice_status',
+                    'receipt_reminder_email', 'reminder_date_before_receipt',
+                    'picking_type_id', 'dest_address_id', 'default_location_dest_id',
+                    'incoterm_id', 'create_date', 'write_date'
+                ]
+            },
+            'purchase.order.line': {
+                'basic': [
+                    'sequence', 'product_id', 'name', 'product_qty',
+                    'product_uom', 'price_unit', 'price_subtotal', 'price_total'
+                ],
+                'standard': [
+                    'sequence', 'product_id', 'name', 'product_qty', 'qty_received',
+                    'qty_invoiced', 'product_uom', 'price_unit', 'price_subtotal',
+                    'price_total', 'taxes_id', 'date_planned'
+                ]
+            },
+            'stock.picking': {
+                'basic': [
+                    'name', 'partner_id', 'picking_type_id', 'state',
+                    'scheduled_date', 'date_done', 'create_date', 'write_date'
+                ],
+                'standard': [
+                    'name', 'partner_id', 'picking_type_id', 'state', 'priority',
+                    'scheduled_date', 'date_done', 'location_id', 'location_dest_id',
+                    'origin', 'note', 'company_id', 'user_id', 'carrier_id',
+                    'create_date', 'write_date'
+                ],
+                'extended': [
+                    'name', 'partner_id', 'picking_type_id', 'state', 'priority',
+                    'scheduled_date', 'date_done', 'location_id', 'location_dest_id',
+                    'origin', 'note', 'company_id', 'user_id', 'carrier_id',
+                    'carrier_tracking_ref', 'carrier_tracking_url', 'weight',
+                    'shipping_weight', 'sale_id', 'purchase_id', 'backorder_id',
+                    'group_id', 'create_date', 'write_date'
+                ]
+            },
+            'stock.move': {
+                'basic': [
+                    'name', 'product_id', 'product_uom_qty', 'quantity_done',
+                    'product_uom', 'state', 'location_id', 'location_dest_id'
+                ],
+                'standard': [
+                    'name', 'product_id', 'product_uom_qty', 'quantity_done',
+                    'product_uom', 'state', 'location_id', 'location_dest_id',
+                    'date', 'date_deadline', 'origin', 'partner_id', 'picking_id',
+                    'sale_line_id', 'purchase_line_id'
                 ]
             },
             'res.partner': {
@@ -541,42 +617,66 @@ def _get_partner_details(partner_id: int) -> Dict:
     
     return {}
 
-def _generate_quotation_url(quotation_id: int) -> str:
-    """Generate URL to access quotation in Odoo web interface
+def _generate_record_url(record_id: int, model_name: str) -> str:
+    """Generate URL to access any record in Odoo web interface
     
     Args:
-        quotation_id: The ID of the quotation
+        record_id: The ID of the record
+        model_name: The Odoo model name (e.g., 'sale.order', 'stock.picking')
         
     Returns:
-        Complete URL to the quotation page
+        Complete URL to the record page
     """
     base_url = config.ODOO_URL
-    database = config.DATABASE
     
-    # Standard Odoo web client URL pattern for sale.order
-    url = f"{base_url}/web#id={quotation_id}&model=sale.order&view_type=form"
-    
-    # Add database parameter if needed (some Odoo instances require it)
-    # url += f"&db={database}"
+    # Standard Odoo web client URL pattern
+    url = f"{base_url}/web#id={record_id}&model={model_name}&view_type=form"
     
     return url
 
+def _generate_quotation_url(quotation_id: int) -> str:
+    """Generate URL to access quotation in Odoo web interface"""
+    return _generate_record_url(quotation_id, 'sale.order')
+
 def _generate_partner_url(partner_id: int) -> str:
-    """Generate URL to access partner in Odoo web interface
+    """Generate URL to access partner in Odoo web interface"""
+    return _generate_record_url(partner_id, 'res.partner')
+
+def _generate_purchase_order_url(po_id: int) -> str:
+    """Generate URL to access purchase order in Odoo web interface"""
+    return _generate_record_url(po_id, 'purchase.order')
+
+def _generate_delivery_order_url(delivery_id: int) -> str:
+    """Generate URL to access delivery order in Odoo web interface"""
+    return _generate_record_url(delivery_id, 'stock.picking')
+
+def _translate_delivery_state(state: str, is_english: bool = False) -> str:
+    """Translate delivery order state to Chinese or English"""
+    states_translation = {
+        'draft': {'zh': '草稿', 'en': 'Draft'},
+        'waiting': {'zh': '等待中', 'en': 'Waiting'},
+        'confirmed': {'zh': '已確認', 'en': 'Confirmed'},
+        'assigned': {'zh': '已分配', 'en': 'Assigned'},
+        'done': {'zh': '已完成', 'en': 'Done'},
+        'cancel': {'zh': '已取消', 'en': 'Cancelled'}
+    }
     
-    Args:
-        partner_id: The ID of the partner
-        
-    Returns:
-        Complete URL to the partner page
-    """
-    base_url = config.ODOO_URL
-    database = config.DATABASE
+    lang = 'en' if is_english else 'zh'
+    return states_translation.get(state, {}).get(lang, state)
+
+def _translate_purchase_state(state: str, is_english: bool = False) -> str:
+    """Translate purchase order state to Chinese or English"""
+    states_translation = {
+        'draft': {'zh': '報價需求', 'en': 'RFQ'},
+        'sent': {'zh': '已發送報價需求', 'en': 'RFQ Sent'},
+        'to approve': {'zh': '待審核', 'en': 'To Approve'},
+        'purchase': {'zh': '採購單', 'en': 'Purchase Order'},
+        'done': {'zh': '已完成', 'en': 'Done'},
+        'cancel': {'zh': '已取消', 'en': 'Cancelled'}
+    }
     
-    # Standard Odoo web client URL pattern for res.partner
-    url = f"{base_url}/web#id={partner_id}&model=res.partner&view_type=form"
-    
-    return url
+    lang = 'en' if is_english else 'zh'
+    return states_translation.get(state, {}).get(lang, state)
 
 # ───────────────────────── Core MCP Tools ─────────────────────────
 
@@ -594,7 +694,13 @@ def get_odoo_system_info() -> str:
             "mcp_server_info": {
                 "name": "Odoo MCP Server",
                 "version": __version__,
-                "author": __author__
+                "author": __author__,
+                "new_features_v1_3": [
+                    "Complete Delivery Orders (出貨單) management",
+                    "Complete Purchase Orders (採購單) management",
+                    "Enhanced URL generation for all modules",
+                    "Multi-language support for new features"
+                ]
             },
             "connection_status": "connected" if odoo.connected else "disconnected",
             "version_info": odoo.version_info,
@@ -607,7 +713,15 @@ def get_odoo_system_info() -> str:
             },
             "url_generation": {
                 "quotation_url_pattern": f"{config.ODOO_URL}/web#id={{ID}}&model=sale.order&view_type=form",
-                "partner_url_pattern": f"{config.ODOO_URL}/web#id={{ID}}&model=res.partner&view_type=form"
+                "partner_url_pattern": f"{config.ODOO_URL}/web#id={{ID}}&model=res.partner&view_type=form",
+                "purchase_order_url_pattern": f"{config.ODOO_URL}/web#id={{ID}}&model=purchase.order&view_type=form",
+                "delivery_order_url_pattern": f"{config.ODOO_URL}/web#id={{ID}}&model=stock.picking&view_type=form"
+            },
+            "supported_modules": {
+                "sales": ["quotations", "sales_orders", "customers"],
+                "purchase": ["purchase_orders", "rfq", "suppliers"],
+                "inventory": ["delivery_orders", "stock_picking", "stock_moves"],
+                "contacts": ["partners", "customers", "suppliers"]
             },
             "timestamp": datetime.now().isoformat()
         }
@@ -702,7 +816,15 @@ def health_check() -> str:
                 "enabled": True,
                 "base_url": config.ODOO_URL,
                 "sample_quotation_url": _generate_quotation_url(1),
-                "sample_partner_url": _generate_partner_url(1)
+                "sample_partner_url": _generate_partner_url(1),
+                "sample_purchase_order_url": _generate_purchase_order_url(1),
+                "sample_delivery_order_url": _generate_delivery_order_url(1)
+            },
+            "new_capabilities_v1_3": {
+                "delivery_orders": True,
+                "purchase_orders": True,
+                "enhanced_url_generation": True,
+                "multi_language_support": True
             }
         }
         
@@ -1193,6 +1315,978 @@ def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
         logger.error(f"Error getting quotation details: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
+# ───────────────────────── NEW: Purchase Orders Management ─────────────────────────
+
+@mcp.tool()
+def search_purchase_orders(partner_name: Optional[str] = None, po_number: Optional[str] = None,
+                          state: Optional[str] = None, date_from: Optional[str] = None,
+                          date_to: Optional[str] = None, product_name: Optional[str] = None,
+                          notes_contains: Optional[str] = None, global_search: Optional[str] = None,
+                          limit: int = 10) -> str:
+    """Search purchase orders with complete field information and supplier details
+    
+    Args:
+        partner_name: Supplier name filter (optional)
+        po_number: Purchase order number filter (optional)
+        state: State filter (draft, sent, to approve, purchase, done, cancel) (optional)
+        date_from: Start date filter (YYYY-MM-DD) (optional)
+        date_to: End date filter (YYYY-MM-DD) (optional)
+        product_name: Product name filter (searches in purchase order lines) (optional)
+        notes_contains: Search in purchase order notes (optional)
+        global_search: Search across ALL purchase order fields (optional)
+        limit: Maximum number of purchase orders to return (default: 10)
+    
+    Returns:
+        JSON string with purchase order data including supplier details and direct URLs
+    """
+    logger.info(f"Searching purchase orders: partner={partner_name}, product={product_name}, global={global_search}")
+    
+    try:
+        # Build domain filters
+        domain = []
+        
+        if partner_name:
+            domain.append(['partner_id.name', 'ilike', partner_name])
+        if po_number:
+            domain.append(['name', 'ilike', po_number])
+        if state:
+            domain.append(['state', '=', state])
+        if date_from:
+            domain.append(['date_order', '>=', date_from])
+        if date_to:
+            domain.append(['date_order', '<=', date_to])
+        if notes_contains:
+            domain.append(['notes', 'ilike', notes_contains])
+        
+        # Global search across multiple fields
+        po_ids_from_global = []
+        if global_search:
+            try:
+                search_domains = [
+                    [['name', 'ilike', global_search]],
+                    [['notes', 'ilike', global_search]],
+                    [['partner_ref', 'ilike', global_search]],
+                    [['origin', 'ilike', global_search]],
+                    [['partner_id.name', 'ilike', global_search]]
+                ]
+                
+                # Try to search user_id.name if field exists
+                try:
+                    user_search = [['user_id.name', 'ilike', global_search]]
+                    search_domains.append(user_search)
+                except:
+                    pass
+                
+                for search_domain in search_domains:
+                    try:
+                        results = _cached_odoo_call(
+                            'purchase.order', 'search', search_domain,
+                            {'limit': 1000}
+                        )
+                        if results:
+                            po_ids_from_global.extend(results)
+                    except Exception as e:
+                        logger.debug(f"Search domain {search_domain} failed: {e}")
+                        continue
+                
+                # Remove duplicates
+                po_ids_from_global = list(set(po_ids_from_global))
+                logger.info(f"Global search found {len(po_ids_from_global)} purchase orders")
+                
+            except Exception as e:
+                logger.warning(f"Global search failed: {e}")
+        
+        # Search by product name in purchase order lines
+        po_ids_from_lines = []
+        if product_name or global_search:
+            try:
+                line_domain = []
+                if product_name:
+                    line_domain = [
+                        '|', 
+                        ['product_id.name', 'ilike', product_name],
+                        ['name', 'ilike', product_name]
+                    ]
+                elif global_search:
+                    line_domain = [
+                        '|', 
+                        ['product_id.name', 'ilike', global_search],
+                        ['name', 'ilike', global_search]
+                    ]
+                
+                if line_domain:
+                    line_fields = ['order_id', 'product_id', 'name']
+                    matching_lines = _cached_odoo_call(
+                        'purchase.order.line', 'search_read', [line_domain],
+                        {'fields': line_fields, 'limit': 1000}
+                    )
+                    
+                    # Extract unique order IDs
+                    po_ids_from_lines = list(set([line['order_id'][0] for line in matching_lines if line.get('order_id')]))
+                    search_term = product_name or global_search
+                    logger.info(f"Found {len(po_ids_from_lines)} purchase orders with product: {search_term}")
+                        
+            except Exception as e:
+                logger.warning(f"Error searching purchase order lines: {e}")
+        
+        # Combine all found PO IDs
+        all_found_ids = []
+        if global_search:
+            all_found_ids.extend(po_ids_from_global)
+            all_found_ids.extend(po_ids_from_lines)
+            all_found_ids = list(set(all_found_ids))
+        elif product_name:
+            all_found_ids = po_ids_from_lines
+        
+        # Add ID filter to domain if we found specific purchase orders
+        if all_found_ids:
+            domain.append(['id', 'in', all_found_ids])
+        elif product_name and not global_search:
+            logger.info(f"No purchase orders found containing product: {product_name}")
+            return json.dumps({
+                "purchase_orders": [],
+                "summary": {
+                    "total_found": 0,
+                    "message": f"No purchase orders found containing '{product_name}'"
+                },
+                "query_info": {
+                    "product_name_filter": product_name,
+                    "search_method": "product_line_search",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+        # Get purchase orders using version-compatible fields
+        available_fields = odoo.get_version_compatible_fields('purchase.order', 'standard')
+        
+        # Increase limit if we're doing a product/global search
+        search_limit = min(limit * 10, 1000) if (product_name or global_search) else limit
+        
+        purchase_orders = _cached_odoo_call(
+            'purchase.order', 'search_read', [domain],
+            {
+                'fields': available_fields,
+                'limit': search_limit,
+                'order': 'date_order desc'
+            }
+        )
+        
+        # Limit results if we searched by product/global
+        if (product_name or global_search) and len(purchase_orders) > limit:
+            purchase_orders = purchase_orders[:limit]
+        
+        # Enrich each purchase order with supplier details and URLs
+        enriched_pos = []
+        
+        for po in purchase_orders:
+            enriched_po = po.copy()
+            
+            # Generate direct URL to purchase order
+            enriched_po['odoo_url'] = _generate_purchase_order_url(po['id'])
+            enriched_po['url_description'] = f"點擊直接開啟採購單 {po.get('name', po['id'])}"
+            
+            # Get supplier details
+            if po.get('partner_id'):
+                partner_details = _get_partner_details(po['partner_id'][0])
+                enriched_po['supplier_details'] = partner_details
+                
+                # Add supplier URL
+                enriched_po['supplier_url'] = _generate_partner_url(po['partner_id'][0])
+                enriched_po['supplier_url_description'] = f"點擊直接開啟供應商 {po['partner_id'][1]}"
+                
+                # Determine display language
+                is_english = _is_english_customer(partner_details.get('lang', ''))
+                enriched_po['display_language'] = 'en' if is_english else 'zh'
+                
+                # Get currency information
+                currency_code = _get_currency_code(po.get('currency_id', []))
+                enriched_po['currency_code'] = currency_code
+                
+                # Format amounts with currency
+                amount_fields = ['amount_untaxed', 'amount_tax', 'amount_total']
+                for field in amount_fields:
+                    if po.get(field) is not None:
+                        enriched_po[f'{field}_formatted'] = f"{po[field]} {currency_code}"
+                
+                # Translate state
+                enriched_po['state_translated'] = _translate_purchase_state(po.get('state', ''), is_english)
+            
+            # Get purchase order lines for product details
+            try:
+                line_fields = odoo.get_version_compatible_fields('purchase.order.line', 'standard')
+                po_lines = _cached_odoo_call(
+                    'purchase.order.line', 'search_read',
+                    [[['order_id', '=', po['id']]]],
+                    {'fields': line_fields, 'order': 'sequence'}
+                )
+                
+                # Format line information
+                products = []
+                for line in po_lines:
+                    line_info = {
+                        'sequence': line.get('sequence', 0),
+                        'product_name': line.get('product_id', [None, 'Product'])[1] if line.get('product_id') else 'Product',
+                        'description': line.get('name', ''),
+                        'quantity': line.get('product_qty', 1),
+                        'qty_received': line.get('qty_received', 0),
+                        'qty_invoiced': line.get('qty_invoiced', 0),
+                        'unit_price': line.get('price_unit', 0),
+                        'subtotal': line.get('price_subtotal', 0),
+                        'planned_date': _format_datetime(line.get('date_planned', ''))
+                    }
+                    products.append(line_info)
+                
+                enriched_po['products'] = products
+                enriched_po['line_count'] = len(products)
+                
+            except Exception as e:
+                logger.warning(f"Failed to get lines for purchase order {po['id']}: {e}")
+                enriched_po['products'] = []
+                enriched_po['line_count'] = 0
+            
+            # Format dates
+            date_fields = ['date_order', 'date_planned', 'create_date', 'write_date']
+            for field in date_fields:
+                if po.get(field):
+                    enriched_po[f'{field}_formatted'] = _format_datetime(po[field])
+            
+            enriched_pos.append(enriched_po)
+        
+        # Calculate summary statistics
+        total_found = len(enriched_pos)
+        currency_breakdown = {}
+        state_breakdown = {}
+        supplier_breakdown = {}
+        
+        for po in enriched_pos:
+            # Currency statistics
+            currency = po.get('currency_code', 'Unknown')
+            currency_breakdown[currency] = currency_breakdown.get(currency, 0) + 1
+            
+            # State statistics
+            state = po.get('state', 'unknown')
+            state_breakdown[state] = state_breakdown.get(state, 0) + 1
+            
+            # Supplier statistics
+            supplier = po.get('partner_id', [None, 'Unknown'])[1] if po.get('partner_id') else 'Unknown'
+            supplier_breakdown[supplier] = supplier_breakdown.get(supplier, 0) + 1
+        
+        # Search scope message
+        search_scope_parts = []
+        if global_search:
+            search_scope_parts.append(f"Global search for '{global_search}' across all purchase order fields and line items")
+        if product_name:
+            search_scope_parts.append(f"Product search for '{product_name}'")
+        if notes_contains:
+            search_scope_parts.append(f"Notes search for '{notes_contains}'")
+        if not any([global_search, product_name, notes_contains]):
+            search_scope_parts.append("Standard purchase order search")
+        
+        result = {
+            "purchase_orders": enriched_pos,
+            "summary": {
+                "total_found": total_found,
+                "currency_breakdown": currency_breakdown,
+                "state_breakdown": state_breakdown,
+                "top_suppliers": dict(list(supplier_breakdown.items())[:5]),
+                "search_scope": " + ".join(search_scope_parts),
+                "urls_included": True,
+                "url_base": config.ODOO_URL
+            },
+            "search_fields_covered": {
+                "purchase_order_header": [
+                    "name (PO number)",
+                    "notes (description)", 
+                    "partner_ref (supplier reference)",
+                    "origin (source document)",
+                    "partner_id.name (supplier name)",
+                    "user_id.name (buyer)"
+                ] if global_search else ["Limited to specific filters"],
+                "purchase_order_lines": [
+                    "product_id.name (product name)",
+                    "name (line description)"
+                ] if (product_name or global_search) else ["Not searched"]
+            },
+            "query_info": {
+                "partner_name_filter": partner_name,
+                "po_number_filter": po_number,
+                "state_filter": state,
+                "date_from": date_from,
+                "date_to": date_to,
+                "product_name_filter": product_name,
+                "notes_filter": notes_contains,
+                "global_search_filter": global_search,
+                "limit": limit,
+                "actual_search_limit": search_limit if (product_name or global_search) else limit,
+                "odoo_version": odoo.version_info.get('major_version', 'Unknown'),
+                "fields_used": len(available_fields),
+                "search_method": "global_search" if global_search else ("product_line_search" if product_name else "standard_search"),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error searching purchase orders: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_purchase_order_details(po_id: int, include_lines: bool = True) -> str:
+    """Get detailed purchase order information with line items and supplier details
+    
+    Args:
+        po_id: Purchase order ID
+        include_lines: Include purchase order line items (default: True)
+    
+    Returns:
+        JSON string with complete purchase order details including direct URL
+    """
+    logger.info(f"Getting purchase order details for ID: {po_id}")
+    
+    try:
+        # Get purchase order header using compatible fields
+        available_fields = odoo.get_version_compatible_fields('purchase.order', 'standard')
+        
+        purchase_order = _cached_odoo_call(
+            'purchase.order', 'read', [po_id],
+            {'fields': available_fields}
+        )
+        
+        if not purchase_order:
+            return json.dumps({"error": "Purchase order not found"}, indent=2, ensure_ascii=False)
+        
+        po_data = purchase_order[0]
+        
+        # Get supplier details
+        supplier_details = {}
+        is_english = False
+        supplier_url = None
+        if po_data.get('partner_id'):
+            supplier_details = _get_partner_details(po_data['partner_id'][0])
+            is_english = _is_english_customer(supplier_details.get('lang', ''))
+            supplier_url = _generate_partner_url(po_data['partner_id'][0])
+        
+        # Get currency code
+        currency_code = _get_currency_code(po_data.get('currency_id', []))
+        
+        # Generate purchase order URL
+        po_url = _generate_purchase_order_url(po_id)
+        
+        # Get purchase order lines if requested
+        po_lines = []
+        if include_lines:
+            line_fields = odoo.get_version_compatible_fields('purchase.order.line', 'standard')
+            
+            lines = _cached_odoo_call(
+                'purchase.order.line', 'search_read',
+                [[['order_id', '=', po_id]]],
+                {
+                    'fields': line_fields,
+                    'order': 'sequence'
+                }
+            )
+            
+            # Format line items with currency
+            for line in lines:
+                formatted_line = line.copy()
+                
+                # Format prices with currency
+                price_fields = ['price_unit', 'price_subtotal', 'price_total']
+                for field in price_fields:
+                    if line.get(field) is not None:
+                        formatted_line[f'{field}_formatted'] = f"{line[field]} {currency_code}"
+                
+                # Format product information
+                if line.get('product_id'):
+                    formatted_line['product_name'] = line['product_id'][1]
+                
+                if line.get('product_uom'):
+                    formatted_line['uom_name'] = line['product_uom'][1]
+                
+                if line.get('taxes_id'):
+                    tax_names = [tax[1] for tax in line['taxes_id']]
+                    formatted_line['tax_names'] = tax_names
+                
+                # Format dates
+                if line.get('date_planned'):
+                    formatted_line['date_planned_formatted'] = _format_datetime(line['date_planned'])
+                
+                po_lines.append(formatted_line)
+        
+        # Format the complete purchase order data with URLs
+        result = {
+            "purchase_order_header": {
+                "id": po_id,
+                "name": po_data.get('name'),
+                "odoo_url": po_url,
+                "url_description": f"點擊直接開啟採購單 {po_data.get('name', po_id)}",
+                "supplier": {
+                    "id": po_data.get('partner_id', [None])[0] if po_data.get('partner_id') else None,
+                    "name": po_data.get('partner_id', [None, 'Unknown'])[1] if po_data.get('partner_id') else 'Unknown',
+                    "odoo_url": supplier_url,
+                    "url_description": f"點擊直接開啟供應商 {po_data.get('partner_id', [None, 'Unknown'])[1] if po_data.get('partner_id') else 'Unknown'}",
+                    "language": supplier_details.get('lang', 'zh_TW'),
+                    "country": supplier_details.get('country', 'Not Set'),
+                    "vat": supplier_details.get('vat', ''),
+                    "pricelist": supplier_details.get('pricelist', 'Default')
+                },
+                "dates": {
+                    "order_date": _format_datetime(po_data.get('date_order', '')),
+                    "planned_date": _format_datetime(po_data.get('date_planned', ''))
+                },
+                "amounts": {
+                    "untaxed": f"{po_data.get('amount_untaxed', 0)} {currency_code}",
+                    "tax": f"{po_data.get('amount_tax', 0)} {currency_code}",
+                    "total": f"{po_data.get('amount_total', 0)} {currency_code}",
+                    "currency": po_data.get('currency_id', [None, 'Unknown'])[1] if po_data.get('currency_id') else 'Unknown',
+                    "currency_code": currency_code
+                },
+                "status": {
+                    "state": po_data.get('state'),
+                    "state_translated": _translate_purchase_state(po_data.get('state', ''), is_english),
+                    "invoice_status": po_data.get('invoice_status')
+                },
+                "references": {
+                    "partner_ref": po_data.get('partner_ref'),
+                    "origin": po_data.get('origin'),
+                    "notes": po_data.get('notes')
+                },
+                "purchase_info": {
+                    "buyer": po_data.get('user_id', [None, 'Unknown'])[1] if po_data.get('user_id') else 'Unknown',
+                    "company": po_data.get('company_id', [None, 'Unknown'])[1] if po_data.get('company_id') else 'Unknown',
+                    "payment_terms": po_data.get('payment_term_id', [None, 'None'])[1] if po_data.get('payment_term_id') else 'None'
+                }
+            },
+            "purchase_order_lines": po_lines,
+            "line_count": len(po_lines),
+            "display_settings": {
+                "language": "english" if is_english else "chinese",
+                "is_english_supplier": is_english,
+                "currency_code": currency_code
+            },
+            "url_info": {
+                "purchase_order_url": po_url,
+                "supplier_url": supplier_url,
+                "base_odoo_url": config.ODOO_URL
+            },
+            "query_info": {
+                "purchase_order_id": po_id,
+                "include_lines": include_lines,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error getting purchase order details: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# ───────────────────────── NEW: Delivery Orders Management ─────────────────────────
+
+@mcp.tool()
+def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: Optional[str] = None,
+                          state: Optional[str] = None, picking_type: Optional[str] = None,
+                          date_from: Optional[str] = None, date_to: Optional[str] = None,
+                          product_name: Optional[str] = None, origin_filter: Optional[str] = None,
+                          global_search: Optional[str] = None, limit: int = 10) -> str:
+    """Search delivery orders (stock pickings) with complete information and tracking details
+    
+    Args:
+        partner_name: Customer/Partner name filter (optional)
+        delivery_number: Delivery order number filter (optional)
+        state: State filter (draft, waiting, confirmed, assigned, done, cancel) (optional)
+        picking_type: Picking type filter (e.g., 'Delivery Orders', 'Receipts') (optional)
+        date_from: Start date filter (YYYY-MM-DD) (optional)
+        date_to: End date filter (YYYY-MM-DD) (optional)
+        product_name: Product name filter (searches in stock moves) (optional)
+        origin_filter: Origin document filter (e.g., SO001, PO001) (optional)
+        global_search: Search across ALL delivery order fields (optional)
+        limit: Maximum number of delivery orders to return (default: 10)
+    
+    Returns:
+        JSON string with delivery order data including tracking information and direct URLs
+    """
+    logger.info(f"Searching delivery orders: partner={partner_name}, product={product_name}, global={global_search}")
+    
+    try:
+        # Build domain filters
+        domain = []
+        
+        if partner_name:
+            domain.append(['partner_id.name', 'ilike', partner_name])
+        if delivery_number:
+            domain.append(['name', 'ilike', delivery_number])
+        if state:
+            domain.append(['state', '=', state])
+        if picking_type:
+            domain.append(['picking_type_id.name', 'ilike', picking_type])
+        if date_from:
+            domain.append(['scheduled_date', '>=', date_from])
+        if date_to:
+            domain.append(['scheduled_date', '<=', date_to])
+        if origin_filter:
+            domain.append(['origin', 'ilike', origin_filter])
+        
+        # Global search across multiple fields
+        delivery_ids_from_global = []
+        if global_search:
+            try:
+                search_domains = [
+                    [['name', 'ilike', global_search]],
+                    [['note', 'ilike', global_search]],
+                    [['origin', 'ilike', global_search]],
+                    [['carrier_tracking_ref', 'ilike', global_search]],
+                    [['partner_id.name', 'ilike', global_search]]
+                ]
+                
+                for search_domain in search_domains:
+                    try:
+                        results = _cached_odoo_call(
+                            'stock.picking', 'search', search_domain,
+                            {'limit': 1000}
+                        )
+                        if results:
+                            delivery_ids_from_global.extend(results)
+                    except Exception as e:
+                        logger.debug(f"Search domain {search_domain} failed: {e}")
+                        continue
+                
+                # Remove duplicates
+                delivery_ids_from_global = list(set(delivery_ids_from_global))
+                logger.info(f"Global search found {len(delivery_ids_from_global)} delivery orders")
+                
+            except Exception as e:
+                logger.warning(f"Global search failed: {e}")
+        
+        # Search by product name in stock moves
+        delivery_ids_from_moves = []
+        if product_name or global_search:
+            try:
+                move_domain = []
+                if product_name:
+                    move_domain = [
+                        '|', 
+                        ['product_id.name', 'ilike', product_name],
+                        ['name', 'ilike', product_name]
+                    ]
+                elif global_search:
+                    move_domain = [
+                        '|', 
+                        ['product_id.name', 'ilike', global_search],
+                        ['name', 'ilike', global_search]
+                    ]
+                
+                if move_domain:
+                    move_fields = ['picking_id', 'product_id', 'name']
+                    matching_moves = _cached_odoo_call(
+                        'stock.move', 'search_read', [move_domain],
+                        {'fields': move_fields, 'limit': 1000}
+                    )
+                    
+                    # Extract unique picking IDs
+                    delivery_ids_from_moves = list(set([move['picking_id'][0] for move in matching_moves if move.get('picking_id')]))
+                    search_term = product_name or global_search
+                    logger.info(f"Found {len(delivery_ids_from_moves)} delivery orders with product: {search_term}")
+                        
+            except Exception as e:
+                logger.warning(f"Error searching stock moves: {e}")
+        
+        # Combine all found delivery IDs
+        all_found_ids = []
+        if global_search:
+            all_found_ids.extend(delivery_ids_from_global)
+            all_found_ids.extend(delivery_ids_from_moves)
+            all_found_ids = list(set(all_found_ids))
+        elif product_name:
+            all_found_ids = delivery_ids_from_moves
+        
+        # Add ID filter to domain if we found specific deliveries
+        if all_found_ids:
+            domain.append(['id', 'in', all_found_ids])
+        elif product_name and not global_search:
+            logger.info(f"No delivery orders found containing product: {product_name}")
+            return json.dumps({
+                "delivery_orders": [],
+                "summary": {
+                    "total_found": 0,
+                    "message": f"No delivery orders found containing '{product_name}'"
+                },
+                "query_info": {
+                    "product_name_filter": product_name,
+                    "search_method": "product_move_search",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+        # Get delivery orders using version-compatible fields
+        available_fields = odoo.get_version_compatible_fields('stock.picking', 'standard')
+        
+        # Increase limit if we're doing a product/global search
+        search_limit = min(limit * 10, 1000) if (product_name or global_search) else limit
+        
+        delivery_orders = _cached_odoo_call(
+            'stock.picking', 'search_read', [domain],
+            {
+                'fields': available_fields,
+                'limit': search_limit,
+                'order': 'scheduled_date desc'
+            }
+        )
+        
+        # Limit results if we searched by product/global
+        if (product_name or global_search) and len(delivery_orders) > limit:
+            delivery_orders = delivery_orders[:limit]
+        
+        # Enrich each delivery order with partner details and URLs
+        enriched_deliveries = []
+        
+        for delivery in delivery_orders:
+            enriched_delivery = delivery.copy()
+            
+            # Generate direct URL to delivery order
+            enriched_delivery['odoo_url'] = _generate_delivery_order_url(delivery['id'])
+            enriched_delivery['url_description'] = f"點擊直接開啟出貨單 {delivery.get('name', delivery['id'])}"
+            
+            # Get partner details
+            if delivery.get('partner_id'):
+                partner_details = _get_partner_details(delivery['partner_id'][0])
+                enriched_delivery['partner_details'] = partner_details
+                
+                # Add partner URL
+                enriched_delivery['partner_url'] = _generate_partner_url(delivery['partner_id'][0])
+                enriched_delivery['partner_url_description'] = f"點擊直接開啟客戶 {delivery['partner_id'][1]}"
+                
+                # Determine display language
+                is_english = _is_english_customer(partner_details.get('lang', ''))
+                enriched_delivery['display_language'] = 'en' if is_english else 'zh'
+                
+                # Translate state
+                enriched_delivery['state_translated'] = _translate_delivery_state(delivery.get('state', ''), is_english)
+            
+            # Get picking type details
+            if delivery.get('picking_type_id'):
+                enriched_delivery['picking_type_name'] = delivery['picking_type_id'][1]
+            
+            # Get location details
+            if delivery.get('location_id'):
+                enriched_delivery['source_location'] = delivery['location_id'][1]
+            if delivery.get('location_dest_id'):
+                enriched_delivery['destination_location'] = delivery['location_dest_id'][1]
+            
+            # Get related sale order or purchase order URLs
+            if delivery.get('origin'):
+                origin = delivery['origin']
+                # Try to detect if it's a sale order or purchase order
+                if origin.startswith('SO') or 'sale' in origin.lower():
+                    try:
+                        # Search for related sale order
+                        so_search = _cached_odoo_call(
+                            'sale.order', 'search', [['name', '=', origin]], {'limit': 1}
+                        )
+                        if so_search:
+                            enriched_delivery['related_sale_order_url'] = _generate_quotation_url(so_search[0])
+                    except:
+                        pass
+                elif origin.startswith('PO') or 'purchase' in origin.lower():
+                    try:
+                        # Search for related purchase order
+                        po_search = _cached_odoo_call(
+                            'purchase.order', 'search', [['name', '=', origin]], {'limit': 1}
+                        )
+                        if po_search:
+                            enriched_delivery['related_purchase_order_url'] = _generate_purchase_order_url(po_search[0])
+                    except:
+                        pass
+            
+            # Get stock moves for product details
+            try:
+                move_fields = odoo.get_version_compatible_fields('stock.move', 'standard')
+                stock_moves = _cached_odoo_call(
+                    'stock.move', 'search_read',
+                    [[['picking_id', '=', delivery['id']]]],
+                    {'fields': move_fields, 'order': 'name'}
+                )
+                
+                # Format move information
+                products_moved = []
+                for move in stock_moves:
+                    move_info = {
+                        'product_name': move.get('product_id', [None, 'Product'])[1] if move.get('product_id') else 'Product',
+                        'description': move.get('name', ''),
+                        'quantity_expected': move.get('product_uom_qty', 0),
+                        'quantity_done': move.get('quantity_done', 0),
+                        'unit_of_measure': move.get('product_uom', [None, 'Unit'])[1] if move.get('product_uom') else 'Unit',
+                        'state': move.get('state', ''),
+                        'date_expected': _format_datetime(move.get('date', '')),
+                        'date_deadline': _format_datetime(move.get('date_deadline', ''))
+                    }
+                    products_moved.append(move_info)
+                
+                enriched_delivery['products_moved'] = products_moved
+                enriched_delivery['move_count'] = len(products_moved)
+                
+            except Exception as e:
+                logger.warning(f"Failed to get moves for delivery {delivery['id']}: {e}")
+                enriched_delivery['products_moved'] = []
+                enriched_delivery['move_count'] = 0
+            
+            # Format dates
+            date_fields = ['scheduled_date', 'date_done', 'create_date', 'write_date']
+            for field in date_fields:
+                if delivery.get(field):
+                    enriched_delivery[f'{field}_formatted'] = _format_datetime(delivery[field])
+            
+            enriched_deliveries.append(enriched_delivery)
+        
+        # Calculate summary statistics
+        total_found = len(enriched_deliveries)
+        state_breakdown = {}
+        picking_type_breakdown = {}
+        partner_breakdown = {}
+        
+        for delivery in enriched_deliveries:
+            # State statistics
+            state = delivery.get('state', 'unknown')
+            state_breakdown[state] = state_breakdown.get(state, 0) + 1
+            
+            # Picking type statistics
+            picking_type = delivery.get('picking_type_name', 'Unknown')
+            picking_type_breakdown[picking_type] = picking_type_breakdown.get(picking_type, 0) + 1
+            
+            # Partner statistics
+            partner = delivery.get('partner_id', [None, 'Unknown'])[1] if delivery.get('partner_id') else 'Unknown'
+            partner_breakdown[partner] = partner_breakdown.get(partner, 0) + 1
+        
+        # Search scope message
+        search_scope_parts = []
+        if global_search:
+            search_scope_parts.append(f"Global search for '{global_search}' across all delivery order fields and stock moves")
+        if product_name:
+            search_scope_parts.append(f"Product search for '{product_name}'")
+        if origin_filter:
+            search_scope_parts.append(f"Origin document search for '{origin_filter}'")
+        if not any([global_search, product_name, origin_filter]):
+            search_scope_parts.append("Standard delivery order search")
+        
+        result = {
+            "delivery_orders": enriched_deliveries,
+            "summary": {
+                "total_found": total_found,
+                "state_breakdown": state_breakdown,
+                "picking_type_breakdown": picking_type_breakdown,
+                "top_partners": dict(list(partner_breakdown.items())[:5]),
+                "search_scope": " + ".join(search_scope_parts),
+                "urls_included": True,
+                "url_base": config.ODOO_URL
+            },
+            "search_fields_covered": {
+                "delivery_order_header": [
+                    "name (delivery number)",
+                    "note (description)", 
+                    "origin (source document)",
+                    "carrier_tracking_ref (tracking reference)",
+                    "partner_id.name (partner name)"
+                ] if global_search else ["Limited to specific filters"],
+                "stock_moves": [
+                    "product_id.name (product name)",
+                    "name (move description)"
+                ] if (product_name or global_search) else ["Not searched"]
+            },
+            "query_info": {
+                "partner_name_filter": partner_name,
+                "delivery_number_filter": delivery_number,
+                "state_filter": state,
+                "picking_type_filter": picking_type,
+                "date_from": date_from,
+                "date_to": date_to,
+                "product_name_filter": product_name,
+                "origin_filter": origin_filter,
+                "global_search_filter": global_search,
+                "limit": limit,
+                "actual_search_limit": search_limit if (product_name or global_search) else limit,
+                "odoo_version": odoo.version_info.get('major_version', 'Unknown'),
+                "fields_used": len(available_fields),
+                "search_method": "global_search" if global_search else ("product_move_search" if product_name else "standard_search"),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error searching delivery orders: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_delivery_order_details(delivery_id: int, include_moves: bool = True) -> str:
+    """Get detailed delivery order information with stock moves and tracking details
+    
+    Args:
+        delivery_id: Delivery order (stock picking) ID
+        include_moves: Include stock move details (default: True)
+    
+    Returns:
+        JSON string with complete delivery order details including direct URL
+    """
+    logger.info(f"Getting delivery order details for ID: {delivery_id}")
+    
+    try:
+        # Get delivery order header using compatible fields
+        available_fields = odoo.get_version_compatible_fields('stock.picking', 'extended')
+        
+        delivery_order = _cached_odoo_call(
+            'stock.picking', 'read', [delivery_id],
+            {'fields': available_fields}
+        )
+        
+        if not delivery_order:
+            return json.dumps({"error": "Delivery order not found"}, indent=2, ensure_ascii=False)
+        
+        delivery_data = delivery_order[0]
+        
+        # Get partner details
+        partner_details = {}
+        is_english = False
+        partner_url = None
+        if delivery_data.get('partner_id'):
+            partner_details = _get_partner_details(delivery_data['partner_id'][0])
+            is_english = _is_english_customer(partner_details.get('lang', ''))
+            partner_url = _generate_partner_url(delivery_data['partner_id'][0])
+        
+        # Generate delivery order URL
+        delivery_url = _generate_delivery_order_url(delivery_id)
+        
+        # Get related sale order or purchase order details
+        related_order_info = {}
+        if delivery_data.get('sale_id'):
+            related_order_info['sale_order'] = {
+                'id': delivery_data['sale_id'][0],
+                'name': delivery_data['sale_id'][1],
+                'url': _generate_quotation_url(delivery_data['sale_id'][0])
+            }
+        elif delivery_data.get('purchase_id'):
+            related_order_info['purchase_order'] = {
+                'id': delivery_data['purchase_id'][0],
+                'name': delivery_data['purchase_id'][1],
+                'url': _generate_purchase_order_url(delivery_data['purchase_id'][0])
+            }
+        
+        # Get stock moves if requested
+        stock_moves = []
+        if include_moves:
+            move_fields = odoo.get_version_compatible_fields('stock.move', 'standard')
+            
+            moves = _cached_odoo_call(
+                'stock.move', 'search_read',
+                [[['picking_id', '=', delivery_id]]],
+                {
+                    'fields': move_fields,
+                    'order': 'name'
+                }
+            )
+            
+            # Format move items
+            for move in moves:
+                formatted_move = move.copy()
+                
+                # Format product information
+                if move.get('product_id'):
+                    formatted_move['product_name'] = move['product_id'][1]
+                
+                if move.get('product_uom'):
+                    formatted_move['uom_name'] = move['product_uom'][1]
+                
+                # Format locations
+                if move.get('location_id'):
+                    formatted_move['source_location_name'] = move['location_id'][1]
+                
+                if move.get('location_dest_id'):
+                    formatted_move['destination_location_name'] = move['location_dest_id'][1]
+                
+                # Format dates
+                date_fields = ['date', 'date_deadline']
+                for field in date_fields:
+                    if move.get(field):
+                        formatted_move[f'{field}_formatted'] = _format_datetime(move[field])
+                
+                # Calculate completion percentage
+                expected_qty = move.get('product_uom_qty', 0)
+                done_qty = move.get('quantity_done', 0)
+                if expected_qty > 0:
+                    formatted_move['completion_percentage'] = round((done_qty / expected_qty) * 100, 2)
+                else:
+                    formatted_move['completion_percentage'] = 0
+                
+                stock_moves.append(formatted_move)
+        
+        # Format the complete delivery order data with URLs
+        result = {
+            "delivery_order_header": {
+                "id": delivery_id,
+                "name": delivery_data.get('name'),
+                "odoo_url": delivery_url,
+                "url_description": f"點擊直接開啟出貨單 {delivery_data.get('name', delivery_id)}",
+                "partner": {
+                    "id": delivery_data.get('partner_id', [None])[0] if delivery_data.get('partner_id') else None,
+                    "name": delivery_data.get('partner_id', [None, 'Unknown'])[1] if delivery_data.get('partner_id') else 'Unknown',
+                    "odoo_url": partner_url,
+                    "url_description": f"點擊直接開啟客戶 {delivery_data.get('partner_id', [None, 'Unknown'])[1] if delivery_data.get('partner_id') else 'Unknown'}",
+                    "language": partner_details.get('lang', 'zh_TW'),
+                    "country": partner_details.get('country', 'Not Set')
+                },
+                "dates": {
+                    "scheduled_date": _format_datetime(delivery_data.get('scheduled_date', '')),
+                    "date_done": _format_datetime(delivery_data.get('date_done', ''))
+                },
+                "status": {
+                    "state": delivery_data.get('state'),
+                    "state_translated": _translate_delivery_state(delivery_data.get('state', ''), is_english),
+                    "priority": delivery_data.get('priority', 'Normal')
+                },
+                "logistics": {
+                    "picking_type": delivery_data.get('picking_type_id', [None, 'Unknown'])[1] if delivery_data.get('picking_type_id') else 'Unknown',
+                    "source_location": delivery_data.get('location_id', [None, 'Unknown'])[1] if delivery_data.get('location_id') else 'Unknown',
+                    "destination_location": delivery_data.get('location_dest_id', [None, 'Unknown'])[1] if delivery_data.get('location_dest_id') else 'Unknown',
+                    "carrier": delivery_data.get('carrier_id', [None, 'Not Set'])[1] if delivery_data.get('carrier_id') else 'Not Set',
+                    "tracking_reference": delivery_data.get('carrier_tracking_ref', ''),
+                    "tracking_url": delivery_data.get('carrier_tracking_url', ''),
+                    "weight": delivery_data.get('weight', 0),
+                    "shipping_weight": delivery_data.get('shipping_weight', 0)
+                },
+                "references": {
+                    "origin": delivery_data.get('origin'),
+                    "note": delivery_data.get('note'),
+                    "backorder": delivery_data.get('backorder_id', [None, 'None'])[1] if delivery_data.get('backorder_id') else 'None'
+                },
+                "responsible": {
+                    "user": delivery_data.get('user_id', [None, 'Unknown'])[1] if delivery_data.get('user_id') else 'Unknown',
+                    "company": delivery_data.get('company_id', [None, 'Unknown'])[1] if delivery_data.get('company_id') else 'Unknown'
+                }
+            },
+            "related_orders": related_order_info,
+            "stock_moves": stock_moves,
+            "move_count": len(stock_moves),
+            "display_settings": {
+                "language": "english" if is_english else "chinese",
+                "is_english_partner": is_english
+            },
+            "url_info": {
+                "delivery_order_url": delivery_url,
+                "partner_url": partner_url,
+                "base_odoo_url": config.ODOO_URL
+            },
+            "query_info": {
+                "delivery_order_id": delivery_id,
+                "include_moves": include_moves,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error getting delivery order details: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+
 # ───────────────────────── Enhanced Contact/Partner Management ─────────────────────────
 
 @mcp.tool()
@@ -1576,7 +2670,7 @@ def cache_stats() -> str:
 
 if __name__ == "__main__":
     logger.info("=" * 80)
-    logger.info(f"Odoo FastMCP Server v{__version__} - Complete Business Management Integration")
+    logger.info(f"Odoo FastMCP Server v{__version__} - Enhanced with Delivery Orders & Purchase Orders")
     logger.info(f"Author: {__author__}")
     logger.info("=" * 80)
     logger.info("Configuration Methods:")
@@ -1585,11 +2679,13 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     logger.info("Core Features:")
     logger.info("  ✓ Complete quotation management with all fields")
-    logger.info("  ✓ Direct URL links to quotation and partner pages (NEW in v1.2)")
-    logger.info("  ✓ Multi-language support (English/Chinese) based on customer settings")
+    logger.info("  ✓ Complete purchase order management (NEW in v1.3)")
+    logger.info("  ✓ Complete delivery order management (NEW in v1.3)")
+    logger.info("  ✓ Direct URL links to all record pages")
+    logger.info("  ✓ Multi-language support (English/Chinese) based on settings")
     logger.info("  ✓ Multi-currency support with proper currency display")
-    logger.info("  ✓ Enhanced contact/customer/supplier management (FIXED)")
-    logger.info("  ✓ Comprehensive partner statistics and analytics")
+    logger.info("  ✓ Enhanced contact/customer/supplier management")
+    logger.info("  ✓ Comprehensive search and filtering capabilities")
     logger.info("  ✓ Intelligent caching with configurable TTL")
     logger.info("  ✓ Enhanced error handling and retry logic")
     logger.info("  ✓ Performance monitoring and health checks")
@@ -1599,12 +2695,26 @@ if __name__ == "__main__":
     logger.info("  • get_sale_order_fields() - Check available sale.order fields")
     logger.info("  • health_check() - Odoo connectivity and system status")
     logger.info("  • odoo_raw_call() - Raw Odoo API calls")
+    logger.info("")
+    logger.info("  Sales Management:")
     logger.info("  • search_quotations() - Search quotations with URLs and language/currency support")
     logger.info("  • get_quotation_details() - Complete quotation details with URLs and line items")
-    logger.info("  • search_partners() - Search contacts/customers/suppliers with URLs (FIXED)")
-    logger.info("  • get_all_partners() - Get all partners in the system with URLs (ENHANCED)")
-    logger.info("  • get_partner_statistics() - Comprehensive partner statistics (NEW)")
+    logger.info("")
+    logger.info("  Purchase Management (NEW in v1.3):")
+    logger.info("  • search_purchase_orders() - Search purchase orders with supplier details")
+    logger.info("  • get_purchase_order_details() - Complete purchase order details with line items")
+    logger.info("")
+    logger.info("  Delivery Management (NEW in v1.3):")
+    logger.info("  • search_delivery_orders() - Search delivery orders with tracking information")
+    logger.info("  • get_delivery_order_details() - Complete delivery order details with stock moves")
+    logger.info("")
+    logger.info("  Contact Management:")
+    logger.info("  • search_partners() - Search contacts/customers/suppliers with URLs")
+    logger.info("  • get_all_partners() - Get all partners in the system with URLs")
+    logger.info("  • get_partner_statistics() - Comprehensive partner statistics")
     logger.info("  • get_partner_language_currency() - Customer language/currency settings with URL")
+    logger.info("")
+    logger.info("  System Management:")
     logger.info("  • clear_cache() - Clear internal cache")
     logger.info("  • cache_stats() - Cache statistics")
     logger.info("=" * 80)
@@ -1612,16 +2722,56 @@ if __name__ == "__main__":
     logger.info(f"Max Retries={config.MAX_RETRIES}")
     logger.info(f"Base URL for links: {config.ODOO_URL}")
     logger.info("=" * 80)
-    logger.info("New Features in v1.2.0:")
-    logger.info("  ✓ Added direct URL links to quotations and partners")
-    logger.info("  ✓ URL generation functions for web interface access")
-    logger.info("  ✓ Enhanced search results with clickable links")
-    logger.info("  ✓ Bilingual URL descriptions (Chinese)")
-    logger.info("  ✓ URL information in all relevant API responses")
+    logger.info("NEW Features in v1.3.0:")
+    logger.info("  ✓ Complete Purchase Orders (採購單) management")
+    logger.info("    - Search purchase orders with supplier filtering")
+    logger.info("    - Detailed purchase order information with line items")
+    logger.info("    - Purchase order state translation (中/英)")
+    logger.info("    - Direct URL links to purchase orders and suppliers")
+    logger.info("")
+    logger.info("  ✓ Complete Delivery Orders (出貨單) management")
+    logger.info("    - Search delivery orders with tracking information")
+    logger.info("    - Detailed delivery order information with stock moves")
+    logger.info("    - Delivery state translation (中/英)")
+    logger.info("    - Integration with related sale/purchase orders")
+    logger.info("    - Carrier tracking and logistics information")
+    logger.info("")
+    logger.info("  ✓ Enhanced search capabilities")
+    logger.info("    - Global search across all fields")
+    logger.info("    - Product-based search in line items/stock moves")
+    logger.info("    - Date range filtering")
+    logger.info("    - State and status filtering")
+    logger.info("")
+    logger.info("  ✓ Comprehensive URL generation")
+    logger.info("    - Purchase orders, delivery orders, and related records")
+    logger.info("    - Cross-module navigation (SO->Delivery, PO->Receipt)")
+    logger.info("    - Partner/supplier quick access")
     logger.info("=" * 80)
     logger.info("URL Patterns:")
     logger.info(f"  • Quotations: {config.ODOO_URL}/web#id={{ID}}&model=sale.order&view_type=form")
+    logger.info(f"  • Purchase Orders: {config.ODOO_URL}/web#id={{ID}}&model=purchase.order&view_type=form")
+    logger.info(f"  • Delivery Orders: {config.ODOO_URL}/web#id={{ID}}&model=stock.picking&view_type=form")
     logger.info(f"  • Partners: {config.ODOO_URL}/web#id={{ID}}&model=res.partner&view_type=form")
+    logger.info("=" * 80)
+    logger.info("Search Capabilities:")
+    logger.info("  • Sales: Search quotations by customer, product, description, dates")
+    logger.info("  • Purchase: Search POs by supplier, product, notes, dates, states")
+    logger.info("  • Delivery: Search deliveries by partner, product, tracking, origin")
+    logger.info("  • Global: Search across all fields in headers and line items")
+    logger.info("  • Partners: Search contacts by name, email, phone, type")
+    logger.info("=" * 80)
+    logger.info("Multi-language Support:")
+    logger.info("  • Automatic language detection from partner settings")
+    logger.info("  • State translations (Draft/草稿, Done/已完成, etc.)")
+    logger.info("  • Bilingual URL descriptions (Chinese)")
+    logger.info("  • Currency formatting with proper symbols")
+    logger.info("=" * 80)
+    logger.info("Data Models Supported:")
+    logger.info("  • sale.order + sale.order.line (Quotations/Sales Orders)")
+    logger.info("  • purchase.order + purchase.order.line (Purchase Orders)")
+    logger.info("  • stock.picking + stock.move (Delivery Orders/Stock Transfers)")
+    logger.info("  • res.partner (Contacts/Customers/Suppliers)")
+    logger.info("  • Cross-model relationships and navigation")
     logger.info("=" * 80)
     logger.info("MCP Configuration Example:")
     logger.info('  "odoo": {')
@@ -1635,5 +2785,8 @@ if __name__ == "__main__":
     logger.info('    }')
     logger.info('  }')
     logger.info("=" * 80)
+    logger.info("Ready to serve MCP requests!")
+    logger.info("Connect via Claude Desktop to start using all features.")
+    logger.info("=" * 80)
     
-    mcp.run()
+    mcp.run()#!/usr/bin/env python3
