@@ -1,17 +1,86 @@
+#!/usr/bin/env python3
 """
-MCP server for Odoo API – v1.3 Enhanced with Delivery Orders & Purchase Orders
+MCP server for Odoo API – v1.4.8 Default Language Configuration
 ===============================================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-07-14
-Updated: 2025-07-14
-Version: 1.3.0
+Updated: 2025-07-15
+Version: 1.4.8
 License: MIT
 
 FastMCP-based Odoo integration with comprehensive business management capabilities.
 
+NEW in v1.4.8:
+- Added default language configuration support
+- Can set ODOO_DEFAULT_LANGUAGE in MCP config or environment
+- Overrides user's Odoo language preference when set
+- Supports configuration in Claude Desktop MCP settings
+- Enhanced language detection priority: Config > User Preference > Default
+
+NEW in v1.4.7:
+- Added multi-language product search support
+- Automatically detects user language from res.users
+- Searches both original names and translations (ir.translation)
+- Returns product names in user's preferred language
+- Supports zh_TW (繁體中文) and en_US (English)
+
+NEW in v1.4.6:
+- Added investigate_product_264 to debug specific product naming issues
+- Added check_product_variants to examine product variant confusion
+- Discovered critical issue: Product ID 264 shows different names in API vs WebUI
+- Enhanced investigation tools for product data inconsistencies
+
+NEW in v1.4.5:
+- Added search_products_v2 with improved search logic
+- Added diagnose_product_search for comprehensive troubleshooting
+- Added verify_product_search to validate search functionality
+- Fixed domain construction to properly find all products
+- Added pagination support with offset parameter
+- Direct API calls without cache for accurate results
+- Enhanced logging for better debugging
+
+NEW in v1.4.4:
+- Fixed product name display to use 'name' field instead of 'display_name'
+- Removed "(副本)" or "(copy)" text from product names
+- Added check_product_names debug function to analyze name differences
+- Preserved original display_name in original_display_name field
+
+NEW in v1.4.3:
+- Simplified domain construction for product search
+- Removed complex OR logic that was causing search failures
+- Added search_products_debug function for troubleshooting
+- Added domain logging for better debugging
+- Increased search limit multiplier from 3x to 5x
+
+NEW in v1.4.2:
+- Enhanced product search to find all matching products
+- Added skip_cache parameter for fresh search results
+- Automatically skip cache when searching by name
+- Increased internal search limit to prevent missing results
+- Added total_found vs displayed_count in results
+
+NEW in v1.4.1:
+- Fixed search_products name search to properly use ilike operator
+- Corrected domain syntax for OR operations in product search
+- Now correctly finds products with case-insensitive partial matching
+
+NEW in v1.4.0:
+- Complete Product management functions
+- search_products: Search products with filters (name, category, type, etc.)
+- get_product_details: Get detailed product information including variants
+- get_product_stock: Get real-time stock levels across warehouses
+- Support for product variants and attributes
+- Multi-warehouse stock visibility
+
+NEW in v1.3.1:
+- Fixed partner name search to support partial matching
+- Enhanced search to include both 'name' and 'display_name' fields
+- Improved search results for government agencies and organizations
+- Fixed domain syntax errors in OR operations
+
 NEW in v1.3.0:
-- Complete Delivery Orders (出貨單) management
-- Complete Purchase Orders (採購單) management
+- Complete Delivery Orders management
+- Complete Purchase Orders management
 - Enhanced URL generation for all new modules
 - Multi-language support for new features
 - Comprehensive search and filtering capabilities
@@ -48,7 +117,8 @@ Add to your Claude Desktop config file (~/.claude/config.json or %APPDATA%\\Clau
         "ODOO_URL": "http://localhost:8069",
         "ODOO_DATABASE": "your_db",
         "ODOO_USERNAME": "admin",
-        "ODOO_PASSWORD": "your_password"
+        "ODOO_PASSWORD": "your_password",
+        "ODOO_DEFAULT_LANGUAGE": "zh_TW"
       }
     }
   }
@@ -59,6 +129,7 @@ ODOO_URL - Odoo base URL (e.g., http://localhost:8069)
 ODOO_DATABASE - Odoo database name
 ODOO_USERNAME - Odoo username
 ODOO_PASSWORD - Odoo password
+ODOO_DEFAULT_LANGUAGE - Default language for searches (e.g., zh_TW, en_US) (optional)
 ODOO_CACHE_TTL - Cache TTL in seconds (default: 300)
 ODOO_TIMEOUT - API timeout in seconds (default: 30)
 
@@ -77,11 +148,12 @@ from functools import wraps
 import logging
 import hashlib
 import re
+import traceback
 
 from mcp.server.fastmcp import FastMCP
 
 # Version information
-__version__ = "1.3.0"
+__version__ = "1.4.8"
 __author__ = "Jason Cheng (Jason Tools)"
 
 # Configure logging
@@ -97,7 +169,6 @@ def load_mcp_config():
     if len(sys.argv) > 1:
         try:
             # MCP servers can receive configuration as JSON arguments
-            import json
             mcp_args = json.loads(sys.argv[1]) if sys.argv[1].startswith('{') else {}
             
             # Extract Odoo configuration from MCP args
@@ -115,6 +186,8 @@ def load_mcp_config():
                 config_data['TIMEOUT'] = int(mcp_args['timeout'])
             if 'max_retries' in mcp_args:
                 config_data['MAX_RETRIES'] = int(mcp_args['max_retries'])
+            if 'default_language' in mcp_args:
+                config_data['DEFAULT_LANGUAGE'] = mcp_args['default_language']
                 
             logger.info("Configuration loaded from MCP arguments")
             
@@ -136,6 +209,8 @@ def load_mcp_config():
         config_data['TIMEOUT'] = int(os.getenv("ODOO_TIMEOUT", "30"))
     if not config_data.get('MAX_RETRIES'):
         config_data['MAX_RETRIES'] = int(os.getenv("ODOO_MAX_RETRIES", "3"))
+    if not config_data.get('DEFAULT_LANGUAGE'):
+        config_data['DEFAULT_LANGUAGE'] = os.getenv("ODOO_DEFAULT_LANGUAGE", None)
     
     return config_data
 
@@ -151,6 +226,7 @@ class Config:
         self.CACHE_TTL = config_data.get('CACHE_TTL', 300)
         self.TIMEOUT = config_data.get('TIMEOUT', 30)
         self.MAX_RETRIES = config_data.get('MAX_RETRIES', 3)
+        self.DEFAULT_LANGUAGE = config_data.get('DEFAULT_LANGUAGE', None)
         
         self.validate()
     
@@ -176,6 +252,8 @@ class Config:
         logger.info(f"Database: {self.DATABASE}")
         logger.info(f"Username: {self.USERNAME}")
         logger.info(f"Cache TTL: {self.CACHE_TTL}s, Timeout: {self.TIMEOUT}s")
+        if self.DEFAULT_LANGUAGE:
+            logger.info(f"Default Language: {self.DEFAULT_LANGUAGE}")
 
 config = Config()
 
@@ -239,10 +317,12 @@ class OdooConnection:
         self.connected = False
         self.version_info = {}
         self.model_fields_cache = {}
+        self.user_lang = None  # Store user language
         
         self._connect()
         self._detect_version()
         self._initialize_field_cache()
+        self._get_user_language()  # Get user language after connection
     
     def _connect(self):
         """Establish connection to Odoo"""
@@ -308,7 +388,8 @@ class OdooConnection:
             'sale.order', 'sale.order.line', 'res.partner', 
             'purchase.order', 'purchase.order.line',
             'stock.picking', 'stock.move', 'stock.move.line',
-            'account.move'
+            'account.move', 'product.product', 'product.template',
+            'product.category', 'stock.quant'
         ]
         
         for model in critical_models:
@@ -467,6 +548,33 @@ class OdooConnection:
                     'is_company', 'customer_rank', 'supplier_rank',
                     'property_payment_term_id', 'property_product_pricelist'
                 ]
+            },
+            'product.product': {
+                'basic': [
+                    'name', 'display_name', 'default_code', 'barcode', 'type',
+                    'categ_id', 'list_price', 'standard_price', 'qty_available',
+                    'active'
+                ],
+                'standard': [
+                    'name', 'display_name', 'default_code', 'barcode', 'type',
+                    'categ_id', 'list_price', 'standard_price', 'qty_available',
+                    'virtual_available', 'uom_id', 'uom_po_id', 'active',
+                    'sale_ok', 'purchase_ok', 'description', 'description_sale',
+                    'product_tmpl_id', 'attribute_value_ids', 'taxes_id',
+                    'supplier_taxes_id', 'company_id'
+                ]
+            },
+            'product.template': {
+                'basic': [
+                    'name', 'default_code', 'type', 'categ_id', 'list_price',
+                    'standard_price', 'active'
+                ],
+                'standard': [
+                    'name', 'default_code', 'type', 'categ_id', 'list_price',
+                    'standard_price', 'active', 'sale_ok', 'purchase_ok',
+                    'uom_id', 'uom_po_id', 'description', 'description_sale',
+                    'description_purchase', 'attribute_line_ids', 'company_id'
+                ]
             }
         }
         
@@ -476,6 +584,31 @@ class OdooConnection:
         
         # Filter by available fields
         return self.get_available_fields(model_name, requested_fields)
+    
+    def _get_user_language(self):
+        """Get the language setting of the connected user"""
+        # First check if there's a configured default language
+        if config.DEFAULT_LANGUAGE:
+            self.user_lang = config.DEFAULT_LANGUAGE
+            logger.info(f"Using configured default language: {self.user_lang}")
+            return
+            
+        # Otherwise, get user's language from Odoo
+        try:
+            # Get user information
+            user_data = self.execute_kw(
+                'res.users', 'read', [self.uid], 
+                {'fields': ['lang', 'name']}
+            )
+            if user_data:
+                self.user_lang = user_data[0].get('lang', 'en_US')
+                logger.info(f"User {user_data[0].get('name')} language: {self.user_lang}")
+            else:
+                self.user_lang = 'en_US'
+                logger.warning("Could not get user language, defaulting to en_US")
+        except Exception as e:
+            logger.warning(f"Failed to get user language: {e}, defaulting to en_US")
+            self.user_lang = 'en_US'
     
     def execute_kw(self, model: str, method: str, args: List = None, kwargs: Dict = None):
         """Execute Odoo model method"""
@@ -649,6 +782,10 @@ def _generate_purchase_order_url(po_id: int) -> str:
 def _generate_delivery_order_url(delivery_id: int) -> str:
     """Generate URL to access delivery order in Odoo web interface"""
     return _generate_record_url(delivery_id, 'stock.picking')
+
+def _generate_product_url(product_id: int) -> str:
+    """Generate URL to access product in Odoo web interface"""
+    return _generate_record_url(product_id, 'product.product')
 
 def _translate_delivery_state(state: str, is_english: bool = False) -> str:
     """Translate delivery order state to Chinese or English"""
@@ -872,8 +1009,11 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                      limit: int = 10) -> str:
     """Search quotations with complete field information and language/currency support
     
+    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
+            for better partial matching support
+    
     Args:
-        partner_name: Customer name filter (optional)
+        partner_name: Customer name filter (optional) - supports partial matching
         quotation_number: Quotation number filter (optional)
         state: State filter (draft, sent, sale, done, cancel) (optional)
         date_from: Start date filter (YYYY-MM-DD) (optional)
@@ -893,7 +1033,8 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
         domain = []
         
         if partner_name:
-            domain.append(['partner_id.name', 'ilike', partner_name])
+            # Use OR to search in both name and display_name for better matching
+            domain.extend(['|', ['partner_id.name', 'ilike', partner_name], ['partner_id.display_name', 'ilike', partner_name]])
         if quotation_number:
             domain.append(['name', 'ilike', quotation_number])
         if state:
@@ -915,7 +1056,7 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                     [['note', 'ilike', global_search]],
                     [['client_order_ref', 'ilike', global_search]],
                     [['origin', 'ilike', global_search]],
-                    [['partner_id.name', 'ilike', global_search]]
+                    ['|', ['partner_id.name', 'ilike', global_search], ['partner_id.display_name', 'ilike', global_search]]
                 ]
                 
                 # Try to search user_id.name if field exists
@@ -1325,8 +1466,11 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
                           limit: int = 10) -> str:
     """Search purchase orders with complete field information and supplier details
     
+    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
+            for better partial matching support
+    
     Args:
-        partner_name: Supplier name filter (optional)
+        partner_name: Supplier name filter (optional) - supports partial matching
         po_number: Purchase order number filter (optional)
         state: State filter (draft, sent, to approve, purchase, done, cancel) (optional)
         date_from: Start date filter (YYYY-MM-DD) (optional)
@@ -1346,7 +1490,8 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
         domain = []
         
         if partner_name:
-            domain.append(['partner_id.name', 'ilike', partner_name])
+            # Use OR to search in both name and display_name for better matching
+            domain.extend(['|', ['partner_id.name', 'ilike', partner_name], ['partner_id.display_name', 'ilike', partner_name]])
         if po_number:
             domain.append(['name', 'ilike', po_number])
         if state:
@@ -1367,7 +1512,7 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
                     [['notes', 'ilike', global_search]],
                     [['partner_ref', 'ilike', global_search]],
                     [['origin', 'ilike', global_search]],
-                    [['partner_id.name', 'ilike', global_search]]
+                    ['|', ['partner_id.name', 'ilike', global_search], ['partner_id.display_name', 'ilike', global_search]]
                 ]
                 
                 # Try to search user_id.name if field exists
@@ -1791,8 +1936,11 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
                           global_search: Optional[str] = None, limit: int = 10) -> str:
     """Search delivery orders (stock pickings) with complete information and tracking details
     
+    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
+            for better partial matching support
+    
     Args:
-        partner_name: Customer/Partner name filter (optional)
+        partner_name: Customer/Partner name filter (optional) - supports partial matching
         delivery_number: Delivery order number filter (optional)
         state: State filter (draft, waiting, confirmed, assigned, done, cancel) (optional)
         picking_type: Picking type filter (e.g., 'Delivery Orders', 'Receipts') (optional)
@@ -1813,7 +1961,8 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
         domain = []
         
         if partner_name:
-            domain.append(['partner_id.name', 'ilike', partner_name])
+            # Use OR to search in both name and display_name for better matching
+            domain.extend(['|', ['partner_id.name', 'ilike', partner_name], ['partner_id.display_name', 'ilike', partner_name]])
         if delivery_number:
             domain.append(['name', 'ilike', delivery_number])
         if state:
@@ -1836,7 +1985,7 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
                     [['note', 'ilike', global_search]],
                     [['origin', 'ilike', global_search]],
                     [['carrier_tracking_ref', 'ilike', global_search]],
-                    [['partner_id.name', 'ilike', global_search]]
+                    ['|', ['partner_id.name', 'ilike', global_search], ['partner_id.display_name', 'ilike', global_search]]
                 ]
                 
                 for search_domain in search_domains:
@@ -2287,6 +2436,826 @@ def get_delivery_order_details(delivery_id: int, include_moves: bool = True) -> 
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 
+# ───────────────────────── NEW: Product Management ─────────────────────────
+
+
+
+
+
+
+
+
+
+
+@mcp.tool()
+def search_products_v2(name: Optional[str] = None, category_name: Optional[str] = None,
+                      product_type: Optional[str] = None, default_code: Optional[str] = None,
+                      barcode: Optional[str] = None, active_only: bool = True,
+                      sale_ok: Optional[bool] = None, purchase_ok: Optional[bool] = None,
+                      min_price: Optional[float] = None, max_price: Optional[float] = None,
+                      limit: int = 100, offset: int = 0) -> str:
+    """Improved product search with better coverage and accuracy
+    
+    v1.4.5: Enhanced search function that finds all products correctly
+    v1.4.7: Added multi-language search support
+    
+    Args:
+        name: Product name filter (partial matching supported)
+        category_name: Product category name filter
+        product_type: Product type filter ('consu', 'service', 'product')
+        default_code: Internal reference/SKU filter
+        barcode: Barcode filter
+        active_only: Only show active products (default: True)
+        sale_ok: Filter products that can be sold
+        purchase_ok: Filter products that can be purchased
+        min_price: Minimum sale price filter
+        max_price: Maximum sale price filter
+        limit: Maximum number of products to return (default: 100)
+        offset: Number of records to skip (for pagination)
+    
+    Returns:
+        JSON string with product data including all matching products
+    """
+    logger.info(f"search_products_v2: name={name}, limit={limit}, offset={offset}, user_lang={odoo.user_lang}")
+    
+    try:
+        # Build domain with proper syntax
+        domain = []
+        
+        # Name search - enhanced with multi-language support
+        if name:
+            # First, search for products in the default way
+            name_conditions = [
+                ['name', 'ilike', name],
+                ['default_code', 'ilike', name],
+            ]
+            
+            # If user language is not English, also search in translations
+            if odoo.user_lang and odoo.user_lang != 'en_US':
+                # Search for product IDs that have matching translations
+                try:
+                    translation_domain = [
+                        ['name', '=', 'product.product,name'],
+                        ['lang', '=', odoo.user_lang],
+                        ['value', 'ilike', name],
+                        ['type', '=', 'model']
+                    ]
+                    
+                    translations = odoo.execute_kw(
+                        'ir.translation', 'search_read',
+                        [translation_domain],
+                        {'fields': ['res_id'], 'limit': 1000}
+                    )
+                    
+                    if translations:
+                        product_ids_from_translation = [t['res_id'] for t in translations if t.get('res_id')]
+                        if product_ids_from_translation:
+                            logger.info(f"Found {len(product_ids_from_translation)} products with matching translations")
+                            name_conditions.append(['id', 'in', product_ids_from_translation])
+                except Exception as e:
+                    logger.warning(f"Failed to search translations: {e}")
+            
+            # Use proper OR syntax
+            if len(name_conditions) > 1:
+                or_domain = ['|'] * (len(name_conditions) - 1)
+                or_domain.extend(name_conditions)
+                domain.extend(or_domain)
+            else:
+                domain.extend(name_conditions)
+        
+        # Other filters (these are ANDed with name search)
+        if category_name:
+            domain.append(['categ_id.name', 'ilike', category_name])
+        
+        if product_type:
+            domain.append(['type', '=', product_type])
+        
+        if default_code and not name:  # Don't double filter if name already searches default_code
+            domain.append(['default_code', 'ilike', default_code])
+        
+        if barcode:
+            domain.append(['barcode', '=', barcode])
+        
+        if active_only:
+            domain.append(['active', '=', True])
+        
+        if sale_ok is not None:
+            domain.append(['sale_ok', '=', sale_ok])
+        
+        if purchase_ok is not None:
+            domain.append(['purchase_ok', '=', purchase_ok])
+        
+        if min_price is not None:
+            domain.append(['list_price', '>=', min_price])
+        
+        if max_price is not None:
+            domain.append(['list_price', '<=', max_price])
+        
+        logger.info(f"Final search domain: {domain}")
+        
+        # First, get total count
+        total_count = odoo.execute_kw(
+            'product.product', 'search_count', [domain]
+        )
+        logger.info(f"Total products matching criteria: {total_count}")
+        
+        # Get products directly without cache
+        fields_to_fetch = [
+            'id', 'name', 'display_name', 'default_code', 'barcode',
+            'type', 'categ_id', 'list_price', 'standard_price',
+            'qty_available', 'virtual_available', 'uom_id', 'active',
+            'sale_ok', 'purchase_ok', 'description', 'description_sale'
+        ]
+        
+        # Set context with user language for proper translation
+        context = {}
+        if odoo.user_lang:
+            context['lang'] = odoo.user_lang
+            
+        products = odoo.execute_kw(
+            'product.product', 'search_read', [domain],
+            {
+                'fields': fields_to_fetch,
+                'limit': limit,
+                'offset': offset,
+                'order': 'name',
+                'context': context  # Add context with language
+            }
+        )
+        
+        logger.info(f"Retrieved {len(products)} products")
+        
+        # Get translations if user language is not English
+        product_translations = {}
+        if odoo.user_lang and odoo.user_lang != 'en_US' and products:
+            try:
+                product_ids = [p['id'] for p in products]
+                translation_domain = [
+                    ['name', '=', 'product.product,name'],
+                    ['lang', '=', odoo.user_lang],
+                    ['res_id', 'in', product_ids],
+                    ['type', '=', 'model']
+                ]
+                
+                translations = odoo.execute_kw(
+                    'ir.translation', 'search_read',
+                    [translation_domain],
+                    {'fields': ['res_id', 'value']}
+                )
+                
+                for trans in translations:
+                    if trans.get('res_id') and trans.get('value'):
+                        product_translations[trans['res_id']] = trans['value']
+                        
+                logger.info(f"Found translations for {len(product_translations)} products")
+            except Exception as e:
+                logger.warning(f"Failed to get product translations: {e}")
+        
+        # Process products
+        processed_products = []
+        for product in products:
+            # Use translated name if available, otherwise use original name
+            product_name = product_translations.get(product['id'], product.get('name', ''))
+            
+            processed = {
+                'id': product['id'],
+                'name': product_name,  # Use translated name
+                'display_name': product_name,  # Use translated name
+                'original_name': product.get('name', ''),  # Keep original name
+                'default_code': product.get('default_code', ''),
+                'barcode': product.get('barcode', ''),
+                'type': product.get('type', 'consu'),
+                'active': product.get('active', True),
+                'sale_ok': product.get('sale_ok', False),
+                'purchase_ok': product.get('purchase_ok', False),
+                'list_price': product.get('list_price', 0),
+                'standard_price': product.get('standard_price', 0),
+                'qty_available': product.get('qty_available', 0),
+                'virtual_available': product.get('virtual_available', 0),
+                'description': product.get('description', ''),
+                'description_sale': product.get('description_sale', ''),
+                'odoo_url': _generate_product_url(product['id'])
+            }
+            
+            # Process category
+            if product.get('categ_id'):
+                processed['category_id'] = product['categ_id'][0]
+                processed['category_name'] = product['categ_id'][1]
+            
+            # Process UOM
+            if product.get('uom_id'):
+                processed['uom_id'] = product['uom_id'][0]
+                processed['uom_name'] = product['uom_id'][1]
+            
+            # Type translation
+            type_map = {
+                'consu': 'Consumable',
+                'service': 'Service',
+                'product': 'Storable Product'
+            }
+            processed['type_display'] = type_map.get(product.get('type', 'consu'), 'Unknown')
+            
+            processed_products.append(processed)
+        
+        # Build result
+        result = {
+            "success": True,
+            "products": processed_products,
+            "pagination": {
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "returned_count": len(processed_products),
+                "has_more": (offset + len(processed_products)) < total_count
+            },
+            "search_params": {
+                "name": name,
+                "category_name": category_name,
+                "active_only": active_only,
+                "domain": str(domain),
+                "user_language": odoo.user_lang
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
+        
+    except Exception as e:
+        logger.error(f"Error in search_products_v2: {e}", exc_info=True)
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def search_products(name: Optional[str] = None, category_name: Optional[str] = None,
+                   product_type: Optional[str] = None, default_code: Optional[str] = None,
+                   barcode: Optional[str] = None, active_only: bool = True,
+                   sale_ok: Optional[bool] = None, purchase_ok: Optional[bool] = None,
+                   min_price: Optional[float] = None, max_price: Optional[float] = None,
+                   limit: int = 50, skip_cache: bool = False) -> str:
+    """Search products with comprehensive filters and stock information
+    
+    v1.4.0: New function for product search with multiple filter options
+    v1.4.1: Fixed name search to properly use ilike operator for case-insensitive matching
+    v1.4.2: Added skip_cache option and improved search to find all matching products
+    v1.4.3: Simplified domain construction to fix search issues
+    v1.4.4: Fixed product name display to remove variant/copy text
+    
+    NOTE: For multi-language search support, please use search_products_v2() instead
+    
+    Args:
+        name: Product name filter (partial matching supported)
+        category_name: Product category name filter
+        product_type: Product type filter ('consu', 'service', 'product')
+        default_code: Internal reference/SKU filter
+        barcode: Barcode filter
+        active_only: Only show active products (default: True)
+        sale_ok: Filter products that can be sold
+        purchase_ok: Filter products that can be purchased
+        min_price: Minimum sale price filter
+        max_price: Maximum sale price filter
+        limit: Maximum number of products to return (default: 50)
+        skip_cache: Skip cache and fetch fresh data (default: False)
+    
+    Returns:
+        JSON string with product data including stock levels and URLs
+    """
+    logger.info(f"Searching products: name={name}, category={category_name}, type={product_type}")
+    
+    try:
+        # Build domain filters
+        # v1.4.3: Simplified domain construction - just use simple list format
+        domain = []
+        
+        if name:
+            # Just search in name field with ilike
+            domain.append(['name', 'ilike', name])
+        
+        if category_name:
+            domain.append(['categ_id.name', 'ilike', category_name])
+        
+        if product_type:
+            domain.append(['type', '=', product_type])
+        
+        if default_code:
+            domain.append(['default_code', 'ilike', default_code])
+        
+        if barcode:
+            domain.append(['barcode', '=', barcode])
+        
+        if active_only:
+            domain.append(['active', '=', True])
+        
+        if sale_ok is not None:
+            domain.append(['sale_ok', '=', sale_ok])
+        
+        if purchase_ok is not None:
+            domain.append(['purchase_ok', '=', purchase_ok])
+        
+        if min_price is not None:
+            domain.append(['list_price', '>=', min_price])
+        
+        if max_price is not None:
+            domain.append(['list_price', '<=', max_price])
+        
+        # Get products using version-compatible fields
+        available_fields = odoo.get_version_compatible_fields('product.product', 'standard')
+        
+        # v1.4.3: Log the domain for debugging
+        logger.info(f"Search domain: {domain}")
+        
+        # v1.4.2: Use skip_cache parameter and increase internal search limit
+        # First, search with a higher limit to ensure we get all matching products
+        search_limit = limit * 5 if name else limit  # Increase limit when searching by name
+        
+        if skip_cache or name:  # Always skip cache for name searches to ensure fresh results
+            # Direct API call without cache
+            products = odoo.execute_kw(
+                'product.product', 'search_read', [domain],
+                {
+                    'fields': available_fields,
+                    'limit': search_limit,
+                    'order': 'name'
+                }
+            )
+        else:
+            products = _cached_odoo_call(
+                'product.product', 'search_read', [domain],
+                {
+                    'fields': available_fields,
+                    'limit': search_limit,
+                    'order': 'name'
+                }
+            )
+        
+        # Log the actual number of products found
+        logger.info(f"Found {len(products)} products matching criteria")
+        
+        # Enrich product data
+        enriched_products = []
+        
+        for product in products:
+            enriched_product = product.copy()
+            
+            # v1.4.4: Use 'name' field instead of 'display_name' to avoid variant/copy text
+            # Keep the clean product name
+            if 'display_name' in enriched_product and 'name' in enriched_product:
+                # Log the transformation for debugging
+                if '副本' in enriched_product['display_name']:
+                    logger.debug(f"Cleaning product name: {enriched_product['display_name']} -> {enriched_product['name']}")
+                
+                enriched_product['original_display_name'] = enriched_product['display_name']
+                # Override display_name with clean name to avoid "副本" text
+                enriched_product['display_name'] = enriched_product['name']
+                # Also add a specific clean_name field to be extra clear
+                enriched_product['clean_name'] = enriched_product['name']
+                # Ensure the main 'name' field is also clean
+                enriched_product['name'] = enriched_product['name']  # Redundant but ensures it's clean
+            elif 'name' in enriched_product:
+                enriched_product['clean_name'] = enriched_product['name']
+                enriched_product['display_name'] = enriched_product['name']
+            
+            # Generate direct URL to product
+            enriched_product['odoo_url'] = _generate_product_url(product['id'])
+            
+            # Format category
+            if product.get('categ_id'):
+                enriched_product['category_name'] = product['categ_id'][1]
+            
+            # Format UOM
+            if product.get('uom_id'):
+                enriched_product['unit_of_measure'] = product['uom_id'][1]
+            
+            # Product type translation
+            type_translations = {
+                'consu': '消耗品 (Consumable)',
+                'service': '服務 (Service)',
+                'product': '可庫存產品 (Storable Product)'
+            }
+            enriched_product['type_display'] = type_translations.get(
+                product.get('type', 'consu'),
+                product.get('type', 'Unknown')
+            )
+            
+            # Stock information
+            enriched_product['stock_info'] = {
+                'qty_on_hand': product.get('qty_available', 0),
+                'qty_forecasted': product.get('virtual_available', 0),
+                'uom': enriched_product.get('unit_of_measure', 'Unit')
+            }
+            
+            enriched_products.append(enriched_product)
+        
+        # v1.4.2: Apply the requested limit after enriching all products
+        if len(enriched_products) > limit:
+            enriched_products = enriched_products[:limit]
+        
+        # Calculate summary
+        total_found = len(products)  # Total found before limiting
+        displayed_count = len(enriched_products)  # Count after limiting
+        category_breakdown = {}
+        type_breakdown = {}
+        
+        for product in enriched_products:
+            # Category statistics
+            category = product.get('category_name', 'Uncategorized')
+            category_breakdown[category] = category_breakdown.get(category, 0) + 1
+            
+            # Type statistics
+            ptype = product.get('type', 'unknown')
+            type_breakdown[ptype] = type_breakdown.get(ptype, 0) + 1
+        
+        result = {
+            "products": enriched_products,
+            "summary": {
+                "total_found": total_found,
+                "displayed_count": displayed_count,
+                "category_breakdown": category_breakdown,
+                "type_breakdown": type_breakdown,
+                "search_criteria": {
+                    "name": name,
+                    "category": category_name,
+                    "type": product_type,
+                    "active_only": active_only
+                },
+                "more_available": total_found > displayed_count
+            },
+            "query_info": {
+                "limit": limit,
+                "actual_search_limit": search_limit,
+                "skip_cache": skip_cache or bool(name),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error searching products: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_product_details(product_id: int, include_stock_by_location: bool = False) -> str:
+    """Get detailed information about a specific product
+    
+    v1.4.0: New function for retrieving comprehensive product details
+    
+    Args:
+        product_id: The product ID to retrieve
+        include_stock_by_location: Include stock levels by warehouse/location (default: False)
+    
+    Returns:
+        JSON string with detailed product information
+    """
+    logger.info(f"Getting product details for ID: {product_id}")
+    
+    try:
+        # Get all available fields for the product
+        available_fields = odoo.get_version_compatible_fields('product.product', 'standard')
+        
+        # Add variant-specific fields if available
+        variant_fields = ['product_template_attribute_value_ids', 'product_variant_count']
+        for field in variant_fields:
+            if field not in available_fields:
+                try:
+                    # Test if field exists
+                    test = _cached_odoo_call(
+                        'product.product', 'search_read',
+                        [[['id', '=', product_id]]],
+                        {'fields': [field], 'limit': 1}
+                    )
+                    if test:
+                        available_fields.append(field)
+                except:
+                    pass
+        
+        # Get product details
+        products = _cached_odoo_call(
+            'product.product', 'search_read',
+            [[['id', '=', product_id]]],
+            {'fields': available_fields, 'limit': 1}
+        )
+        
+        if not products:
+            return json.dumps({
+                "error": f"Product with ID {product_id} not found"
+            }, indent=2, ensure_ascii=False)
+        
+        product = products[0]
+        
+        # Enrich product data
+        enriched_product = product.copy()
+        
+        # Generate URL
+        enriched_product['odoo_url'] = _generate_product_url(product_id)
+        
+        # Format fields
+        if product.get('categ_id'):
+            enriched_product['category_name'] = product['categ_id'][1]
+            enriched_product['category_id_raw'] = product['categ_id'][0]
+        
+        if product.get('uom_id'):
+            enriched_product['unit_of_measure'] = product['uom_id'][1]
+        
+        if product.get('uom_po_id'):
+            enriched_product['purchase_unit_of_measure'] = product['uom_po_id'][1]
+        
+        # Product type translation
+        type_translations = {
+            'consu': '消耗品 (Consumable)',
+            'service': '服務 (Service)',
+            'product': '可庫存產品 (Storable Product)'
+        }
+        enriched_product['type_display'] = type_translations.get(
+            product.get('type', 'consu'),
+            product.get('type', 'Unknown')
+        )
+        
+        # Get product template information if available
+        if product.get('product_tmpl_id'):
+            template_id = product['product_tmpl_id'][0]
+            try:
+                template_fields = odoo.get_version_compatible_fields('product.template', 'standard')
+                templates = _cached_odoo_call(
+                    'product.template', 'search_read',
+                    [[['id', '=', template_id]]],
+                    {'fields': template_fields, 'limit': 1}
+                )
+                if templates:
+                    enriched_product['template_info'] = templates[0]
+            except Exception as e:
+                logger.warning(f"Could not get template info: {e}")
+        
+        # Stock information
+        stock_info = {
+            'qty_on_hand': product.get('qty_available', 0),
+            'qty_forecasted': product.get('virtual_available', 0),
+            'incoming_qty': product.get('incoming_qty', 0),
+            'outgoing_qty': product.get('outgoing_qty', 0),
+            'uom': enriched_product.get('unit_of_measure', 'Unit')
+        }
+        
+        # Get stock by location if requested
+        if include_stock_by_location and product.get('type') == 'product':
+            try:
+                # Search for stock quants
+                quants = _cached_odoo_call(
+                    'stock.quant', 'search_read',
+                    [[['product_id', '=', product_id], ['location_id.usage', '=', 'internal']]],
+                    {
+                        'fields': ['location_id', 'quantity', 'reserved_quantity', 'available_quantity'],
+                        'limit': 100
+                    }
+                )
+                
+                location_stock = []
+                for quant in quants:
+                    if quant.get('quantity', 0) > 0:
+                        location_stock.append({
+                            'location': quant['location_id'][1] if quant.get('location_id') else 'Unknown',
+                            'location_id': quant['location_id'][0] if quant.get('location_id') else None,
+                            'quantity': quant.get('quantity', 0),
+                            'reserved': quant.get('reserved_quantity', 0),
+                            'available': quant.get('available_quantity', 0)
+                        })
+                
+                stock_info['by_location'] = location_stock
+                
+            except Exception as e:
+                logger.warning(f"Could not get stock by location: {e}")
+        
+        enriched_product['stock_info'] = stock_info
+        
+        # Pricing information
+        enriched_product['pricing_info'] = {
+            'sale_price': product.get('list_price', 0),
+            'cost': product.get('standard_price', 0),
+            'currency': 'TWD'  # Default, should get from company
+        }
+        
+        # Vendor information (if available)
+        try:
+            if product.get('seller_ids'):
+                # Get supplier info
+                vendor_info = _cached_odoo_call(
+                    'product.supplierinfo', 'search_read',
+                    [[['product_id', '=', product_id]]],
+                    {
+                        'fields': ['name', 'price', 'min_qty', 'delay', 'product_code'],
+                        'limit': 5
+                    }
+                )
+                
+                vendors = []
+                for vendor in vendor_info:
+                    vendors.append({
+                        'supplier': vendor['name'][1] if vendor.get('name') else 'Unknown',
+                        'supplier_id': vendor['name'][0] if vendor.get('name') else None,
+                        'price': vendor.get('price', 0),
+                        'min_qty': vendor.get('min_qty', 1),
+                        'lead_time_days': vendor.get('delay', 0),
+                        'supplier_product_code': vendor.get('product_code', '')
+                    })
+                
+                enriched_product['vendor_info'] = vendors
+                
+        except Exception as e:
+            logger.debug(f"Could not get vendor info: {e}")
+        
+        result = {
+            "product": enriched_product,
+            "query_info": {
+                "product_id": product_id,
+                "include_stock_by_location": include_stock_by_location,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error getting product details: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_product_stock(product_id: Optional[int] = None, product_name: Optional[str] = None,
+                     warehouse_id: Optional[int] = None, location_id: Optional[int] = None) -> str:
+    """Get real-time stock levels for products
+    
+    v1.4.0: New function for retrieving product stock information
+    
+    Args:
+        product_id: Specific product ID (optional)
+        product_name: Product name to search (optional)
+        warehouse_id: Filter by specific warehouse (optional)
+        location_id: Filter by specific location (optional)
+    
+    Returns:
+        JSON string with stock level information
+    """
+    logger.info(f"Getting product stock: id={product_id}, name={product_name}")
+    
+    try:
+        # First, find the product if searching by name
+        if product_name and not product_id:
+            products = _cached_odoo_call(
+                'product.product', 'search_read',
+                [[['name', 'ilike', product_name]]],
+                {'fields': ['id', 'name', 'display_name'], 'limit': 10}
+            )
+            
+            if not products:
+                return json.dumps({
+                    "error": f"No products found matching '{product_name}'"
+                }, indent=2, ensure_ascii=False)
+            
+            if len(products) > 1:
+                # Return list of matching products
+                return json.dumps({
+                    "error": "Multiple products found",
+                    "products": [
+                        {
+                            "id": p['id'],
+                            "name": p.get('display_name', p.get('name', 'Unknown'))
+                        } for p in products
+                    ],
+                    "message": "Please specify product_id for exact match"
+                }, indent=2, ensure_ascii=False)
+            
+            product_id = products[0]['id']
+            product_info = products[0]
+        else:
+            # Get product info
+            products = _cached_odoo_call(
+                'product.product', 'search_read',
+                [[['id', '=', product_id]]],
+                {'fields': ['id', 'name', 'display_name', 'type', 'uom_id'], 'limit': 1}
+            )
+            
+            if not products:
+                return json.dumps({
+                    "error": f"Product with ID {product_id} not found"
+                }, indent=2, ensure_ascii=False)
+            
+            product_info = products[0]
+        
+        # Check if product is stockable
+        if product_info.get('type') not in ['product', None]:
+            return json.dumps({
+                "product": {
+                    "id": product_info['id'],
+                    "name": product_info.get('display_name', product_info.get('name', 'Unknown')),
+                    "type": product_info.get('type', 'unknown')
+                },
+                "message": "This product is not stockable (type: " + product_info.get('type', 'unknown') + ")",
+                "stock_info": {
+                    "is_stockable": False
+                }
+            }, indent=2, ensure_ascii=False)
+        
+        # Build domain for stock search
+        domain = [['product_id', '=', product_id]]
+        
+        # Add location filters
+        if warehouse_id:
+            # Get warehouse locations
+            warehouses = _cached_odoo_call(
+                'stock.warehouse', 'search_read',
+                [[['id', '=', warehouse_id]]],
+                {'fields': ['lot_stock_id'], 'limit': 1}
+            )
+            if warehouses and warehouses[0].get('lot_stock_id'):
+                domain.append(['location_id', 'child_of', warehouses[0]['lot_stock_id'][0]])
+        elif location_id:
+            domain.append(['location_id', '=', location_id])
+        else:
+            # Only internal locations by default
+            domain.append(['location_id.usage', '=', 'internal'])
+        
+        # Get stock quants
+        quants = _cached_odoo_call(
+            'stock.quant', 'search_read',
+            [domain],
+            {
+                'fields': ['location_id', 'quantity', 'reserved_quantity', 'available_quantity'],
+                'limit': 1000
+            }
+        )
+        
+        # Aggregate stock by location
+        location_stock = {}
+        total_qty = 0
+        total_reserved = 0
+        total_available = 0
+        
+        for quant in quants:
+            loc_id = quant['location_id'][0] if quant.get('location_id') else 0
+            loc_name = quant['location_id'][1] if quant.get('location_id') else 'Unknown'
+            
+            if loc_id not in location_stock:
+                location_stock[loc_id] = {
+                    'location_id': loc_id,
+                    'location_name': loc_name,
+                    'quantity': 0,
+                    'reserved': 0,
+                    'available': 0
+                }
+            
+            qty = quant.get('quantity', 0)
+            reserved = quant.get('reserved_quantity', 0)
+            available = quant.get('available_quantity', 0)
+            
+            location_stock[loc_id]['quantity'] += qty
+            location_stock[loc_id]['reserved'] += reserved
+            location_stock[loc_id]['available'] += available
+            
+            total_qty += qty
+            total_reserved += reserved
+            total_available += available
+        
+        # Get product stock info from product itself for verification
+        product_stock = _cached_odoo_call(
+            'product.product', 'search_read',
+            [[['id', '=', product_id]]],
+            {
+                'fields': ['qty_available', 'virtual_available', 'incoming_qty', 'outgoing_qty'],
+                'limit': 1
+            }
+        )
+        
+        result = {
+            "product": {
+                "id": product_info['id'],
+                "name": product_info.get('display_name', product_info.get('name', 'Unknown')),
+                "uom": product_info['uom_id'][1] if product_info.get('uom_id') else 'Unit',
+                "odoo_url": _generate_product_url(product_info['id'])
+            },
+            "stock_summary": {
+                "total_on_hand": total_qty,
+                "total_reserved": total_reserved,
+                "total_available": total_available,
+                "system_on_hand": product_stock[0].get('qty_available', 0) if product_stock else 0,
+                "system_forecasted": product_stock[0].get('virtual_available', 0) if product_stock else 0,
+                "incoming": product_stock[0].get('incoming_qty', 0) if product_stock else 0,
+                "outgoing": product_stock[0].get('outgoing_qty', 0) if product_stock else 0
+            },
+            "stock_by_location": list(location_stock.values()),
+            "query_info": {
+                "product_id": product_id,
+                "warehouse_filter": warehouse_id,
+                "location_filter": location_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error getting product stock: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
 # ───────────────────────── Enhanced Contact/Partner Management ─────────────────────────
 
 @mcp.tool()
@@ -2295,8 +3264,11 @@ def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = No
                    phone: Optional[str] = None, limit: int = 100) -> str:
     """Search contacts/customers/suppliers with complete information
     
+    v1.3.1: Enhanced name search to include both 'name' and 'display_name' fields
+            for better partial matching support
+    
     Args:
-        name: Contact name filter (optional)
+        name: Contact name filter (optional) - supports partial matching
         is_customer: Filter for customers only (optional) - if None, includes all
         is_supplier: Filter for suppliers only (optional) - if None, includes all
         email: Email filter (optional)
@@ -2313,7 +3285,8 @@ def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = No
         domain = []
         
         if name:
-            domain.append(['name', 'ilike', name])
+            # Use OR to search in both name and display_name for better matching
+            domain.extend(['|', ['name', 'ilike', name], ['display_name', 'ilike', name]])
         if email:
             domain.append(['email', 'ilike', email])
         if phone:
@@ -2629,6 +3602,64 @@ def get_partner_language_currency(partner_id: int) -> str:
         logger.error(f"Error getting partner language/currency: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
+# ───────────────────────── User Language Management ─────────────────────────
+
+@mcp.tool()
+def get_current_user_language() -> str:
+    """Get the current MCP user's language setting
+    
+    Returns:
+        JSON string with user language information
+    """
+    logger.info("Getting current user language setting")
+    
+    try:
+        # Get fresh user data
+        user_data = odoo.execute_kw(
+            'res.users', 'read', [odoo.uid], 
+            {'fields': ['name', 'lang', 'tz', 'company_id']}
+        )
+        
+        if user_data:
+            user_info = user_data[0]
+            result = {
+                "user": {
+                    "id": odoo.uid,
+                    "name": user_info.get('name', 'Unknown'),
+                    "language": user_info.get('lang', 'en_US'),
+                    "language_name": {
+                        'zh_TW': '繁體中文',
+                        'zh_CN': '简体中文',
+                        'en_US': 'English (US)',
+                        'en_GB': 'English (UK)'
+                    }.get(user_info.get('lang', 'en_US'), user_info.get('lang', 'en_US')),
+                    "timezone": user_info.get('tz', 'UTC'),
+                    "company": user_info.get('company_id', [None, 'Unknown'])[1] if user_info.get('company_id') else 'Unknown'
+                },
+                "cached_language": odoo.user_lang,
+                "configured_default_language": config.DEFAULT_LANGUAGE,
+                "language_source": "configured_default" if config.DEFAULT_LANGUAGE else "user_preference",
+                "multi_language_search_enabled": True,
+                "supported_languages": ['zh_TW', 'zh_CN', 'en_US', 'en_GB'],
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            result = {
+                "error": "Could not retrieve user information",
+                "cached_language": odoo.user_lang,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
+        
+    except Exception as e:
+        logger.error(f"Error getting user language: {e}")
+        return json.dumps({
+            "error": str(e),
+            "cached_language": odoo.user_lang,
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
 # ───────────────────────── Cache Management ─────────────────────────
 
 @mcp.tool()
@@ -2708,11 +3739,19 @@ if __name__ == "__main__":
     logger.info("  • search_delivery_orders() - Search delivery orders with tracking information")
     logger.info("  • get_delivery_order_details() - Complete delivery order details with stock moves")
     logger.info("")
+    logger.info("  Product Management (NEW in v1.4.7):")
+    logger.info("  • search_products_v2() - Multi-language product search with translation support")
+    logger.info("  • get_product_details() - Complete product details with stock information")
+    logger.info("  • get_product_stock() - Real-time stock levels across warehouses")
+    logger.info("")
     logger.info("  Contact Management:")
     logger.info("  • search_partners() - Search contacts/customers/suppliers with URLs")
     logger.info("  • get_all_partners() - Get all partners in the system with URLs")
     logger.info("  • get_partner_statistics() - Comprehensive partner statistics")
     logger.info("  • get_partner_language_currency() - Customer language/currency settings with URL")
+    logger.info("")
+    logger.info("  Language Management (NEW in v1.4.7):")
+    logger.info("  • get_current_user_language() - Check current language settings")
     logger.info("")
     logger.info("  System Management:")
     logger.info("  • clear_cache() - Clear internal cache")
@@ -2781,12 +3820,19 @@ if __name__ == "__main__":
     logger.info('      "ODOO_URL": "http://localhost:8069",')
     logger.info('      "ODOO_DATABASE": "mydb",')
     logger.info('      "ODOO_USERNAME": "admin",')
-    logger.info('      "ODOO_PASSWORD": "password"')
+    logger.info('      "ODOO_PASSWORD": "password",')
+    logger.info('      "ODOO_DEFAULT_LANGUAGE": "zh_TW"  # Optional: Set default language')
     logger.info('    }')
     logger.info('  }')
+    logger.info("")
+    logger.info("Language Configuration Options:")
+    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'zh_TW' for 繁體中文")
+    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'zh_CN' for 简体中文")
+    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'en_US' for English")
+    logger.info("  • Or leave unset to use user's Odoo language preference")
     logger.info("=" * 80)
     logger.info("Ready to serve MCP requests!")
     logger.info("Connect via Claude Desktop to start using all features.")
     logger.info("=" * 80)
     
-    mcp.run()#!/usr/bin/env python3
+    mcp.run()
