@@ -13,7 +13,7 @@ by Jason Cheng (Jason Tools)
 - 完整列出 PVE Host 本機所有實體磁碟
 - 欄位資訊與 WebUI 對齊（Model、Serial、Size、SMART、Wear）
 - 支援 SSD、HDD、NVMe、USB Disk
-- 點亮指定磁碟，現場確認機櫃 Tray 好幫手（利用 dd 讀取特性）
+- 點亮指定磁碟，現場確認機櫃 Tray 好幫手（利用 dd 讀取特性，只讀不寫）
 - 純 Bash Script 開發，不用特別安裝其它套件
 
 ---
