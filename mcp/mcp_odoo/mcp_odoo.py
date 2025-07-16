@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 """
-MCP server for Odoo API – v1.4.8 Default Language Configuration
+MCP server for Odoo API – v1.4.9 Multi-language Quotation Support
 ===============================================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-07-14
-Updated: 2025-07-15
-Version: 1.4.8
+Updated: 2025-07-16
+Version: 1.4.9
 License: MIT
 
 FastMCP-based Odoo integration with comprehensive business management capabilities.
+
+NEW in v1.4.9:
+- Enhanced _cached_odoo_call to automatically include language context
+- Fixed ALL order/delivery functions to use line description (name field) as product name:
+  - search_quotations: Now shows quotation line descriptions
+  - get_quotation_details: Now shows quotation line descriptions
+  - search_purchase_orders: Now shows purchase line descriptions
+  - get_purchase_order_details: Now shows purchase line descriptions
+  - search_delivery_orders: Now shows stock move descriptions
+  - get_delivery_order_details: Now shows stock move descriptions
+- Product names now show the actual line text (first line of description)
+- All API calls now respect ODOO_DEFAULT_LANGUAGE setting
+- Consistent behavior across all functions
 
 NEW in v1.4.8:
 - Added default language configuration support
@@ -660,7 +673,22 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
 
 @retry_on_failure(max_retries=config.MAX_RETRIES)
 def _cached_odoo_call(model: str, method: str, args: List = None, kwargs: Dict = None, use_cache: bool = True) -> Any:
-    """Cached Odoo API call"""
+    """Cached Odoo API call with automatic language context
+    
+    v1.4.9: Automatically adds user language context to all API calls
+    """
+    
+    # Ensure args and kwargs are not None
+    if args is None:
+        args = []
+    if kwargs is None:
+        kwargs = {}
+    
+    # Add language context if available
+    if odoo.user_lang and 'context' not in kwargs:
+        kwargs['context'] = {'lang': odoo.user_lang}
+    elif odoo.user_lang and 'context' in kwargs and 'lang' not in kwargs['context']:
+        kwargs['context']['lang'] = odoo.user_lang
     
     # Create cache key
     cache_key = f"{model}:{method}:{json.dumps(args, sort_keys=True)}:{json.dumps(kwargs, sort_keys=True)}" if use_cache else None
@@ -1009,6 +1037,7 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                      limit: int = 10) -> str:
     """Search quotations with complete field information and language/currency support
     
+    v1.4.9: Enhanced to support multi-language product names based on ODOO_DEFAULT_LANGUAGE
     v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
             for better partial matching support
     
@@ -1208,13 +1237,23 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                     {'fields': line_fields, 'order': 'sequence'}
                 )
                 
+                
                 # Format line information
                 services_products = []
                 for line in quote_lines:
+                    # Use the 'name' field which contains the product description
+                    # This is what appears in the quotation line, not the product master name
+                    product_name = line.get('name', '')
+                    if product_name:
+                        # Get first line of description if multi-line
+                        product_name = product_name.split('\n')[0].strip()
+                    
                     line_info = {
                         'sequence': line.get('sequence', 0),
-                        'product_name': line.get('product_id', [None, 'Service'])[1] if line.get('product_id') else 'Service',
-                        'description': line.get('name', ''),
+                        'product_name': product_name,  # Using line description as product name
+                        'description': line.get('name', ''),  # Full description
+                        'product_id': line.get('product_id', [None, ''])[0] if line.get('product_id') else None,
+                        'product_ref': line.get('product_id', [None, ''])[1] if line.get('product_id') else '',
                         'quantity': line.get('product_uom_qty', 1),
                         'unit_price': line.get('price_unit', 0),
                         'subtotal': line.get('price_subtotal', 0)
@@ -1313,6 +1352,8 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
 def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
     """Get detailed quotation information with line items and customer language settings
     
+    v1.4.9: Enhanced to support multi-language product names based on ODOO_DEFAULT_LANGUAGE
+    
     Args:
         quotation_id: Quotation ID
         include_lines: Include quotation line items (default: True)
@@ -1365,6 +1406,7 @@ def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
                 }
             )
             
+            
             # Format line items with currency and language
             for line in lines:
                 formatted_line = line.copy()
@@ -1375,9 +1417,19 @@ def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
                     if line.get(field) is not None:
                         formatted_line[f'{field}_formatted'] = f"{line[field]} {currency_code}"
                 
-                # Format product information
+                # Format product information using the line description
+                # Use the 'name' field which contains the actual line description
+                product_name = line.get('name', '')
+                if product_name:
+                    # Get first line of description if multi-line
+                    formatted_line['product_name'] = product_name.split('\n')[0].strip()
+                else:
+                    formatted_line['product_name'] = line.get('product_id', [None, 'Service'])[1] if line.get('product_id') else 'Service'
+                
+                # Keep product reference information
                 if line.get('product_id'):
-                    formatted_line['product_name'] = line['product_id'][1]
+                    formatted_line['product_ref'] = line['product_id'][1]
+                    formatted_line['product_id'] = line['product_id'][0]
                 
                 if line.get('product_uom'):
                     formatted_line['uom_name'] = line['product_uom'][1]
@@ -1668,10 +1720,18 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
                 # Format line information
                 products = []
                 for line in po_lines:
+                    # Use the 'name' field which contains the product description
+                    product_name = line.get('name', '')
+                    if product_name:
+                        # Get first line of description if multi-line
+                        product_name = product_name.split('\n')[0].strip()
+                    
                     line_info = {
                         'sequence': line.get('sequence', 0),
-                        'product_name': line.get('product_id', [None, 'Product'])[1] if line.get('product_id') else 'Product',
-                        'description': line.get('name', ''),
+                        'product_name': product_name,  # Using line description as product name
+                        'description': line.get('name', ''),  # Full description
+                        'product_id': line.get('product_id', [None, ''])[0] if line.get('product_id') else None,
+                        'product_ref': line.get('product_id', [None, ''])[1] if line.get('product_id') else '',
                         'quantity': line.get('product_qty', 1),
                         'qty_received': line.get('qty_received', 0),
                         'qty_invoiced': line.get('qty_invoiced', 0),
@@ -1841,9 +1901,19 @@ def get_purchase_order_details(po_id: int, include_lines: bool = True) -> str:
                     if line.get(field) is not None:
                         formatted_line[f'{field}_formatted'] = f"{line[field]} {currency_code}"
                 
-                # Format product information
+                # Format product information using the line description
+                # Use the 'name' field which contains the actual line description
+                product_name = line.get('name', '')
+                if product_name:
+                    # Get first line of description if multi-line
+                    formatted_line['product_name'] = product_name.split('\n')[0].strip()
+                else:
+                    formatted_line['product_name'] = line.get('product_id', [None, 'Product'])[1] if line.get('product_id') else 'Product'
+                
+                # Keep product reference information
                 if line.get('product_id'):
-                    formatted_line['product_name'] = line['product_id'][1]
+                    formatted_line['product_ref'] = line['product_id'][1]
+                    formatted_line['product_id'] = line['product_id'][0]
                 
                 if line.get('product_uom'):
                     formatted_line['uom_name'] = line['product_uom'][1]
@@ -2159,9 +2229,17 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
                 # Format move information
                 products_moved = []
                 for move in stock_moves:
+                    # Use the 'name' field which contains the product description/move name
+                    product_name = move.get('name', '')
+                    if product_name:
+                        # Get first line of description if multi-line
+                        product_name = product_name.split('\n')[0].strip()
+                    
                     move_info = {
-                        'product_name': move.get('product_id', [None, 'Product'])[1] if move.get('product_id') else 'Product',
-                        'description': move.get('name', ''),
+                        'product_name': product_name,  # Using move name/description as product name
+                        'description': move.get('name', ''),  # Full description
+                        'product_id': move.get('product_id', [None, ''])[0] if move.get('product_id') else None,
+                        'product_ref': move.get('product_id', [None, ''])[1] if move.get('product_id') else '',
                         'quantity_expected': move.get('product_uom_qty', 0),
                         'quantity_done': move.get('quantity_done', 0),
                         'unit_of_measure': move.get('product_uom', [None, 'Unit'])[1] if move.get('product_uom') else 'Unit',
@@ -2337,9 +2415,19 @@ def get_delivery_order_details(delivery_id: int, include_moves: bool = True) -> 
             for move in moves:
                 formatted_move = move.copy()
                 
-                # Format product information
+                # Format product information using the move name/description
+                # Use the 'name' field which contains the actual move description
+                product_name = move.get('name', '')
+                if product_name:
+                    # Get first line of description if multi-line
+                    formatted_move['product_name'] = product_name.split('\n')[0].strip()
+                else:
+                    formatted_move['product_name'] = move.get('product_id', [None, 'Product'])[1] if move.get('product_id') else 'Product'
+                
+                # Keep product reference information
                 if move.get('product_id'):
-                    formatted_move['product_name'] = move['product_id'][1]
+                    formatted_move['product_ref'] = move['product_id'][1]
+                    formatted_move['product_id'] = move['product_id'][0]
                 
                 if move.get('product_uom'):
                     formatted_move['uom_name'] = move['product_uom'][1]
