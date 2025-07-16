@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-MCP server for Odoo API – v1.4.9 Multi-language Quotation Support
+MCP server for Odoo API – v1.5.0 Enhanced Multi-language Support
 ===============================================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-07-14
 Updated: 2025-07-16
-Version: 1.4.9
+Version: 1.5.0
 License: MIT
+Tested: Odoo 13 Community Edition
 
 FastMCP-based Odoo integration with comprehensive business management capabilities.
+
+NEW in v1.5.0:
+- Major version milestone with complete multi-language support
+- All functions now use consistent product name handling
+- Enhanced language context handling across all API calls
 
 NEW in v1.4.9:
 - Enhanced _cached_odoo_call to automatically include language context
@@ -166,7 +172,7 @@ import traceback
 from mcp.server.fastmcp import FastMCP
 
 # Version information
-__version__ = "1.4.8"
+__version__ = "1.5.0"
 __author__ = "Jason Cheng (Jason Tools)"
 
 # Configure logging
@@ -381,9 +387,9 @@ class OdooConnection:
                         major_version = int(version_str.split('.')[0])
                         self.version_info['major_version'] = major_version
                     except:
-                        self.version_info['major_version'] = 13  # Default assumption
+                        self.version_info['major_version'] = 13  # Default to Odoo 13 (tested version)
                 else:
-                    self.version_info['major_version'] = 13
+                    self.version_info['major_version'] = 13  # Default to Odoo 13 (tested version)
             
             logger.info(f"Detected Odoo version: {self.version_info['server_version']} (v{self.version_info['major_version']})")
             
@@ -391,7 +397,7 @@ class OdooConnection:
             logger.warning(f"Could not detect Odoo version: {e}")
             self.version_info = {
                 'server_version': 'Unknown',
-                'major_version': 13,  # Safe default
+                'major_version': 13,  # Default to Odoo 13 (tested version)
                 'detection_error': str(e)
             }
     
@@ -3789,7 +3795,7 @@ def cache_stats() -> str:
 
 if __name__ == "__main__":
     logger.info("=" * 80)
-    logger.info(f"Odoo FastMCP Server v{__version__} - Enhanced with Delivery Orders & Purchase Orders")
+    logger.info(f"Odoo FastMCP Server v{__version__} - Multi-language Support - Tested on Odoo 13 Community Edition")
     logger.info(f"Author: {__author__}")
     logger.info("=" * 80)
     logger.info("Configuration Methods:")
