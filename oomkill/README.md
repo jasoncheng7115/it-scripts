@@ -71,6 +71,3 @@ sudo ./oomkill_java.sh --pid 12345 --no-stress
 sudo ./oomkill_java.sh -n com.example.Main --stress-in-cgroup
 ```
 
----
-
-> 如需進一步客製（例如改寫為 systemd 服務檔、整合日誌收集），隨時告訴我！
