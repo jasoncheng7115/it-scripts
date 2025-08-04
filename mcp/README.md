@@ -5,3 +5,4 @@
 * Proxmox VE
 * Graylog
 * phpIPAM
+* Odoo
