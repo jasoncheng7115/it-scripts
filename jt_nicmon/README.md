@@ -3,6 +3,9 @@
 `jt-nicmon.sh` 適合用在 **Proxmox VE** 或 Linux 環境下的網路介面監控指令搞，  
 由 Jason Cheng (Jason Tools) 開發，用於即時檢視實體網卡與橋接/聚合介面的狀態。
 
+<img width="815" height="239" alt="image" src="https://github.com/user-attachments/assets/5b4f73c5-d039-433a-b453-fd60331ccd18" />
+
+
 ## 功能特色
 
 - **雙區塊顯示**
