@@ -42,7 +42,7 @@
    chmod +x /opt/jt_nicmon.sh
    ```
 
-2. **執行一次**
+2. **單次執行**
 
    ```bash
    /opt/jt_nicmon.sh
