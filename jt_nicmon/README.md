@@ -1,7 +1,6 @@
 # jt-nicmon.sh
 
-`jt-nicmon.sh` 適合用在 **Proxmox VE** 或 Linux 環境下的網路介面監控指令搞，  
-由 Jason Cheng (Jason Tools) 開發，用於即時檢視實體網卡與橋接/聚合介面的狀態。
+適合用在 **Proxmox VE** 或 Linux 環境下的網路介面監控指令搞，用於即時檢視實體網卡、橋接/聚合介面的狀態，方便檢查介面與實體連接埠對應與接線關係，在裝機時尤其方便。
 
 <img width="815" height="239" alt="image" src="https://github.com/user-attachments/assets/5b4f73c5-d039-433a-b453-fd60331ccd18" />
 
@@ -10,7 +9,7 @@
 ## 功能特色
 
 - **雙區塊顯示**
-  - **第一區塊**：列出所有實體網卡 (PHY)，顯示：
+  - **區塊 1**：列出所有實體網卡 (PHY)，顯示：
     - `IFACE`：介面名稱
     - `TYPE`：型別（PHY）
     - `STATE`：介面狀態（彩色顯示 `up`=綠色、`down`=黃色）
@@ -18,17 +17,18 @@
     - `SPEED`：速率
     - `DUPLX`：雙工模式
     - `MAC`：MAC 位址
-  - **第二區塊**：列出所有 `vmbr` 與 `bond` 介面，顯示：
+
+  - **區塊 2**：列出所有 `vmbr` 與 `bond` 介面，顯示：
     - `IFACE`：介面名稱
     - `TYPE`：型別（BR 或 BOND）
     - `IPV4`：IPv4 位址
     - `MEMBERS`：底下連接的實體介面（只顯示 bond 與實體 NIC）
 
 - **即時更新**  
-  搭配 `watch` 指令可每秒刷新，方便即時監控。
+  搭配 `watch` 指令可每秒更新，方便即時監控。
 
 - **PVE 最佳化**  
-  針對 Proxmox VE 網路拓樸，過濾掉不必要的虛擬介面（fwbr、fwpr、tap、vnet、sdn…）。
+  針對 Proxmox VE 網路拓樸，篩選掉不必要的虛擬介面（fwbr、fwpr、tap、vnet、sdn...等等）。
 
 - **終端處理**  
   欄位長度固定對齊，不會因為資料長短導致排版混亂。
