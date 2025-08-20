@@ -39,7 +39,7 @@
     
 ## 安裝使用
 
-1. **下載指令稿**
+1. **下載程式**
    ```bash
    wget https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_nicmon/jt_nicmon.sh -O /opt/jt_nicmon.sh
    chmod +x /opt/jt_nicmon.sh
