@@ -35,7 +35,7 @@
    ```bash
    wget https://your-repo-url/jt-nicmon.sh -O /opt/jt-nicmon.sh
    chmod +x /opt/jt-nicmon.sh
-````
+   ```
 
 2. **執行一次**
 
