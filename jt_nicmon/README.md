@@ -2,7 +2,8 @@
 
 適合用在 **Proxmox VE** 或 Linux 環境下的網路介面監控指令搞，用於即時檢視實體網卡、橋接/聚合介面的狀態，方便檢查介面與實體連接埠對應與接線關係，在裝機時尤其方便。
 
-<img width="815" height="239" alt="image" src="https://github.com/user-attachments/assets/5b4f73c5-d039-433a-b453-fd60331ccd18" />
+<img width="667" height="237" alt="image" src="https://github.com/user-attachments/assets/96254760-2046-4ae6-98f7-9d098a7de32e" />
+
 
 ---
 
