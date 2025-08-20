@@ -22,7 +22,7 @@
     - `IFACE`：介面名稱
     - `TYPE`：型別（BR 或 BOND）
     - `IPV4`：IPv4 位址
-    - `MEMBERS`：底下連接的實體介面（只顯示 bond 與實體 NIC）
+    - `MEMBERS`：下層連接的介面成員（只顯示 bond 與實體 NIC）
 
 - **即時更新**  
   搭配 `watch` 指令可每秒更新，方便即時監控。
