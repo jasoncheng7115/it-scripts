@@ -28,7 +28,7 @@
 - **即時更新**  
   搭配 `watch` 指令可每秒更新，方便即時監控。
 
-- **PVE 最佳化**  
+- **Proxmox VE 最佳化**  
   針對 Proxmox VE 網路拓樸，篩選掉不必要的虛擬介面（fwbr、fwpr、tap、vnet、sdn...等等）。
 
 - **終端處理**  
