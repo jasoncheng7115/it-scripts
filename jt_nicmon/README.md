@@ -5,6 +5,7 @@
 
 <img width="815" height="239" alt="image" src="https://github.com/user-attachments/assets/5b4f73c5-d039-433a-b453-fd60331ccd18" />
 
+---
 
 ## 功能特色
 
@@ -36,20 +37,20 @@
 
 1. **下載指令稿**
    ```bash
-   wget https://your-repo-url/jt-nicmon.sh -O /opt/jt-nicmon.sh
-   chmod +x /opt/jt-nicmon.sh
+   wget https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_nicmon/jt_nicmon.sh -O /opt/jt_nicmon.sh
+   chmod +x /opt/jt_nicmon.sh
    ```
 
 2. **執行一次**
 
    ```bash
-   /opt/jt-nicmon.sh
+   /opt/jt_nicmon.sh
    ```
 
 3. **即時監控（每 2 秒更新顯示一次）**
 
    ```bash
-   watch -n 2 /opt/jt-nicmon.sh
+   watch -n 2 /opt/jt_nicmon.sh
    ```
 
 ## 範例輸出
