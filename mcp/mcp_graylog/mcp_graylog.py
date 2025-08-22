@@ -24,7 +24,43 @@ Technical Capabilities:
 - Comprehensive error handling and retry mechanisms
 - Time snapshot for batch queries to prevent time drift
 
-Version: 1.9.24
+Version: 1.9.31
+
+Changes in 1.9.31:
+- Improved query string normalization with Graylog escaping rules
+- Correctly handles source:router\-004 vs source:"router-004" equivalence
+- Added validation for unescaped special characters
+- Optional auto-fix for unescaped hyphens in field values
+- Better logging for query string processing
+
+Changes in 1.9.30:
+- Fixed double-escaped backslash issue in query strings (\\- becomes \-)
+- Added normalize_query_string function to handle escaping issues
+- Applied normalization to all query-based tools
+- Added debug logging for query string processing
+
+Changes in 1.9.29:
+- Balanced timeout settings for better reliability
+- Increased timeouts: count(30s), search(45s), pagination(120s), slice(30s)
+- Adaptive slicing strategy based on dataset size
+- Less aggressive data limits to preserve query completeness
+- Improved error handling to return partial results
+- Fixed issue where normal queries were failing due to strict timeouts
+
+Changes in 1.9.28:
+- Fixed timeout issues with large datasets (60M+ records)
+- Limited maximum time slices to prevent excessive API calls
+- Added asyncio timeouts for all long-running operations
+
+Changes in 1.9.27:
+- Fixed undefined variable error in search_logs_paginated
+- Removed references to all_messages and page_size_used
+
+Changes in 1.9.26:
+- Updated all analysis functions to use smart pagination
+- Fixed search_logs_paginated to implement true pagination
+- Improved memory efficiency for large result sets
+- Consistent error handling across all functions
 
 Jason Cheng (Jason Tools) - AI Collaboration
 """
@@ -51,7 +87,7 @@ from mcp.types import Resource, Tool, TextContent, ImageContent, EmbeddedResourc
 import mcp.types as types
 
 # Version information
-__version__ = "1.9.24"
+__version__ = "1.9.31"
 __author__ = "Jason Cheng (Jason Tools) - AI Collaboration"
 __license__ = "MIT"
 
@@ -551,7 +587,11 @@ class GraylogClient:
             if response.status_code >= 400:
                 error_text = response.text
                 logger.error(f"HTTP Error: {response.status_code} - {error_text}")
-                if response.status_code == 401:
+                
+                # Check for specific OpenSearch errors
+                if "too_many_nested_clauses" in error_text:
+                    raise GraylogError("Query too complex: Too many nested clauses. Try using more specific field searches instead of general text searches.")
+                elif response.status_code == 401:
                     raise GraylogError("Authentication failed - check credentials")
                 elif response.status_code == 404:
                     raise GraylogError(f"API endpoint not found: {path}")
@@ -1210,6 +1250,12 @@ class GraylogClient:
                         if "chunked" in endpoint:
                             data["chunk_size"] = chunk_size
                             data["offset"] = chunk_idx * chunk_size
+                        elif "/views/search/messages" in endpoint:
+                            # This endpoint doesn't support offset/pagination
+                            # Only try on first chunk since we can't paginate
+                            if chunk_idx > 0:
+                                continue
+                            data["limit"] = chunk_size * max_chunks  # Try to get all data in one request
                         else:
                             data["limit"] = chunk_size
                             data["offset"] = chunk_idx * chunk_size
@@ -1471,8 +1517,7 @@ class GraylogClient:
                         "query_string": query_string
                     },
                     "timerange": self._build_api_timerange(timerange),
-                    "limit": attempt_limit,
-                    "offset": 0
+                    "limit": attempt_limit
                 }
                 
                 search_endpoints = [
@@ -1610,6 +1655,270 @@ class GraylogClient:
         except Exception as e:
             logger.error(f"CSV processing failed: {e}")
             return []
+
+    async def _safe_get_messages(self, query_string: str, from_time: str, to_time: str,
+                               fields: List[str], streams: List[str] = None,
+                               target_limit: int = 20000, fallback_on_error: bool = True) -> tuple[List[Dict], int]:
+        """
+        Safely get messages with error handling for complex queries (v1.9.28)
+        OPTIMIZED: Added timeouts and limits for very large datasets
+        Returns tuple of (messages, accurate_total_count)
+        """
+        # Try to get accurate total count first with reasonable timeout
+        accurate_total_count = 0
+        try:
+            accurate_total_count = await asyncio.wait_for(
+                self.get_accurate_total_count(query_string, from_time, to_time, streams),
+                timeout=30.0  # Increased to 30 seconds for better reliability
+            )
+            logger.info(f"Accurate total count: {accurate_total_count}")
+            
+            # Handle extremely large datasets with warnings but don't reduce limits too aggressively
+            if accurate_total_count > 50000000:  # More than 50 million
+                logger.warning(f"Dataset extremely large ({accurate_total_count:,}), may take longer")
+                # Only reduce if explicitly requested large limit
+                if target_limit > 20000:
+                    target_limit = 20000
+                    logger.info(f"Capped target limit to {target_limit} for very large dataset")
+            elif accurate_total_count > 10000000:  # More than 10 million
+                logger.info(f"Large dataset ({accurate_total_count:,}), processing may take time")
+                # Keep original target_limit unless it's very high
+                if target_limit > 50000:
+                    target_limit = 50000
+                    logger.info(f"Capped target limit to {target_limit} for large dataset")
+                
+        except asyncio.TimeoutError:
+            logger.warning("Count operation timed out, proceeding without exact count")
+            accurate_total_count = 0
+            # Don't reduce target_limit when count fails - let it proceed with requested limit
+        except GraylogError as e:
+            if "too_many_nested_clauses" in str(e) and fallback_on_error:
+                logger.warning(f"Query too complex for accurate count: {e}")
+                # Continue without accurate count
+            else:
+                raise
+        
+        # Try to get messages with timeout
+        messages = []
+        try:
+            # For smaller requests, try direct approach first
+            if target_limit <= 5000:
+                try:
+                    messages = await asyncio.wait_for(
+                        self._single_high_limit_search(
+                            query_string=query_string,
+                            timerange=self._build_timerange(from_time, to_time),
+                            fields=fields,
+                            streams=streams,
+                            limit=target_limit
+                        ),
+                        timeout=45.0  # Increased to 45 seconds for reliability
+                    )
+                    if messages:
+                        return messages, accurate_total_count
+                except asyncio.TimeoutError:
+                    logger.error("Direct search timed out, trying pagination")
+                except GraylogError as e:
+                    if "too_many_nested_clauses" not in str(e):
+                        raise
+                    # Fall through to smart pagination
+            
+            # Use smart pagination for larger requests or if direct approach failed
+            messages = await asyncio.wait_for(
+                self._smart_time_based_pagination(
+                    query_string=query_string,
+                    from_time=from_time,
+                    to_time=to_time,
+                    fields=fields,
+                    streams=streams,
+                    target_per_page=min(10000, target_limit)  # Adaptive page size
+                ),
+                timeout=120.0  # Increased to 2 minutes for large datasets
+            )
+            
+            # Limit to target if we got more
+            if len(messages) > target_limit:
+                messages = messages[:target_limit]
+                
+        except asyncio.TimeoutError:
+            logger.error("Message retrieval timed out, returning partial results")
+            # Return whatever we got so far
+            return messages if messages else [], accurate_total_count
+        except GraylogError as e:
+            if "too_many_nested_clauses" in str(e):
+                if not fallback_on_error:
+                    raise
+                logger.error(f"Query too complex even with smart pagination: {e}")
+                return [], 0
+            else:
+                raise
+        
+        return messages, accurate_total_count
+
+    async def _smart_time_based_pagination(self, query_string: str, from_time: str, to_time: str,
+                                          fields: List[str], streams: List[str], 
+                                          target_per_page: int = 10000) -> List[Dict]:
+        """
+        Implement smart time-based pagination (v1.9.28)
+        
+        OPTIMIZED: Limits maximum slices to prevent timeout issues with large datasets.
+        Uses adaptive slicing based on data density.
+        """
+        logger.info(f"Smart time-based pagination: target {target_per_page} messages per page")
+        
+        # First get accurate total count with reasonable timeout
+        try:
+            # Increased timeout for better reliability
+            total_count = await asyncio.wait_for(
+                self.get_accurate_total_count(query_string, from_time, to_time, streams),
+                timeout=30.0  # 30 second timeout for count
+            )
+            logger.info(f"Total count for pagination: {total_count}")
+        except asyncio.TimeoutError:
+            logger.warning("Count operation timed out, using estimated count")
+            total_count = target_per_page * 5  # More conservative estimate
+        except Exception as e:
+            logger.warning(f"Failed to get accurate count: {e}, using fallback")
+            total_count = target_per_page * 5  # More conservative estimate
+        
+        # If total is less than target, just return all
+        if total_count <= target_per_page:
+            logger.info("Total count less than target, fetching all messages")
+            try:
+                messages = await self.breakthrough_api_limits(
+                    query_string=query_string,
+                    from_time=from_time,
+                    to_time=to_time,
+                    fields=fields,
+                    streams=streams,
+                    target_limit=total_count
+                )
+                return messages
+            except Exception as e:
+                logger.error(f"Failed to fetch all messages: {e}")
+                return []
+        
+        # Calculate time range
+        timerange = self._build_timerange(from_time, to_time)
+        
+        if timerange["type"] == "relative":
+            total_seconds = timerange["range"]
+            end_time = datetime.utcnow()
+            start_time = end_time - timedelta(seconds=total_seconds)
+        else:
+            start_time = datetime.fromisoformat(timerange["from"].replace('Z', '+00:00')).replace(tzinfo=None)
+            end_time = datetime.fromisoformat(timerange["to"].replace('Z', '+00:00')).replace(tzinfo=None)
+            total_seconds = (end_time - start_time).total_seconds()
+        
+        # Balance between performance and completeness
+        # Adaptive slicing based on dataset size
+        if total_count > 10000000:  # Very large dataset
+            MAX_SLICES = 100  # Allow more slices for very large datasets
+            MIN_SLICE_DURATION = 30  # 30 seconds minimum per slice
+        elif total_count > 1000000:  # Large dataset
+            MAX_SLICES = 50  # Moderate number of slices
+            MIN_SLICE_DURATION = 60  # 1 minute minimum per slice
+        else:  # Normal dataset
+            MAX_SLICES = 30  # Fewer slices for smaller datasets
+            MIN_SLICE_DURATION = 120  # 2 minutes minimum per slice
+        
+        # Calculate optimal number of slices
+        ideal_slices = max(1, math.ceil(total_count / target_per_page))
+        
+        # Apply limits to prevent excessive slicing
+        if ideal_slices > MAX_SLICES:
+            logger.info(f"Adjusting slices from {ideal_slices} to {MAX_SLICES} for performance")
+            num_slices = MAX_SLICES
+        else:
+            num_slices = ideal_slices
+        
+        # Ensure minimum slice duration
+        seconds_per_slice = total_seconds / num_slices
+        if seconds_per_slice < MIN_SLICE_DURATION and num_slices > 1:
+            num_slices = max(1, int(total_seconds / MIN_SLICE_DURATION))
+            seconds_per_slice = total_seconds / num_slices
+            logger.info(f"Adjusted slices to {num_slices} for minimum slice duration")
+        
+        logger.info(f"Time-based pagination plan: {num_slices} slices, {seconds_per_slice:.1f}s per slice")
+        logger.info(f"Expected {total_count / num_slices:.0f} messages per slice")
+        
+        all_messages = []
+        messages_per_slice = []
+        
+        # Add overall timeout for pagination operation
+        pagination_timeout = min(30.0, num_slices * 2.0)  # 2 seconds per slice, max 30 seconds
+        
+        try:
+            # Fetch messages for each time slice with timeout
+            for i in range(num_slices):
+                slice_start = start_time + timedelta(seconds=i * seconds_per_slice)
+                slice_end = start_time + timedelta(seconds=(i + 1) * seconds_per_slice)
+                
+                # Ensure we don't go beyond the end time
+                if slice_end > end_time:
+                    slice_end = end_time
+                
+                slice_from = slice_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                slice_to = slice_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                
+                logger.info(f"Fetching slice {i+1}/{num_slices}: {slice_from} to {slice_to}")
+                
+                try:
+                    # Increased timeout for better reliability
+                    slice_messages = await asyncio.wait_for(
+                        self._single_high_limit_search(
+                            query_string=query_string,
+                            timerange={
+                                "type": "absolute",
+                                "from": slice_from,
+                                "to": slice_to
+                            },
+                            fields=fields,
+                            streams=streams,
+                            limit=min(target_per_page * 2, 20000)  # Cap at 20k per request
+                        ),
+                        timeout=30.0  # 30 second timeout per slice for reliability
+                    )
+                    
+                    if slice_messages:
+                        all_messages.extend(slice_messages)
+                        messages_per_slice.append(len(slice_messages))
+                        logger.info(f"Slice {i+1} returned {len(slice_messages)} messages")
+                    else:
+                        messages_per_slice.append(0)
+                        logger.warning(f"Slice {i+1} returned no messages")
+                    
+                    # Only stop early for very large collections
+                    if len(all_messages) >= target_per_page * 5 and len(all_messages) >= 50000:
+                        logger.info(f"Collected sufficient messages ({len(all_messages)}), stopping to prevent memory issues")
+                        break
+                    
+                    # Small delay to avoid overwhelming the API
+                    if i < num_slices - 1:
+                        await asyncio.sleep(0.1)  # Small delay between requests
+                        
+                except asyncio.TimeoutError:
+                    logger.error(f"Slice {i+1} timed out, skipping")
+                    messages_per_slice.append(0)
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to fetch slice {i+1}: {e}")
+                    messages_per_slice.append(0)
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Pagination failed: {e}")
+        
+        # Log statistics
+        total_fetched = len(all_messages)
+        avg_per_slice = sum(messages_per_slice) / len(messages_per_slice) if messages_per_slice else 0
+        
+        logger.info(f"Pagination complete: {total_fetched} messages fetched in {len(messages_per_slice)} slices")
+        if messages_per_slice:
+            logger.info(f"Messages per slice: min={min(messages_per_slice)}, "
+                       f"max={max(messages_per_slice)}, avg={avg_per_slice:.1f}")
+        
+        return self._deduplicate_messages(all_messages)
 
     def _deduplicate_messages(self, messages: List[Dict]) -> List[Dict]:
         """Deduplicate messages - Enhanced precision to avoid false positives"""
@@ -1884,7 +2193,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="search_logs_paginated",
-            description="Search logs with pagination support",
+            description="Search logs with smart time-based pagination (handles large datasets efficiently)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1892,7 +2201,7 @@ async def handle_list_tools() -> List[Tool]:
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
                     "limit": {"type": "integer", "description": "Results per page", "default": 100, "maximum": 500},
-                    "offset": {"type": "integer", "description": "Results offset", "default": 0},
+                    "offset": {"type": "integer", "description": "Results offset (automatically uses time-based chunks)", "default": 0},
                     "fields": {
                         "type": "array",
                         "description": "Fields to retrieve",
@@ -2064,6 +2373,74 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
         logger.error(error_msg)
         return [types.TextContent(type="text", text=error_msg)]
 
+def normalize_query_string(query: str, auto_fix_escaping: bool = False) -> str:
+    """
+    Normalize query string to handle Graylog escaping rules correctly.
+    
+    Graylog requires these characters to be escaped with backslash:
+    & ! : \ / + - ! ( ) { } [ ] ^ " ~ * ?
+    
+    However, strings within double quotes don't need escaping.
+    
+    This function handles:
+    1. Double-escaped backslashes (\\- becomes \-) from MCP protocol
+    2. Validates that escaping is correct for Graylog
+    3. Preserves quoted strings as-is
+    4. Optionally auto-fixes unescaped special characters
+    
+    Examples:
+    - source:router\\-004.jason.tools -> source:router\-004.jason.tools (fix double escape)
+    - source:"router-004.jason.tools" -> unchanged (quoted strings don't need escaping)
+    - source:router\-004.jason.tools -> unchanged (correctly escaped)
+    """
+    original_query = query
+    
+    # First, fix any double-escaped backslashes that come from MCP protocol layers
+    # This happens when a properly escaped query like "source:router\-004" 
+    # gets transmitted as "source:router\\-004"
+    normalized = query.replace('\\\\', '\\')
+    
+    # Log the normalization process
+    if normalized != original_query:
+        logger.info(f"Query normalized (fixed double-escaping): '{original_query}' -> '{normalized}'")
+    
+    # Auto-fix escaping if requested (useful for queries from AI that might miss escaping)
+    if auto_fix_escaping:
+        import re
+        # Find field:value patterns that aren't quoted
+        # Pattern to match field:value where value contains hyphens but isn't quoted
+        pattern = r'(\w+):([^"\s]+)'
+        
+        def escape_value(match):
+            field = match.group(1)
+            value = match.group(2)
+            
+            # Skip if already has escaped hyphens or is quoted
+            if '\\-' in value or value.startswith('"'):
+                return match.group(0)
+            
+            # Check if value contains unescaped hyphens
+            if '-' in value:
+                escaped_value = value.replace('-', '\\-')
+                logger.info(f"Auto-escaped hyphen: {field}:{value} -> {field}:{escaped_value}")
+                return f"{field}:{escaped_value}"
+            
+            return match.group(0)
+        
+        normalized = re.sub(pattern, escape_value, normalized)
+    
+    # Validate the query (just log warnings, don't modify)
+    import re
+    # Check for unescaped hyphens in field:value patterns (not in quotes)
+    unescaped_pattern = r'(\w+):([^"\s]*[-][^"\s]*)'
+    matches = re.findall(unescaped_pattern, normalized)
+    for field, value in matches:
+        if '\\-' not in value and '"' not in value:
+            logger.debug(f"Note: Unescaped hyphen in query: {field}:{value}")
+            logger.debug(f"This might need: {field}:{value.replace('-', '\\-')} or {field}:\"{value}\"")
+    
+    return normalized
+
 async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
     """Execute specific Graylog tool operations with FIXED source analysis and ALL original features"""
     client = get_graylog_client()
@@ -2099,7 +2476,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 logger.info(f"Using resolved stream IDs: {resolved_streams}")
         # ================ API breakthrough tools with FIXED source analysis ================
         if name == "get_log_statistics":
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             streams = arguments.get("streams", [])
@@ -2112,22 +2489,14 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
                 logger.info(f"Query with stream filter: '{filtered_query}'")
                 
-                # Key fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
-                logger.info(f"Accurate total count: {accurate_total_count}")
-                
-                # Key fix: Use breakthrough_api_limits to get all messages within limit
-                # For accurate statistics, we need all messages, not just a sample
-                actual_limit = min(analysis_limit, accurate_total_count) if accurate_total_count > 0 else analysis_limit
-                logger.info(f"Attempting to retrieve {actual_limit} messages for complete analysis")
-                
-                messages = await client.breakthrough_api_limits(
+                # Use safe method to get messages with smart pagination
+                messages, accurate_total_count = await client._safe_get_messages(
                     query_string=filtered_query,
                     from_time=range_from,
                     to_time=range_to,
                     fields=["timestamp", "source", "message", "level", "facility"],
                     streams=None,  # Don't pass streams since we added them to query
-                    target_limit=actual_limit
+                    target_limit=analysis_limit
                 )
                 
                 logger.info(f"Successfully retrieved {len(messages)} messages for analysis")
@@ -2170,18 +2539,44 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # Apply stream filter to query as workaround for API stream parameter issues
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
-                
-                # Use fixed breakthrough method to get sample
-                messages = await client.breakthrough_api_limits(
+                # Use safe method to get messages
+                messages, accurate_total_count = await client._safe_get_messages(
                     query_string=filtered_query,
                     from_time=range_from,
                     to_time=range_to,
                     fields=["timestamp", "source", "level"],
                     streams=None,  # Don't pass streams since we added them to query
-                    target_limit=min(20000, accurate_total_count) if accurate_total_count > 0 else 20000
+                    target_limit=20000
                 )
+                
+                # If we couldn't get any messages due to complex query
+                if not messages and accurate_total_count == 0:
+                    return {
+                        "error": "Query too complex",
+                        "message": "Unable to analyze time patterns due to query complexity",
+                        "suggestion": "Try using more specific field searches instead of general text searches.",
+                        "time_patterns": {
+                            "hourly_distribution": {},
+                            "daily_distribution": {},
+                            "minute_distribution": {},
+                            "peak_hours": [],
+                            "peak_minutes": [],
+                            "total_time_slots": 0,
+                            "total_minutes": 0,
+                            "processing_stats": {
+                                "total_messages": 0,
+                                "successfully_processed": 0,
+                                "error_occurred": True
+                            }
+                        },
+                        "analysis_summary": {
+                            "accurate_total_count": 0,
+                            "sample_messages_analyzed": 0,
+                            "time_range": {"from": range_from, "to": range_to},
+                            "query": query,
+                            "error_occurred": True
+                        }
+                    }
                 
                 # Analyze time patterns
                 time_analysis = LogAnalyzer.analyze_time_patterns(messages)
@@ -2193,16 +2588,16 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         "sample_messages_analyzed": len(messages),
                         "time_range": {"from": range_from, "to": range_to},
                         "query": query,
-                        "counting_method": "fixed_accurate_counting"
+                        "counting_method": "smart_safe_retrieval"
                     },
-                    "processing_note": "Time pattern analysis completed using FIXED accurate counting"
+                    "processing_note": "Time pattern analysis completed using smart pagination (v1.9.25)"
                 }
                 
             except Exception as e:
-                raise GraylogError(f"Failed to analyze time patterns with fixed counting: {e}")
+                raise GraylogError(f"Failed to analyze time patterns: {e}")
         
         elif name == "analyze_source_distribution":
-            query = arguments.get("query", "_exists_:source")
+            query = normalize_query_string(arguments.get("query", "_exists_:source"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             streams = arguments.get("streams", [])
@@ -2268,17 +2663,59 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # Apply stream filter to query as workaround for API stream parameter issues
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                # Try to get accurate total count, but don't fail if it errors
+                accurate_total_count = 0
+                try:
+                    accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                except GraylogError as e:
+                    if "too_many_nested_clauses" in str(e):
+                        logger.warning(f"Query too complex for accurate count: {e}")
+                        # Continue without accurate count
+                    else:
+                        raise
                 
-                messages = await client.breakthrough_api_limits(
-                    query_string=filtered_query,
-                    from_time=range_from,
-                    to_time=range_to,
-                    fields=["timestamp", "source", "message", "level"],
-                    streams=None,  # Don't pass streams since we added them to query
-                    target_limit=min(30000, accurate_total_count) if accurate_total_count > 0 else 30000
-                )
+                # Get messages with error handling
+                messages = []
+                try:
+                    # Use smart pagination for better handling of large datasets
+                    messages = await client._smart_time_based_pagination(
+                        query_string=filtered_query,
+                        from_time=range_from,
+                        to_time=range_to,
+                        fields=["timestamp", "source", "message", "level"],
+                        streams=None,  # Don't pass streams since we added them to query
+                        target_per_page=10000  # Process in reasonable chunks
+                    )
+                    
+                    # Limit to reasonable number for analysis
+                    if len(messages) > 30000:
+                        logger.info(f"Limiting error analysis to first 30000 messages out of {len(messages)}")
+                        messages = messages[:30000]
+                        
+                except GraylogError as e:
+                    if "too_many_nested_clauses" in str(e):
+                        # If query is too complex, return error with helpful message
+                        return {
+                            "error": "Query too complex",
+                            "message": str(e),
+                            "suggestion": "Try using more specific field searches instead of general text searches.",
+                            "error_patterns": {
+                                "total_errors": 0,
+                                "error_sources": {},
+                                "error_keywords": {},
+                                "recent_errors": [],
+                                "error_percentage": 0
+                            },
+                            "analysis_summary": {
+                                "accurate_total_count": 0,
+                                "sample_messages_analyzed": 0,
+                                "time_range": {"from": range_from, "to": range_to},
+                                "query": query,
+                                "error_occurred": True
+                            }
+                        }
+                    else:
+                        raise
                 
                 # Analyze error patterns
                 error_analysis = LogAnalyzer.extract_error_patterns(messages)
@@ -2290,16 +2727,16 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         "sample_messages_analyzed": len(messages),
                         "time_range": {"from": range_from, "to": range_to},
                         "query": query,
-                        "counting_method": "fixed_accurate_counting"
+                        "counting_method": "smart_time_based_pagination"
                     },
-                    "processing_note": "Error pattern analysis completed using FIXED accurate counting"
+                    "processing_note": "Error pattern analysis completed using smart pagination (v1.9.25)"
                 }
                 
             except Exception as e:
-                raise GraylogError(f"Failed to analyze error patterns with fixed counting: {e}")
+                raise GraylogError(f"Failed to analyze error patterns: {e}")
         
         elif name == "get_log_level_analysis":
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             streams = arguments.get("streams", [])
@@ -2308,17 +2745,38 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # Apply stream filter to query as workaround for API stream parameter issues
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
-                
-                messages = await client.breakthrough_api_limits(
+                # Use safe method to get messages
+                messages, accurate_total_count = await client._safe_get_messages(
                     query_string=filtered_query,
                     from_time=range_from,
                     to_time=range_to,
                     fields=["level", "timestamp", "source"],
                     streams=None,  # Don't pass streams since we added them to query
-                    target_limit=min(20000, accurate_total_count) if accurate_total_count > 0 else 20000
+                    target_limit=20000
                 )
+                
+                # If we couldn't get any messages due to complex query
+                if not messages and accurate_total_count == 0:
+                    return {
+                        "error": "Query too complex",
+                        "message": "Unable to analyze log levels due to query complexity",
+                        "suggestion": "Try using more specific field searches instead of general text searches.",
+                        "level_analysis": {
+                            "level_distribution": {},
+                            "error_rate": 0,
+                            "warning_rate": 0,
+                            "total_errors": 0,
+                            "total_warnings": 0,
+                            "most_common_level": ("unknown", 0)
+                        },
+                        "analysis_summary": {
+                            "accurate_total_count": 0,
+                            "sample_messages_analyzed": 0,
+                            "time_range": {"from": range_from, "to": range_to},
+                            "query": query,
+                            "error_occurred": True
+                        }
+                    }
                 
                 # Analyze log levels
                 level_analysis = LogAnalyzer.analyze_levels(messages)
@@ -2330,17 +2788,17 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         "sample_messages_analyzed": len(messages),
                         "time_range": {"from": range_from, "to": range_to},
                         "query": query,
-                        "counting_method": "fixed_accurate_counting"
+                        "counting_method": "smart_safe_retrieval"
                     },
-                    "processing_note": "Log level analysis completed using FIXED accurate counting"
+                    "processing_note": "Log level analysis completed using smart pagination (v1.9.25)"
                 }
                 
             except Exception as e:
-                raise GraylogError(f"Failed to analyze log levels with fixed counting: {e}")
+                raise GraylogError(f"Failed to analyze log levels: {e}")
         
         elif name == "analyze_field_distribution":
             field_name = arguments["field_name"]
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             top_n = arguments.get("top_n", 50)
@@ -2356,10 +2814,6 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 logger.info(f"Modified query with stream filter: {query}")
             
             try:
-                # First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(query, range_from, range_to, streams)
-                logger.info(f"Accurate total count: {accurate_total_count} (with streams: {streams})")
-                
                 # Determine fields to retrieve - always include the target field
                 fields = ["timestamp", "source", field_name]
                 # Also try alternate naming conventions
@@ -2368,15 +2822,17 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 elif "_" in field_name:
                     fields.append(field_name.replace("_", "-"))
                 
-                # Retrieve messages
-                messages = await client.breakthrough_api_limits(
+                # Retrieve messages using safe method with smart pagination
+                messages, accurate_total_count = await client._safe_get_messages(
                     query_string=query,
                     from_time=range_from,
                     to_time=range_to,
                     fields=fields,
                     streams=streams,
-                    target_limit=min(30000, accurate_total_count) if accurate_total_count > 0 else 30000
+                    target_limit=30000
                 )
+                
+                logger.info(f"Accurate total count: {accurate_total_count}, messages retrieved: {len(messages)}")
                 
                 # Analyze field distribution
                 field_analysis = LogAnalyzer.analyze_field_distribution(
@@ -2407,7 +2863,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         # ================ Sample query tools ================
         elif name == "get_log_sample":
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             limit = min(arguments.get("limit", 50), 200)
@@ -2418,18 +2874,60 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # Apply stream filter to query as workaround for API stream parameter issues
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                # Try to get accurate total count, but don't fail if it errors
+                accurate_total_count = 0
+                try:
+                    accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                except GraylogError as e:
+                    if "too_many_nested_clauses" in str(e):
+                        logger.warning(f"Query too complex for accurate count: {e}")
+                        # Continue without accurate count
+                    else:
+                        raise
                 
-                # Get sample data
-                messages = await client.breakthrough_api_limits(
-                    query_string=filtered_query,
-                    from_time=range_from,
-                    to_time=range_to,
-                    fields=fields,
-                    streams=None,  # Don't pass streams since we added them to query
-                    target_limit=limit * 2
-                )
+                # Get sample data with error handling
+                messages = []
+                try:
+                    # For small samples, use direct approach
+                    if limit <= 200:
+                        messages = await client._single_high_limit_search(
+                            query_string=filtered_query,
+                            timerange=client._build_timerange(range_from, range_to),
+                            fields=fields,
+                            streams=None,
+                            limit=min(limit * 3, 1000)  # Get extra to ensure we have enough
+                        )
+                    else:
+                        # For larger samples, use smart pagination
+                        messages = await client._smart_time_based_pagination(
+                            query_string=filtered_query,
+                            from_time=range_from,
+                            to_time=range_to,
+                            fields=fields,
+                            streams=None,
+                            target_per_page=5000  # Smaller chunks for samples
+                        )
+                except GraylogError as e:
+                    if "too_many_nested_clauses" in str(e):
+                        # If query is too complex, return error with helpful message
+                        return {
+                            "error": "Query too complex",
+                            "message": str(e),
+                            "suggestion": "Try using more specific field searches instead of general text searches. For example, use 'app:AdGuardHome' instead of 'AdGuardHome'.",
+                            "sample_messages": [],
+                            "sample_info": {
+                                "accurate_total_count": 0,
+                                "requested_limit": limit,
+                                "actual_count": 0,
+                                "total_available": 0,
+                                "fields_included": fields,
+                                "time_range": {"from": range_from, "to": range_to},
+                                "query": query,
+                                "error_occurred": True
+                            }
+                        }
+                    else:
+                        raise
                 
                 sample_messages = messages[:limit] if len(messages) > limit else messages
                 
@@ -2453,6 +2951,12 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         elif name == "search_logs_paginated":
             query = arguments["query"]
+            # Log the original query to debug escape issues
+            logger.info(f"Original query received: {repr(query)}")
+            
+            # Normalize the query to fix double-escaped backslashes
+            query = normalize_query_string(query)
+            
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             limit = min(arguments.get("limit", 100), 500)
@@ -2463,22 +2967,95 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             try:
                 # Apply stream filter to query as workaround for API stream parameter issues
                 filtered_query = LogAnalyzer._add_stream_filter_to_query(query, streams)
+                logger.info(f"Filtered query: {repr(filtered_query)}")
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                # Get accurate total count first
+                accurate_total_count = 0
+                try:
+                    accurate_total_count = await client.get_accurate_total_count(filtered_query, range_from, range_to, None)
+                    logger.info(f"Total count for pagination: {accurate_total_count}")
+                except GraylogError as e:
+                    if "too_many_nested_clauses" in str(e):
+                        logger.warning(f"Query too complex for accurate count: {e}")
+                        # Return error response for complex queries
+                        return {
+                            "error": "Query too complex",
+                            "message": str(e),
+                            "suggestion": "Try using more specific field searches instead of general text searches.",
+                            "messages": [],
+                            "pagination": {
+                                "accurate_total_count": 0,
+                                "offset": offset,
+                                "limit": limit,
+                                "current_count": 0,
+                                "error_occurred": True
+                            }
+                        }
+                    else:
+                        raise
                 
-                actual_limit = limit + offset + 1000
+                # Calculate which time slice we need based on offset
+                page_size = 1000  # Smaller page size for real pagination
                 
-                messages = await client.breakthrough_api_limits(
-                    query_string=filtered_query,
-                    from_time=range_from,
-                    to_time=range_to,
-                    fields=fields,
-                    streams=None,  # Don't pass streams since we added them to query
-                    target_limit=min(actual_limit, 10000)
-                )
-                
-                paginated_messages = messages[offset:offset + limit] if offset < len(messages) else []
+                # If offset is 0 and limit is small, just get what we need
+                if offset == 0 and limit <= 1000:
+                    # Direct query for first page
+                    messages = await client._single_high_limit_search(
+                        query_string=filtered_query,
+                        timerange=client._build_timerange(range_from, range_to),
+                        fields=fields,
+                        streams=None,
+                        limit=min(limit + 100, 2000)  # Get a bit extra for buffer
+                    )
+                    
+                    paginated_messages = messages[:limit] if messages else []
+                else:
+                    # For larger offsets, we need to calculate time slices
+                    # Calculate approximate time position based on offset
+                    if accurate_total_count > 0:
+                        # Calculate time position based on offset ratio
+                        offset_ratio = offset / accurate_total_count
+                        
+                        timerange = client._build_timerange(range_from, range_to)
+                        if timerange["type"] == "relative":
+                            total_seconds = timerange["range"]
+                            # Start from the time position based on offset
+                            slice_start_seconds = int(total_seconds * offset_ratio)
+                            slice_duration = min(300, total_seconds // 10)  # 5 minutes or 10% of range
+                            
+                            slice_from = f"now-{slice_start_seconds + slice_duration}s"
+                            slice_to = f"now-{slice_start_seconds}s"
+                        else:
+                            from_dt = datetime.fromisoformat(timerange["from"].replace('Z', '+00:00')).replace(tzinfo=None)
+                            to_dt = datetime.fromisoformat(timerange["to"].replace('Z', '+00:00')).replace(tzinfo=None)
+                            total_seconds = (to_dt - from_dt).total_seconds()
+                            
+                            slice_start_dt = from_dt + timedelta(seconds=total_seconds * offset_ratio)
+                            slice_duration = min(300, total_seconds / 10)  # 5 minutes or 10% of range
+                            
+                            slice_from = slice_start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                            slice_to = (slice_start_dt + timedelta(seconds=slice_duration)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                        
+                        # Get messages from the calculated time slice
+                        messages = await client._single_high_limit_search(
+                            query_string=filtered_query,
+                            timerange=client._build_timerange(slice_from, slice_to),
+                            fields=fields,
+                            streams=None,
+                            limit=limit + 100  # Get extra for buffer
+                        )
+                        
+                        paginated_messages = messages[:limit] if messages else []
+                    else:
+                        # Fallback: just get the requested limit
+                        messages = await client._single_high_limit_search(
+                            query_string=filtered_query,
+                            timerange=client._build_timerange(range_from, range_to),
+                            fields=fields,
+                            streams=None,
+                            limit=limit
+                        )
+                        paginated_messages = messages
                 
                 return {
                     "messages": paginated_messages,
@@ -2487,24 +3064,26 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         "offset": offset,
                         "limit": limit,
                         "current_count": len(paginated_messages),
-                        "sample_total_available": len(messages),
-                        "has_more": offset + limit < len(messages),
-                        "counting_method": "fixed_accurate_counting"
+                        "has_more": offset + limit < accurate_total_count,
+                        "counting_method": "smart_time_based_pagination"
                     },
                     "query_info": {
                         "query": query,
                         "time_range": {"from": range_from, "to": range_to},
                         "fields": fields
                     },
-                    "note": "Paginated results using FIXED accurate counting"
+                    "note": "Using smart time-based pagination for better performance"
                 }
                 
             except Exception as e:
-                raise GraylogError(f"Failed to search logs with pagination using fixed counting: {e}")
+                raise GraylogError(f"Failed to search logs with pagination: {e}")
         
         # ================ Export tools ================
         elif name == "search_messages_export":
             query = arguments["query"]
+            # Normalize the query to fix double-escaped backslashes
+            query = normalize_query_string(query)
+            
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             limit = arguments.get("limit", 1000)  # Remove 5000 limit
@@ -2513,20 +3092,16 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             try:
                 logger.info(f"search_messages_export: query='{query}', limit={limit}, fields={fields}")
                 
-                # Fix: First get accurate total count
-                accurate_total_count = await client.get_accurate_total_count(query, range_from, range_to)
-                logger.info(f"Accurate total count: {accurate_total_count}")
-                
-                # Use fixed method to get data for analysis
-                logger.info(f"Attempting to retrieve {limit} messages using breakthrough_api_limits")
-                messages = await client.breakthrough_api_limits(
+                # Use safe method to get messages with smart pagination
+                messages, accurate_total_count = await client._safe_get_messages(
                     query_string=query,
                     from_time=range_from,
                     to_time=range_to,
                     fields=fields,
+                    streams=None,
                     target_limit=limit
                 )
-                logger.info(f"Retrieved {len(messages)} messages")
+                logger.info(f"Accurate total count: {accurate_total_count}, retrieved {len(messages)} messages")
                 
                 if messages:
                     logger.info(f"Processing {len(messages)} messages for analysis")
@@ -2880,7 +3455,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         # ================ Testing tools ================
         elif name == "test_accurate_counting":
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             
@@ -2965,7 +3540,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 raise GraylogError(f"Failed to test accurate counting: {e}")
         
         elif name == "test_source_analysis_fix":
-            query = arguments.get("query", "*")
+            query = normalize_query_string(arguments.get("query", "*"))
             range_from = arguments.get("range_from", "now-5m")
             range_to = arguments.get("range_to", "now")
             
@@ -3189,15 +3764,20 @@ async def main():
         
         # Show help message
         if config['help']:
-            print("Graylog MCP Server - Complete Features + Source Analysis Fix v1.9.4-complete-with-source-fix")
-            print("Retain all original features + Fix source analysis sampling issues")
+            print("Graylog MCP Server - Complete Features + Smart Pagination v1.9.31")
+            print("Retain all original features + Graylog escaping compliance")
             print()
-            print("Key fixes:")
-            print("  [OK] Retain all complete tools and features")
-            print("  [OK] Fix source analysis sampling inaccuracy issues")
-            print("  [OK] Add dedicated breakthrough methods for source analysis")
-            print("  [OK] Fix ratio calculation logic using accurate total count")
-            print("  [OK] Enhanced time slicing to ensure sample representativeness")
+            print("Key fixes in v1.9.31:")
+            print("  [OK] Proper Graylog escaping rules implementation")
+            print("  [OK] Handles both source:router\-004 and source:\"router-004\"")
+            print("  [OK] Fixed double-escaped backslash from MCP protocol")
+            print("  [OK] Optional auto-fix for unescaped special characters")
+            print()
+            print("Previous fixes retained:")
+            print("  [OK] Source analysis sampling accuracy")
+            print("  [OK] Dedicated breakthrough methods")
+            print("  [OK] Enhanced time slicing")
+            print("  [OK] Proportional scaling calculations")
             print()
             print("Environment variables:")
             print("  GRAYLOG_HOST - Graylog server URL (required)")
@@ -3353,20 +3933,20 @@ async def main():
         
         # Show startup information
         auth_method = "API Token" if config['api_token'] else "Username/Password"
-        print(f"Graylog MCP Server COMPLETE + SOURCE FIXED v{__version__} starting...", file=sys.stderr)
+        print(f"Graylog MCP Server v{__version__} starting...", file=sys.stderr)
         print(f"Host: {config['host']}", file=sys.stderr)
         print(f"Auth: {auth_method}", file=sys.stderr)
         print(f"Features:", file=sys.stderr)
-        print(f"   Complete retention of all original features", file=sys.stderr)
-        print(f"   Fixed source analysis sampling issues", file=sys.stderr)
-        print(f"   25k large sample + enhanced time slicing", file=sys.stderr)
-        print(f"   Proportional scaling based on accurate total count", file=sys.stderr)
-        print(f"   Dedicated source analysis breakthrough methods", file=sys.stderr)
-        print(f"   Complete retention of API breakthrough strategies", file=sys.stderr)
+        print(f"   Smart time-based pagination (NEW in v1.9.25)", file=sys.stderr)
+        print(f"   API compatibility fixes (NEW in v1.9.25)", file=sys.stderr)
+        print(f"   Enhanced error handling for complex queries", file=sys.stderr)
+        print(f"   Fixed source analysis with 25k sample size", file=sys.stderr)
+        print(f"   Proportional scaling based on accurate counts", file=sys.stderr)
+        print(f"   Complete API breakthrough strategies", file=sys.stderr)
         print(f"   Full LogAnalyzer functionality", file=sys.stderr)
         print(f"   Content Packs & Dashboard tools", file=sys.stderr)
-        print(f"   Enhanced testing and debugging tools", file=sys.stderr)
-        print(f"COMPLETE + SOURCE FIXED Server ready for connections", file=sys.stderr)
+        print(f"   Testing and debugging tools", file=sys.stderr)
+        print(f"Server ready for connections", file=sys.stderr)
         
         # Run MCP server
         from mcp.server.stdio import stdio_server
