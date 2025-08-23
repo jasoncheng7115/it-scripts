@@ -24,17 +24,29 @@ Technical Capabilities:
 - Comprehensive error handling and retry mechanisms
 - Time snapshot for batch queries to prevent time drift
 
-Version: 1.9.31
+Version: 1.9.34
+
+Changes in 1.9.34:
+- Fixed incorrect filename in help message (mcp_graylog.py)
+
+Changes in 1.9.33:
+- Fixed remaining SyntaxWarning in version history comments
+- All backslash escape sequences now properly handled
+
+Changes in 1.9.32:
+- Fixed Python SyntaxWarning for invalid escape sequences
+- Used raw strings (r"") for docstrings and print statements with backslashes
+- Properly escaped backslashes in string literals
 
 Changes in 1.9.31:
 - Improved query string normalization with Graylog escaping rules
-- Correctly handles source:router\-004 vs source:"router-004" equivalence
+- Correctly handles source:router\\-004 vs source:"router-004" equivalence
 - Added validation for unescaped special characters
 - Optional auto-fix for unescaped hyphens in field values
 - Better logging for query string processing
 
 Changes in 1.9.30:
-- Fixed double-escaped backslash issue in query strings (\\- becomes \-)
+- Fixed double-escaped backslash issue in query strings (\\\\- becomes \\-)
 - Added normalize_query_string function to handle escaping issues
 - Applied normalization to all query-based tools
 - Added debug logging for query string processing
@@ -87,7 +99,7 @@ from mcp.types import Resource, Tool, TextContent, ImageContent, EmbeddedResourc
 import mcp.types as types
 
 # Version information
-__version__ = "1.9.31"
+__version__ = "1.9.34"
 __author__ = "Jason Cheng (Jason Tools) - AI Collaboration"
 __license__ = "MIT"
 
@@ -2374,7 +2386,7 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
         return [types.TextContent(type="text", text=error_msg)]
 
 def normalize_query_string(query: str, auto_fix_escaping: bool = False) -> str:
-    """
+    r"""
     Normalize query string to handle Graylog escaping rules correctly.
     
     Graylog requires these characters to be escaped with backslash:
@@ -2396,8 +2408,8 @@ def normalize_query_string(query: str, auto_fix_escaping: bool = False) -> str:
     original_query = query
     
     # First, fix any double-escaped backslashes that come from MCP protocol layers
-    # This happens when a properly escaped query like "source:router\-004" 
-    # gets transmitted as "source:router\\-004"
+    # This happens when a properly escaped query like "source:router\\-004" 
+    # gets transmitted as "source:router\\\\-004"
     normalized = query.replace('\\\\', '\\')
     
     # Log the normalization process
@@ -3764,14 +3776,14 @@ async def main():
         
         # Show help message
         if config['help']:
-            print("Graylog MCP Server - Complete Features + Smart Pagination v1.9.31")
+            print("Graylog MCP Server - Complete Features + Smart Pagination v1.9.34")
             print("Retain all original features + Graylog escaping compliance")
             print()
-            print("Key fixes in v1.9.31:")
+            print("Key fixes in v1.9.34:")
+            print("  [OK] Fixed Python SyntaxWarning for invalid escape sequences")
             print("  [OK] Proper Graylog escaping rules implementation")
-            print("  [OK] Handles both source:router\-004 and source:\"router-004\"")
+            print(r"  [OK] Handles both source:router\-004 and source:\"router-004\"")
             print("  [OK] Fixed double-escaped backslash from MCP protocol")
-            print("  [OK] Optional auto-fix for unescaped special characters")
             print()
             print("Previous fixes retained:")
             print("  [OK] Source analysis sampling accuracy")
@@ -3822,7 +3834,7 @@ async def main():
             print("Example:")
             print("  export GRAYLOG_HOST='http://192.168.1.127:9000'")
             print("  export GRAYLOG_API_TOKEN='your_api_token_here'")
-            print("  python3 graylog_mcp_complete_with_source_fix.py --test --debug")
+            print("  python3 mcp_graylog.py --test --debug")
             return
         
         # Enable debug mode if requested
