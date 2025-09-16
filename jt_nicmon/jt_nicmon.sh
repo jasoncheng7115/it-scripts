@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # jt_nicmon.sh - NIC/Bridge/Bond status monitor (two sections)
 # Author: Jason Cheng (Jason Tools)
-# Date: 2025/08/20 .1
+# Version: 1.1
+# Date: 2025/09/16
+#
+# Changelog:
+# v1.1 (2025/09/16) - Smart filtering: show bridges with IP or physical members
+#                   - Always show vmbr*, bond*, and custom named bridges
+#                   - Fixed bridge detection to use system attributes instead of naming patterns
+#                   - Now correctly identifies bridges regardless of naming convention
+# v1.0 (2025/08/20) - Initial release
 
 cols=$(tput cols)
 W_IF=12; W_TP=5; W_STATE=6; W_LNK=3; W_SPD=10; W_DUP=6; W_MAC=17
@@ -11,17 +19,44 @@ W_IP=18; W_MEM=$((cols - W_IF - 1 - W_TP - 1 - W_IP - 2))
 pad()  { local s="$1" w="$2"; printf "%-*.*s" "$w" "$w" "$s"; }
 padc() { local s="$1" w="$2" color="$3"; printf "%b" "${color}$(printf "%-*.*s" "$w" "$w" "$s")\033[0m"; }
 
-# Type
 get_type() {
   local i="$1"
-  if [[ "$i" =~ ^vmbr[0-9]+$ ]]; then echo BR
-  elif [[ "$i" =~ ^bond[0-9]+$ ]]; then echo BOND
-  elif [ -d "/sys/class/net/$i/device" ]; then echo PHY
-  else echo SKIP
+  if [ -d "/sys/class/net/$i/bridge" ] || [ -d "/sys/class/net/$i/brif" ]; then
+    echo BR
+  elif [ -d "/sys/class/net/$i/bonding" ]; then
+    echo BOND
+  elif [ -d "/sys/class/net/$i/device" ]; then
+    echo PHY
+  else
+    echo SKIP
   fi
 }
 
-# Link
+is_important_bridge() {
+  local dev="$1"
+  
+  [[ "$dev" =~ ^vmbr[0-9]+$ ]] && return 0
+  [[ "$dev" =~ ^bond[0-9]+$ ]] && return 0
+  
+  [[ "$dev" =~ ^(vnet|fwbr|fwln|fwpr|tap)[0-9]+ ]] && return 1
+  [[ "$dev" =~ ^sdn[0-9]+$ ]] && return 1
+  
+  local has_ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1)
+  [ -n "$has_ip" ] && [ "$has_ip" != "-" ] && return 0
+  
+  if [ -d "/sys/class/net/$dev/brif" ]; then
+    for p in /sys/class/net/$dev/brif/*; do
+      [ -e "$p" ] || continue
+      local member; member=$(basename "$p")
+      if [[ "$member" =~ ^(en|eth|bond) ]]; then
+        return 0
+      fi
+    done
+  fi
+  
+  return 0
+}
+
 link_for_dev() {
   local dev="$1" link="-"
   if [ -r "/sys/class/net/$dev/carrier" ]; then
@@ -34,7 +69,6 @@ link_for_dev() {
   echo "$link"
 }
 
-# Speed/Duplex
 speed_duplex_for_phy() {
   local dev="$1" et speed duplex
   et="$(ethtool "$dev" 2>/dev/null)"
@@ -45,7 +79,6 @@ speed_duplex_for_phy() {
   echo "$speed|$duplex"
 }
 
-# PHY interface
 members_of() {
   local dev="$1" list=()
   if [ -d "/sys/class/net/$dev/brif" ]; then
@@ -64,7 +97,6 @@ members_of() {
   [ ${#list[@]} -gt 0 ] && echo "${list[*]}" || echo "-"
 }
 
-### Sec. 1: Physcal interface
 pad IFACE $W_IF; printf " "; pad TYPE $W_TP; printf " "; pad STATE $W_STATE; printf " "
 pad LNK $W_LNK; printf " "; pad SPEED $W_SPD; printf " "; pad DUPLX $W_DUP; printf " "; pad MAC $W_MAC; printf "\n"
 
@@ -98,12 +130,13 @@ for dev in $(ls -1 /sys/class/net | sort); do
 done
 
 echo
-### Sec. 2: vmbr/bond
 pad IFACE $W_IF; printf " "; pad TYPE $W_TP; printf " "; pad IPV4 $W_IP; printf " "; pad "MEMBERS" $W_MEM; printf "\n"
 
 for dev in $(ls -1 /sys/class/net | sort); do
   tp=$(get_type "$dev")
   [[ "$tp" != "BR" && "$tp" != "BOND" ]] && continue
+  
+  is_important_bridge "$dev" || continue
 
   ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1); [ -z "$ip" ] && ip="-"
   members=$(members_of "$dev")
