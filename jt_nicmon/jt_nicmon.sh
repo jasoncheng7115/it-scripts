@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # jt_nicmon.sh - NIC/Bridge/Bond status monitor (two sections)
 # Author: Jason Cheng (Jason Tools)
-# Version: 1.1
-# Date: 2025/09/16
+# Version: 1.2.1
+# Date: 2025/09/29
 #
 # Changelog:
-# v1.1 (2025/09/16) - Smart filtering: show bridges with IP or physical members
-#                   - Always show vmbr*, bond*, and custom named bridges
-#                   - Fixed bridge detection to use system attributes instead of naming patterns
-#                   - Now correctly identifies bridges regardless of naming convention
-# v1.0 (2025/08/20) - Initial release
+# v1.2.1 (2025/09/29) - Filter out PVE firewall/temporary interfaces (fwbr/fwln/fwpr/veth/vnet/tap) from bridge MEMBERS
+#                     - Keep attribute-based detection; no name-based filters
+# v1.2   (2025/09/29) - Support PVE 9 interface name pinning (nic0/nic1/...)
+#                     - Remove name-based filters; rely on sysfs attributes
+#                     - Attribute-based bridge importance and member listing
+# v1.1   (2025/09/16) - Smart filtering for bridges; better detection
+# v1.0   (2025/08/20) - Initial release
 
-cols=$(tput cols)
+set -o pipefail
+
+# Column widths (auto-fit to terminal)
+cols=$(tput cols 2>/dev/null || echo 120)
 W_IF=12; W_TP=5; W_STATE=6; W_LNK=3; W_SPD=10; W_DUP=6; W_MAC=17
 W_IP=18; W_MEM=$((cols - W_IF - 1 - W_TP - 1 - W_IP - 2))
 [ $W_MEM -lt 8 ] && W_MEM=8
@@ -19,44 +24,30 @@ W_IP=18; W_MEM=$((cols - W_IF - 1 - W_TP - 1 - W_IP - 2))
 pad()  { local s="$1" w="$2"; printf "%-*.*s" "$w" "$w" "$s"; }
 padc() { local s="$1" w="$2" color="$3"; printf "%b" "${color}$(printf "%-*.*s" "$w" "$w" "$s")\033[0m"; }
 
+# Determine device type using sysfs attributes only
 get_type() {
   local i="$1"
-  if [ -d "/sys/class/net/$i/bridge" ] || [ -d "/sys/class/net/$i/brif" ]; then
+  if   [ -d "/sys/class/net/$i/bridge" ] || [ -d "/sys/class/net/$i/brif" ]; then
     echo BR
   elif [ -d "/sys/class/net/$i/bonding" ]; then
     echo BOND
   elif [ -d "/sys/class/net/$i/device" ]; then
+    # Has a backing device -> physical or SR-IOV PF/VF; treat as physical for monitoring
     echo PHY
   else
     echo SKIP
   fi
 }
 
-is_important_bridge() {
-  local dev="$1"
-  
-  [[ "$dev" =~ ^vmbr[0-9]+$ ]] && return 0
-  [[ "$dev" =~ ^bond[0-9]+$ ]] && return 0
-  
-  [[ "$dev" =~ ^(vnet|fwbr|fwln|fwpr|tap)[0-9]+ ]] && return 1
-  [[ "$dev" =~ ^sdn[0-9]+$ ]] && return 1
-  
-  local has_ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1)
-  [ -n "$has_ip" ] && [ "$has_ip" != "-" ] && return 0
-  
-  if [ -d "/sys/class/net/$dev/brif" ]; then
-    for p in /sys/class/net/$dev/brif/*; do
-      [ -e "$p" ] || continue
-      local member; member=$(basename "$p")
-      if [[ "$member" =~ ^(en|eth|bond) ]]; then
-        return 0
-      fi
-    done
-  fi
-  
-  return 0
+# Helper: true if a device is a physical NIC (has /device and is not a bridge or bond)
+is_phy() {
+  local i="$1"
+  [ -d "/sys/class/net/$i/device" ] && \
+  [ ! -d "/sys/class/net/$i/bridge" ] && \
+  [ ! -d "/sys/class/net/$i/bonding" ]
 }
 
+# Determine link state (prefer sysfs carrier; fallback to ethtool)
 link_for_dev() {
   local dev="$1" link="-"
   if [ -r "/sys/class/net/$dev/carrier" ]; then
@@ -69,6 +60,7 @@ link_for_dev() {
   echo "$link"
 }
 
+# Get speed/duplex for physical NICs
 speed_duplex_for_phy() {
   local dev="$1" et speed duplex
   et="$(ethtool "$dev" 2>/dev/null)"
@@ -79,32 +71,101 @@ speed_duplex_for_phy() {
   echo "$speed|$duplex"
 }
 
+# List members (bridge ports or bond slaves), filtering out temporary/ephemeral devices
 members_of() {
   local dev="$1" list=()
+  # Bridge members
   if [ -d "/sys/class/net/$dev/brif" ]; then
+    local m
     for p in /sys/class/net/$dev/brif/*; do
       [ -e "$p" ] || continue
-      local b; b=$(basename "$p")
-      if [[ "$b" =~ ^bond[0-9]+$ || "$b" =~ ^en.* || "$b" =~ ^eth.* ]]; then
-        list+=("$b")
+      m=$(basename "$p")
+
+      # Skip PVE firewall/transient/ephemeral interfaces
+      if [[ "$m" =~ ^(fwbr|fwln|fwpr|veth|vnet|tap) ]]; then
+        continue
       fi
+
+      # Keep bond devices as members
+      if [ -d "/sys/class/net/$m/bonding" ]; then
+        list+=("$m")
+        continue
+      fi
+
+      # Keep physical NICs (covers pinned names like nic0/nic1 and en*/eth*/enx*)
+      if [ -d "/sys/class/net/$m/device" ]; then
+        list+=("$m")
+        continue
+      fi
+
+      # Keep VLAN subinterfaces (e.g., enp3s0.10 or nic0.10)
+      if [[ "$m" =~ \.[0-9]+$ ]]; then
+        list+=("$m")
+        continue
+      fi
+      # Other types are omitted from output
     done
-  elif [ -r "/sys/class/net/$dev/bonding/slaves" ]; then
+  fi
+
+  # Bond slaves (if the device itself is a bond)
+  if [ -r "/sys/class/net/$dev/bonding/slaves" ]; then
     for b in $(cat "/sys/class/net/$dev/bonding/slaves"); do
+      # Skip ephemeral types if any appear as bond slaves (rare)
+      if [[ "$b" =~ ^(fwbr|fwln|fwpr|veth|vnet|tap) ]]; then
+        continue
+      fi
       list+=("$b")
     done
   fi
-  [ ${#list[@]} -gt 0 ] && echo "${list[*]}" || echo "-"
+
+  # Deduplicate and print
+  if [ ${#list[@]} -gt 0 ]; then
+    printf "%s\n" "${list[@]}" | awk '!seen[$0]++' | xargs echo
+  else
+    echo "-"
+  fi
 }
 
+# Decide whether a bridge/bond is "important" enough to display
+is_important_bridge() {
+  local dev="$1"
+
+  # Always keep vmbr* and bond*
+  [[ "$dev" =~ ^vmbr[0-9]+$ ]] && return 0
+  [[ "$dev" =~ ^bond[0-9]+$ ]] && return 0
+
+  # Hide common transient/ephemeral top-level devices
+  [[ "$dev" =~ ^(vnet|fwbr|fwln|fwpr|tap)[0-9]+ ]] && return 1
+  [[ "$dev" =~ ^sdn[0-9]+$ ]] && return 1
+
+  # Keep bridges that have an IPv4 address
+  local has_ip
+  has_ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1)
+  [ -n "$has_ip" ] && [ "$has_ip" != "-" ] && return 0
+
+  # Keep bridges that have at least one physical or bond member
+  if [ -d "/sys/class/net/$dev/brif" ]; then
+    local m
+    for p in /sys/class/net/$dev/brif/*; do
+      [ -e "$p" ] || continue
+      m=$(basename "$p")
+      if is_phy "$m" || [ -d "/sys/class/net/$m/bonding" ]; then
+        return 0
+      fi
+    done
+  fi
+
+  # Otherwise, do not show
+  return 1
+}
+
+# ===== Section 1: Physical NICs =====
 pad IFACE $W_IF; printf " "; pad TYPE $W_TP; printf " "; pad STATE $W_STATE; printf " "
 pad LNK $W_LNK; printf " "; pad SPEED $W_SPD; printf " "; pad DUPLX $W_DUP; printf " "; pad MAC $W_MAC; printf "\n"
 
 for dev in $(ls -1 /sys/class/net | sort); do
   tp=$(get_type "$dev")
-  [[ "$tp" != "PHY" ]] && continue
-  [[ "$dev" =~ ^(en|eth) ]] || continue
-
+  [[ "$tp" != "PHY" ]] && continue  # Attribute-based; supports pinned nic0/nic1
   operstate=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null); [ -z "$operstate" ] && operstate="-"
   link=$(link_for_dev "$dev")
   IFS="|" read -r speed duplex < <(speed_duplex_for_phy "$dev")
@@ -130,15 +191,18 @@ for dev in $(ls -1 /sys/class/net | sort); do
 done
 
 echo
+
+# ===== Section 2: Bridges/Bonds =====
 pad IFACE $W_IF; printf " "; pad TYPE $W_TP; printf " "; pad IPV4 $W_IP; printf " "; pad "MEMBERS" $W_MEM; printf "\n"
 
 for dev in $(ls -1 /sys/class/net | sort); do
   tp=$(get_type "$dev")
   [[ "$tp" != "BR" && "$tp" != "BOND" ]] && continue
-  
+
   is_important_bridge "$dev" || continue
 
-  ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1); [ -z "$ip" ] && ip="-"
+  ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | head -n1)
+  [ -z "$ip" ] && ip="-"
   members=$(members_of "$dev")
 
   pad "$dev" $W_IF; printf " "
