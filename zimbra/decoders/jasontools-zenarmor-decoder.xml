@@ -1,0 +1,10 @@
+<decoder name="zen-dec">
+  <program_name>zenarmor</program_name>
+</decoder>
+
+<decoder name="zen-conn">
+  <parent>zen-dec</parent>
+  <use_own_name>yes</use_own_name>
+  <prematch>data=</prematch>
+  <plugin_decoder offset="after_prematch">JSON_Decoder</plugin_decoder>
+</decoder>
