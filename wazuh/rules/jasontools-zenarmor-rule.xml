@@ -1,0 +1,50 @@
+<group name="zenarmor,">
+
+  <rule id="130800" level="0">
+    <match>daemon=zenarmor</match>
+    <description>Zenarmor event</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130801" level="6">
+    <if_sid>130800</if_sid>
+    <field name="is_blocked">^1$</field>
+    <description>Zenarmor blocked connection</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130802" level="3">
+    <if_sid>130800</if_sid>
+    <field name="is_blocked">^0$</field>
+    <description>Zenarmor allowed connection</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130810" level="6">
+    <if_sid>130800</if_sid>
+    <field name="security_tags">Phishing</field>
+    <description>Zenarmor possible phishing</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130811" level="6">
+    <if_sid>130800</if_sid>
+    <field name="security_tags">Hacking</field>
+    <description>Zenarmor possible hacking</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130812" level="8">
+    <if_sid>130800</if_sid>
+    <field name="security_tags">Malware</field>
+    <description>Zenarmor possible malware</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="130813" level="6">
+    <if_sid>130800</if_sid>
+    <field name="security_tags">Proxy</field>
+    <description>Zenarmor possible proxy</description>
+    <options>no_full_log</options>
+  </rule>
+</group>
