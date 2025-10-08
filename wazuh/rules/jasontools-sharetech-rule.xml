@@ -1,0 +1,345 @@
+<!--
+ Sharetech Firewall Rules
+ Author: Jason Tools (jason@jason.tools)
+ Description: Custom rules for Sharetech NU-8700C Firewall CEF logs 
+-->
+
+<group name="sharetech,firewall,">
+
+  <rule id="100500" level="0">
+    <decoded_as>sharetech-cef</decoded_as>
+    <description>Sharetech CEF event</description>
+  </rule>
+
+  <!-- Traffic Events -->
+  <rule id="100501" level="0">
+    <if_sid>100500</if_sid>
+    <field name="event_name">TRAFFIC</field>
+    <description>Sharetech Network traffic flow</description>
+    <group>traffic,netflow,</group>
+  </rule>
+
+  <rule id="100502" level="2">
+    <if_sid>100501</if_sid>
+    <action>block</action>
+    <description>Sharetech Network traffic blocked</description>
+    <group>traffic,firewall_deny,</group>
+  </rule>
+
+  <rule id="100503" level="2">
+    <if_sid>100501</if_sid>
+    <action>deny</action>
+    <description>Sharetech Network traffic denied</description>
+    <group>traffic,firewall_deny,</group>
+  </rule>
+
+  <rule id="100504" level="2">
+    <if_sid>100501</if_sid>
+    <action>DROP</action>
+    <description>Sharetech Network traffic dropped</description>
+    <group>traffic,firewall_deny,</group>
+  </rule>
+
+  <!-- Firewall Protection -->
+  <rule id="100510" level="8">
+    <if_sid>100500</if_sid>
+    <field name="event_name">FIREWALL_PROTECT</field>
+    <description>Sharetech Firewall protection triggered</description>
+    <group>attack,intrusion_attempt,</group>
+  </rule>
+
+  <rule id="100511" level="10">
+    <if_sid>100510</if_sid>
+    <field name="attack_type" negate="yes">^$</field>
+    <description>Sharetech Attack blocked</description>
+    <group>attack,intrusion_attempt,ids,</group>
+  </rule>
+
+  <!-- IPS Events -->
+  <rule id="100520" level="8">
+    <if_sid>100500</if_sid>
+    <field name="event_name">IPS</field>
+    <description>Sharetech IPS event detected</description>
+    <group>ids,intrusion_attempt,</group>
+  </rule>
+
+  <rule id="100521" level="9">
+    <if_sid>100520</if_sid>
+    <field name="signature_id" negate="yes">^$</field>
+    <description>Sharetech IPS signature detected</description>
+    <group>ids,intrusion_attempt,</group>
+  </rule>
+
+  <rule id="100522" level="10">
+    <if_sid>100521</if_sid>
+    <field name="event_level">20</field>
+    <description>Sharetech IPS HIGH severity event</description>
+    <group>ids,intrusion_attempt,high_severity,</group>
+  </rule>
+
+  <rule id="100523" level="10">
+    <if_sid>100521</if_sid>
+    <field name="event_level">30</field>
+    <description>Sharetech IPS CRITICAL severity event</description>
+    <group>ids,intrusion_attempt,high_severity,</group>
+  </rule>
+
+  <rule id="100524" level="11">
+    <if_sid>100521</if_sid>
+    <field name="cve_id" type="osregex">^CVE-</field>
+    <description>Sharetech CVE exploit detected</description>
+    <group>ids,intrusion_attempt,exploit,vulnerability,</group>
+  </rule>
+
+  <!-- WAF Events -->
+  <rule id="100530" level="7">
+    <if_sid>100500</if_sid>
+    <field name="event_name">WAF_RECORD</field>
+    <description>Sharetech WAF event detected</description>
+    <group>web,attack,</group>
+  </rule>
+
+  <!-- Specific WAF attack types -->
+  <rule id="100531" level="8">
+    <if_sid>100530</if_sid>
+    <field name="cat">SQL Injection</field>
+    <description>Sharetech WAF SQL Injection attack</description>
+    <group>web,sql_injection,attack,</group>
+  </rule>
+
+  <rule id="100532" level="8">
+    <if_sid>100530</if_sid>
+    <field name="cat">XSS</field>
+    <description>Sharetech WAF XSS attack</description>
+    <group>web,xss,attack,</group>
+  </rule>
+
+  <rule id="100533" level="9">
+    <if_sid>100530</if_sid>
+    <field name="cat">Command Injection</field>
+    <description>Sharetech WAF command injection attack</description>
+    <group>web,command_injection,attack,high_severity,</group>
+  </rule>
+
+  <rule id="100534" level="9">
+    <if_sid>100530</if_sid>
+    <field name="cat" type="osregex">Remote Command Execution</field>
+    <description>Sharetech WAF remote command execution attack</description>
+    <group>web,command_execution,attack,high_severity,</group>
+  </rule>
+
+  <rule id="100535" level="8">
+    <if_sid>100530</if_sid>
+    <field name="cat" type="osregex">Local File Inclusion|Remote File Inclusion</field>
+    <description>Sharetech WAF file inclusion attack</description>
+    <group>web,file_inclusion,attack,</group>
+  </rule>
+
+  <rule id="100536" level="7">
+    <if_sid>100530</if_sid>
+    <field name="cat" type="osregex">Path Traversal|Directory Traversal</field>
+    <description>Sharetech WAF path traversal attack</description>
+    <group>web,path_traversal,attack,</group>
+  </rule>
+
+  <rule id="100537" level="6">
+    <if_sid>100530</if_sid>
+    <field name="cat">Numeric IP Address</field>
+    <description>Sharetech WAF numeric IP address access</description>
+    <group>web,policy_violation,</group>
+  </rule>
+
+  <rule id="100538" level="8">
+    <if_sid>100530</if_sid>
+    <field name="cat" type="osregex">CSRF|Cross Site Request</field>
+    <description>Sharetech WAF CSRF attack</description>
+    <group>web,csrf,attack,</group>
+  </rule>
+
+  <rule id="100539" level="8">
+    <if_sid>100530</if_sid>
+    <field name="cat" type="osregex">File Upload|Upload Attack</field>
+    <description>Sharetech WAF malicious file upload attack</description>
+    <group>web,file_upload,attack,</group>
+  </rule>
+
+  <!-- Generic WAF attack rule - catches all other attack types -->
+  <rule id="100545" level="7">
+    <if_sid>100530</if_sid>
+    <field name="cat" negate="yes">^$</field>
+    <description>Sharetech WAF other attack type: $(cat)</description>
+    <group>web,attack,other,</group>
+  </rule>
+
+  <!-- Advanced Protection -->
+  <rule id="100540" level="8">
+    <if_sid>100500</if_sid>
+    <field name="event_name">ADVANCE_PROTECT</field>
+    <description>Sharetech Advanced protection anomaly</description>
+    <group>anomaly,intrusion_attempt,</group>
+  </rule>
+
+  <rule id="100541" level="9">
+    <if_sid>100540</if_sid>
+    <field name="anomaly_reason">Session</field>
+    <description>Sharetech Session threshold exceeded</description>
+    <group>anomaly,dos,resource_exhaustion,</group>
+  </rule>
+
+  <!-- Application Control -->
+  <rule id="100550" level="5">
+    <if_sid>100500</if_sid>
+    <field name="event_name">APPLICATION_CONTROLL</field>
+    <description>Sharetech Application control event</description>
+    <group>application_control,policy_violation,</group>
+  </rule>
+
+  <rule id="100551" level="6">
+    <if_sid>100550</if_sid>
+    <action>DROP</action>
+    <description>Sharetech Application dropped</description>
+    <group>application_control,policy_violation,</group>
+  </rule>
+
+  <!-- System Events - Parent Rule -->
+  <rule id="100560" level="0">
+    <if_sid>100500</if_sid>
+    <field name="event_name" type="osregex">^SYSTEM_EVENT_</field>
+    <description>Sharetech System events (parent rule)</description>
+    <group>system_event,</group>
+    <options>no_log</options>
+  </rule>
+
+  <!-- Admin Login -->
+  <rule id="100570" level="3">
+    <if_sid>100560</if_sid>
+    <field name="event_name">SYSTEM_EVENT_LOGIN</field>
+    <description>Sharetech Administrator authentication</description>
+    <group>authentication,</group>
+  </rule>
+
+  <rule id="100571" level="3">
+    <if_sid>100570</if_sid>
+    <status>Success</status>
+    <description>Sharetech Successful admin login</description>
+    <group>authentication_success,</group>
+  </rule>
+
+  <rule id="100572" level="5">
+    <if_sid>100570</if_sid>
+    <status>Fail</status>
+    <description>Sharetech Failed admin login</description>
+    <group>authentication_failed,</group>
+  </rule>
+
+  <rule id="100573" level="10" frequency="5" timeframe="300">
+    <if_matched_sid>100572</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple failed admin logins</description>
+    <group>authentication_failures,brute_force,</group>
+  </rule>
+
+  <!-- System Configuration Changes - Parent Rule for Config Changes -->
+  <rule id="100565" level="5">
+    <if_sid>100560</if_sid>
+    <field name="event_name" negate="yes">SYSTEM_EVENT_LOGIN</field>
+    <description>Sharetech System configuration changes</description>
+    <group>configuration_change,</group>
+    <options>no_log</options>
+  </rule>
+
+  <rule id="100561" level="6">
+    <if_sid>100565</if_sid>
+    <field name="event_name">SYSTEM_EVENT_IPADDRESS</field>
+    <description>Sharetech IP address modified</description>
+    <group>configuration_change,</group>
+  </rule>
+
+  <rule id="100562" level="6">
+    <if_sid>100565</if_sid>
+    <field name="event_name">SYSTEM_EVENT_POLICY</field>
+    <description>Sharetech Security policy modified</description>
+    <group>configuration_change,policy_change,</group>
+  </rule>
+
+  <rule id="100563" level="7">
+    <if_sid>100565</if_sid>
+    <field name="event_name">SYSTEM_EVENT_ADMIN</field>
+    <description>Sharetech Administrator account modified</description>
+    <group>configuration_change,account_management,</group>
+  </rule>
+
+  <!-- VPN Login -->
+  <rule id="100575" level="3">
+    <if_sid>100500</if_sid>
+    <field name="event_name">VPN</field>
+    <description>Sharetech VPN authentication</description>
+    <group>vpn,authentication,</group>
+    <options>no_log</options>
+  </rule>
+
+  <rule id="100576" level="3">
+    <if_sid>100575</if_sid>
+    <field name="vpn_event">LOGIN</field>
+    <description>Sharetech Successful VPN login</description>
+    <group>vpn,authentication_success,</group>
+  </rule>
+
+  <rule id="100577" level="5">
+    <if_sid>100575</if_sid>
+    <field name="vpn_event">REFUSE</field>
+    <description>Sharetech Failed VPN login (refused)</description>
+    <group>vpn,authentication_failed,</group>
+  </rule>
+
+  <rule id="100578" level="10" frequency="5" timeframe="300">
+    <if_matched_sid>100577</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple failed VPN logins</description>
+    <group>vpn,authentication_failures,brute_force,</group>
+  </rule>
+
+  <!-- High Risk Correlation Rules -->
+  <rule id="100590" level="12" frequency="10" timeframe="60">
+    <if_matched_sid>100511</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple attacks from same source</description>
+    <group>attack,multiple_attacks,</group>
+  </rule>
+
+  <rule id="100591" level="12" frequency="10" timeframe="60">
+    <if_matched_sid>100521</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple IPS events from same source</description>
+    <group>ids,recon,scanning,</group>
+  </rule>
+
+  <rule id="100592" level="11" frequency="5" timeframe="300">
+    <if_matched_sid>100565</if_matched_sid>
+    <same_user/>
+    <description>Sharetech Multiple configuration changes by same user</description>
+    <group>configuration_change,multiple_changes,</group>
+  </rule>
+
+  <rule id="100593" level="10">
+    <if_sid>100571,100576</if_sid>
+    <time>18:00-08:00</time>
+    <description>Sharetech Login outside business hours</description>
+    <group>authentication_success,after_hours,</group>
+  </rule>
+
+  <rule id="100594" level="12" frequency="5" timeframe="120">
+    <if_matched_sid>100534</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple remote command execution attempts</description>
+    <group>web,command_execution,multiple_attacks,</group>
+  </rule>
+
+  <rule id="100595" level="11" frequency="10" timeframe="300">
+    <if_matched_sid>100530</if_matched_sid>
+    <same_source_ip/>
+    <description>Sharetech Multiple WAF events from same source</description>
+    <group>web,attack,scanning,</group>
+  </rule>
+
+</group>
