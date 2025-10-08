@@ -1,0 +1,295 @@
+<!--
+ Sharetech Firewall CEF Decoder
+ Author: Jason Tools (jason@jason.tools)
+ Description: Custom Decorder for Sharetech NU-8700C Firewall CEF logs 
+-->
+
+<!-- Parent Decoder -->
+<decoder name="sharetech-cef">
+  <program_name type="pcre2">^(conntrack|FirewallDefense|syslog_sys|appsyslog|waflog|anomalylog|ipssyslog|vpnlog)</program_name>
+  <prematch>CEF:0</prematch>
+</decoder>
+
+<!-- CEF Header -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">CEF:(\d+)\|(\w+)\|([^\|]+)\|([^\|]+)\|(\d+)\|([^\|]+)\|(\d+)</regex>
+  <order>cef_version,vendor,product,product_version,event_id,event_name,severity</order>
+</decoder>
+
+<!-- Device Info -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>deviceExternalId=(\S+)</regex>
+  <order>device_id</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>dvchost=(\S+)</regex>
+  <order>device_hostname</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>deviceCustomDate1=(\d+)</regex>
+  <order>event_timestamp</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>SharetechManagementIP=(\S+)</regex>
+  <order>management_ip</order>
+</decoder>
+
+<!-- Network Info -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>src=(\S+)</regex>
+  <order>srcip</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>dst=(\S+)</regex>
+  <order>dstip</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>spt=(\d+)</regex>
+  <order>srcport</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>dpt=(\d+)</regex>
+  <order>dstport</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>proto=(\w+)</regex>
+  <order>protocol</order>
+</decoder>
+
+<!-- Action & User -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>act=(\w+)</regex>
+  <order>action</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>suser=(\S+)</regex>
+  <order>srcuser</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>outcome=(\w+)</regex>
+  <order>status</order>
+</decoder>
+
+<!-- Traffic Stats -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>out=(\d+)</regex>
+  <order>sent_bytes</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>in=(\d+)</regex>
+  <order>received_bytes</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>start=(\d+)</regex>
+  <order>start_time</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>end=(\d+)</regex>
+  <order>end_time</order>
+</decoder>
+
+<!-- Firewall Rule -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs1Label=Rule cs1=(\S+)</regex>
+  <order>rule_id</order>
+</decoder>
+
+<!-- VPN Fields -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs1Label=VpnType cs1=(\S+)</regex>
+  <order>vpn_type</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs2Label=Event cs2=(\w+)</regex>
+  <order>vpn_event</order>
+</decoder>
+
+<!-- Application Control -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cn1Label=APP cn1=(\d+)</regex>
+  <order>application_id</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs1Label=AppName cs1=(\S*)</regex>
+  <order>application_name</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs2Label=AppGroup cs2=(\S+)</regex>
+  <order>application_group</order>
+</decoder>
+
+<!-- Attack Info -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs1Label=AttackType cs1=(\S+)</regex>
+  <order>attack_type</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>deviceInboundInterface=(\S+)</regex>
+  <order>interface</order>
+</decoder>
+
+<!-- IPS Fields -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs1Label=ClassName cs1=(\S+)</regex>
+  <order>signature_category</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>msg=(\S+)</regex>
+  <order>signature_id</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs2Label=EventLevel cs2=(\d+)</regex>
+  <order>event_level</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs3Label=CveEvent cs3=(\S*)</regex>
+  <order>cve_id</order>
+</decoder>
+
+<!-- WAF Fields -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs3Label=Hostname cs3=(\S+)</regex>
+  <order>http_hostname</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs4Label=DstServer cs4=(\S+)</regex>
+  <order>destination_server</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs5Label=Url cs5=(\S+)</regex>
+  <order>url</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs6Label=Event cs6=\[(\d+)\]\s+(.+?)\s+(?:SharetechAction|cnt|$)</regex>
+  <order>waf_rule_id,waf_rule_description</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>SharetechAction=(\w+)</regex>
+  <order>waf_action</order>
+</decoder>
+
+<!-- Advanced Protection / Anomaly -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs1Label=LimitValue cs1=(\d+)</regex>
+  <order>threshold_limit</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs2Label=ActualValue cs2=(\d+)</regex>
+  <order>actual_value</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cs3Label=Period cs3=(\d+)</regex>
+  <order>time_period</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>reason=(\S+)</regex>
+  <order>anomaly_reason</order>
+</decoder>
+
+<!-- Category & Count -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cat=(.+?)\s+(?:cnt=|$)</regex>
+  <order>attack_category</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex>cnt=(\d+)</regex>
+  <order>event_count</order>
+</decoder>
+
+<!-- System Management Events -->
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs1Label=Path cs1=(.+?)\s+cs2Label</regex>
+  <order>config_path</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs2Label=Function cs2=(.+?)\s+(?:cs3Label|outcome)</regex>
+  <order>config_function</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs3Label=Name cs3=(\S+)</regex>
+  <order>object_name</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">cs4Label=SelectMembers cs4=(.+?)\s+SharetechUserDefine</regex>
+  <order>selected_members</order>
+</decoder>
+
+<decoder name="sharetech-cef">
+  <parent>sharetech-cef</parent>
+  <regex type="pcre2">SharetechUserDefine=(.+?)$</regex>
+  <order>user_defined_values</order>
+</decoder>
