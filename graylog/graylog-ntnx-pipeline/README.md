@@ -1,9 +1,9 @@
 # Graylog Nutanix Pipeline 完整設定工具
 
-**作者：** Jason Cheng (Jason Tools)
-**協作：** Claude Code Sonnet 4.5
-**版本：** 1.2.0
-**最後更新：** 2025-10-31
+**作者：** Jason Cheng (Jason Tools)  
+**協作：** Claude Code Sonnet 4.5  
+**版本：** 1.2.0  
+**最後更新：** 2025-10-31   
 
 **最新更新（v1.2.0）：**
 - ✅ 新增帳號權限檢查功能
