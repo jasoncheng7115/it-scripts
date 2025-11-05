@@ -1,4 +1,4 @@
-# Graylog Nutanix Pipeline 完整設定工具
+# Graylog Nutanix Pipeline 自動建立工具
 
 **作者：** Jason Cheng (Jason Tools)  
 **協作：** Claude Code Sonnet 4.5  
