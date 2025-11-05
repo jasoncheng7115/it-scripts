@@ -50,6 +50,15 @@ python3 -c "import requests; print(f'requests version: {requests.__version__}')"
 
 ### 步驟 2：執行腳本
 
+編輯 `setup_ntnx_pipeliny.py` 檔案中的這部份設定：
+```python
+# Graylog 設定
+GRAYLOG_URL = "http://192.168.1.127:9000"
+GRAYLOG_USER = "admin"
+GRAYLOG_PASSWORD = "yourpassword"
+```
+
+
 ```bash
 python3 setup_ntnx_pipeline.py
 ```
