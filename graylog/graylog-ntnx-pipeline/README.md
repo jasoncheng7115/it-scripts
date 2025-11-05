@@ -347,7 +347,7 @@ X-Requested-By: <any-value>
    - 統一使用 `ntnx.*` 前綴
    - 分類清楚：`ntnx.iam.*`, `ntnx.login.*`, `ntnx.vm.*` 等
 
-3. **效能優化**
+3. **效能最佳化**
    - 使用 `has_field()` 和 `contains()` 快速過濾
    - 避免複雜的正則表達式
    - Stage 依序處理，避免重複運算
