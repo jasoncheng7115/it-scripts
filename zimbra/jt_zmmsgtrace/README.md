@@ -342,7 +342,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ![郵件檢視](images/3%20viewmail.png)
 
-顯示郵件的詳細資訊，包括安全性檢查結果（DKIM、SPF、DMARC、SPAM 評分）。
+顯示郵件的詳細資訊，包括安全性檢查結果（DKIM、SPF、DMARC、SPAM 評分），並支援下載 .eml 格式。
 
 #### 4. 郵件路由資訊
 
@@ -354,7 +354,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ![郵件內容](images/5%20mailbody.png)
 
-可檢視郵件完整內容、原始碼、完整標頭，並支援下載 .eml 格式。
+可檢視郵件完整內容、原始碼、完整標頭。
 
 ---
 

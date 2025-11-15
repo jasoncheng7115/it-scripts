@@ -342,7 +342,7 @@ Provides multiple search criteria including sender, recipient, Message-ID, time 
 
 ![Email View](images/3%20viewmail_en.png)
 
-Displays detailed email information including security check results (DKIM, SPF, DMARC, SPAM score).
+Displays detailed email information including security check results (DKIM, SPF, DMARC, SPAM score), and support downloading .eml format.
 
 #### 4. Email Routing Information
 
@@ -354,7 +354,7 @@ Visualizes email delivery path, including delivery status for each recipient.
 
 ![Email Content](images/5%20mailbody_en.png)
 
-View complete email content, raw source, full headers, and support downloading .eml format.
+View complete email content, raw source, and full headers.
 
 ---
 
