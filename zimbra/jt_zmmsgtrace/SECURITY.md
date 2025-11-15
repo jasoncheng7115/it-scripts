@@ -1,5 +1,7 @@
 # jt_zmmsgtrace 安全性說明
 
+[English Version](SECURITY_EN.md) | 繁體中文版
+
 ## 安全性修正 (Security Fixes)
 
 本版本已實作以下安全性措施，防止各種攻擊：

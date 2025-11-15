@@ -1,5 +1,7 @@
 # jt_zmmsgtrace Security Documentation
 
+English Version | [繁體中文版](SECURITY.md)
+
 ## Security Fixes
 
 This version has implemented the following security measures to prevent various attacks:

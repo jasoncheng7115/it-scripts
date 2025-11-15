@@ -1,5 +1,7 @@
 # jt_zmmsgtrace - Enhanced Email Tracer for Zimbra
 
+English Version | [繁體中文版](README.md)
+
 Python rewrite of `zmmsgtrace`, solving the issue where the original version fails to find recipients in Zimbra's message deduplication scenario, with a powerful Web UI interface.
 
 ---

@@ -1,5 +1,7 @@
 # jt_zmmsgtrace - Enhanced Email Tracer for Zimbra
 
+[English Version](README_EN.md) | 繁體中文版
+
 Python 重寫版本的 `zmmsgtrace`，解決了原版在 Zimbra 郵件去除重複情況下找不到收件者的問題，並提供強大的 Web UI 介面。
 
 ---
