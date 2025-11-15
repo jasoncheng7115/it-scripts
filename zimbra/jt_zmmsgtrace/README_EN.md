@@ -613,5 +613,4 @@ Same as original, using **GNU General Public License v2.0**
 ## References
 
 - [Original zmmsgtrace Official Documentation](https://wiki.zimbra.com/wiki/CLI_zmmsgtrace)
-- [Zimbra Bug #41078](https://bugzilla.zimbra.com/show_bug.cgi?id=41078)
 - [Zimbra SOAP API](https://wiki.zimbra.com/wiki/SOAP_API_Reference_Material_Beginning_with_ZCS_8)
