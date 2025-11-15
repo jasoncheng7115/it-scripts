@@ -115,8 +115,9 @@ python3 --version
 # 1. Launch Web UI as root
 sudo ./jt_zmmsgtrace.py --web
 
-# 2. Open browser
-http://localhost:8989/
+# 2. Open browser from remote computer and connect to Zimbra server
+# Replace 192.168.1.100 with your Zimbra server IP address
+http://192.168.1.100:8989/
 
 # 3. Login with Zimbra administrator account
 # 4. Search emails in the web interface
@@ -220,9 +221,8 @@ sudo ./jt_zmmsgtrace.py --web --port 9000
 # Debug mode
 sudo ./jt_zmmsgtrace.py --web --debug
 
-# Open browser
-# http://localhost:8989/
-# Or remotely: http://192.168.1.119:8989/
+# Open browser from remote computer (replace IP with your Zimbra server address)
+# http://192.168.1.100:8989/
 ```
 
 **Web UI Features**:

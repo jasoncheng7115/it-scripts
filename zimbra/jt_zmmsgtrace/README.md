@@ -106,7 +106,7 @@ sender@domain.com -->
 # Python 3.7 或更高版本
 python3 --version
 
-# 無需額外套件，使用標準庫
+# 無需額外套件，使用標準函式庫
 ```
 
 ### Web UI 模式（推薦）
@@ -115,8 +115,9 @@ python3 --version
 # 1. 以 root 身份啟動 Web UI
 sudo ./jt_zmmsgtrace.py --web
 
-# 2. 開啟瀏覽器
-http://localhost:8989/
+# 2. 從遠端電腦開啟瀏覽器，連線到 Zimbra 伺服器
+# 將 192.168.1.100 替換為您的 Zimbra 伺服器 IP 位址
+http://192.168.1.100:8989/
 
 # 3. 使用 Zimbra 管理員帳號登入
 # 4. 在網頁介面中搜尋郵件
@@ -183,6 +184,12 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 | `--login-attempts` | 最大登入失敗次數限制（預設：5 次） |
 | `--login-timeout` | 登入失敗追蹤時間範圍，單位為分鐘（預設：10 分鐘） |
 
+**登入失敗保護機制**：
+- 當同一 IP 位址在 `--login-timeout` 時間內登入失敗次數超過 `--login-attempts` 限制時，該 IP 將被暫時封鎖
+- 封鎖期間該 IP 無法繼續嘗試登入，會顯示「Too many failed login attempts」錯誤訊息
+- 封鎖時間為 `--login-timeout` 分鐘，時間到期後自動解除封鎖
+- 此機制可有效防止暴力破解攻擊
+
 #### 記錄檔案參數
 
 | 選項 | 說明 |
@@ -214,9 +221,8 @@ sudo ./jt_zmmsgtrace.py --web --port 9000
 # Debug 模式
 sudo ./jt_zmmsgtrace.py --web --debug
 
-# 開啟瀏覽器
-# http://localhost:8989/
-# 或從遠端: http://192.168.1.119:8989/
+# 從遠端電腦開啟瀏覽器（將 IP 位址替換為您的 Zimbra 伺服器位址）
+# http://192.168.1.100:8989/
 ```
 
 **Web UI 特色**：
@@ -318,7 +324,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ### 已實作的防護
 
-- **正則表達式注入攻擊防護**：限制 pattern 長度（最大 500 字元）
+- **正則表達式植入攻擊防護**：限制 pattern 長度（最大 500 字元）
 - **XSS 攻擊防護**：所有輸出使用 `html.escape()` 處理
 - **路徑穿越攻擊防護**：記錄檔案路徑寫死在程式中
 - **輸入驗證**：限制所有輸入欄位長度
@@ -378,6 +384,24 @@ Zimbra 記錄檔（`/var/log/zimbra.log`）的時間戳記格式是 `Jan 15 10:3
 ```
 
 **注意**：如果不指定 `--year`，程式會將舊記錄誤認為今年的資料，導致時間比對錯誤。
+
+### Q6: 登入失敗超過限制會發生什麼事？
+
+當同一 IP 位址登入失敗次數超過限制（預設 5 次）時：
+
+1. **封鎖狀態**：該 IP 會被暫時封鎖，無法繼續嘗試登入
+2. **錯誤訊息**：顯示「Too many failed login attempts. Please try again later.」
+3. **封鎖時間**：預設 10 分鐘（可透過 `--login-timeout` 調整）
+4. **自動解除**：時間到期後自動解除封鎖，可以重新嘗試登入
+
+**調整安全設定範例**：
+```bash
+# 更嚴格的設定：3 次失敗，封鎖 30 分鐘
+sudo ./jt_zmmsgtrace.py --web --login-attempts 3 --login-timeout 30
+
+# 較寬鬆的設定：10 次失敗，封鎖 5 分鐘
+sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
+```
 
 ---
 
