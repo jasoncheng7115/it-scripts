@@ -155,7 +155,13 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 ./jt_zmmsgtrace.py --help
 ```
 
-注意：如有防火牆，記得將 jt_zmmsgtrace 使用的連接埠打開（預設為 8989）。
+**防火牆與安全設定**：
+- 如有防火牆，記得將 jt_zmmsgtrace 使用的連接埠打開（預設為 8989）
+- **重要安全警告**：請勿將此 Web UI 直接暴露在 Internet 上！
+  - 僅允許內部網路（例如：192.168.x.x、10.x.x.x）存取
+  - 或透過 VPN 連線後存取
+  - 建議使用防火牆規則限制來源 IP 範圍
+  - 如需從 Internet 存取，請使用反向代理（如 Nginx）並啟用 HTTPS 及額外的身份驗證機制
 
 ---
 

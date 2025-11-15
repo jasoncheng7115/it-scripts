@@ -155,7 +155,13 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 ./jt_zmmsgtrace.py --help
 ```
 
-Note: If you have a firewall, remember to open the port used by jt_zmmsgtrace (default is 8989).
+**Firewall and Security Settings**:
+- If you have a firewall, remember to open the port used by jt_zmmsgtrace (default is 8989)
+- **Important Security Warning**: DO NOT expose this Web UI directly to the Internet!
+  - Only allow access from internal networks (e.g., 192.168.x.x, 10.x.x.x)
+  - Or access via VPN connection
+  - Recommend using firewall rules to restrict source IP ranges
+  - If Internet access is required, use a reverse proxy (e.g., Nginx) with HTTPS and additional authentication mechanisms
 
 ---
 
