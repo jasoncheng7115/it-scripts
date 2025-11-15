@@ -322,6 +322,38 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 3 --login-timeout 5
 sudo ./jt_zmmsgtrace.py --web --debug
 ```
 
+### Web UI 介面螢幕擷圖
+
+#### 1. 登入頁面
+
+![登入頁面](images/1%20login.png)
+
+支援多語言選擇，使用 Zimbra 管理員帳號登入。
+
+#### 2. 搜尋頁面
+
+![搜尋頁面](images/2%20search.png)
+
+提供多種搜尋條件，包括寄件者、收件者、Message-ID、時間範圍等，並可選擇是否搜尋歷史記錄檔案。
+
+#### 3. 郵件檢視頁面
+
+![郵件檢視](images/3%20viewmail.png)
+
+顯示郵件的詳細資訊，包括安全性檢查結果（DKIM、SPF、DMARC、SPAM 評分）。
+
+#### 4. 郵件路由資訊
+
+![郵件路由](images/4%20mailroute.png)
+
+視覺化顯示郵件的傳遞路徑，包括每個收件者的投遞狀態。
+
+#### 5. 郵件內容檢視
+
+![郵件內容](images/5%20mailbody.png)
+
+可檢視郵件完整內容、原始碼、完整標頭，並支援下載 .eml 格式。
+
 ---
 
 ## 安全性

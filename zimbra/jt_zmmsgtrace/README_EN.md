@@ -322,6 +322,38 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 3 --login-timeout 5
 sudo ./jt_zmmsgtrace.py --web --debug
 ```
 
+### Web UI Interface Screenshots
+
+#### 1. Login Page
+
+![Login Page](images/1%20login_en.png)
+
+Multi-language selection support, login with Zimbra administrator account.
+
+#### 2. Search Page
+
+![Search Page](images/2%20search_en.png)
+
+Provides multiple search criteria including sender, recipient, Message-ID, time range, and option to search historical log files.
+
+#### 3. Email View Page
+
+![Email View](images/3%20viewmail_en.png)
+
+Displays detailed email information including security check results (DKIM, SPF, DMARC, SPAM score).
+
+#### 4. Email Routing Information
+
+![Email Routing](images/4%20mailroute_en.png)
+
+Visualizes email delivery path, including delivery status for each recipient.
+
+#### 5. Email Content View
+
+![Email Content](images/5%20mailbody_en.png)
+
+View complete email content, raw source, full headers, and support downloading .eml format.
+
 ---
 
 ## Security
