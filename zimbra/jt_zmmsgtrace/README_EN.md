@@ -470,7 +470,7 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
 
 ## Version History
 
-- **v2.3.1** (2025-01-15): UI fixes (text overflow, Chinese translation)
+- **v2.3.1** (2025-11-15): UI fixes (text overflow, Chinese translation)
 - **v2.3.0** (2025-01-12): Multi-language support, Message-ID format improvements
 - **v2.2.0** (2025-01-12): Use zmsoap, email viewing function
 - **v2.1.0** (2025-01-11): Add Web UI interface
@@ -559,7 +559,7 @@ Output includes:
 - **Language**: Python 3.7+
 - **Original**: Perl (v1.05)
 - **Author**: Jason Cheng (Jason Tools) (Collaborated with Claude Code)
-- **Date**: 2025-01-15
+- **Date**: 2025-11-15
 - **License**: GNU GPL v2
 
 ---

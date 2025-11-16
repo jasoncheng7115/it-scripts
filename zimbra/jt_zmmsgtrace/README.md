@@ -470,7 +470,7 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
 
 ## 版本歷史
 
-- **v2.3.1** (2025-01-15): UI 修正（文字超出、中文翻譯）
+- **v2.3.1** (2025-11-15): UI 修正（文字超出、中文翻譯）
 - **v2.3.0** (2025-01-12): 多語言支援、Message-ID 格式改進
 - **v2.2.0** (2025-01-12): 改用 zmsoap、郵件檢視功能
 - **v2.1.0** (2025-01-11): 新增 Web UI 介面
@@ -559,7 +559,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 - **語言**: Python 3.7+
 - **原版**: Perl (v1.05)
 - **作者**: Jason Cheng (Jason Tools) (與 Claude Code 協作)
-- **日期**: 2025-01-15
+- **日期**: 2025-11-15
 - **授權**: GNU GPL v2
 
 ---
