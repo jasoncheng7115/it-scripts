@@ -555,7 +555,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ## 版本資訊
 
-- **版本**: 2.3.2
+- **版本**: 2.3.3
 - **語言**: Python 3.7+
 - **原版**: Perl (v1.05)
 - **作者**: Jason Cheng (Jason Tools) (與 Claude Code 協作)

@@ -555,7 +555,7 @@ Output includes:
 
 ## Version Information
 
-- **Version**: 2.3.2
+- **Version**: 2.3.3
 - **Language**: Python 3.7+
 - **Original**: Perl (v1.05)
 - **Author**: Jason Cheng (Jason Tools) (Collaborated with Claude Code)
