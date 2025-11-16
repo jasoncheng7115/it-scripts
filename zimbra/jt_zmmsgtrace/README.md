@@ -111,7 +111,7 @@ python3 --version
 # 無需額外套件，使用標準函式庫
 ```
 
-### Web UI 模式（推薦）
+### Web UI 模式
 
 ```bash
 # 1. 以 root 身份啟動 Web UI
@@ -133,7 +133,7 @@ http://192.168.1.100:8989/
 # 搜尋特定寄件者
 ./jt_zmmsgtrace.py -s "user@domain.com"
 
-# 搜尋被去除重複的收件者（關鍵改進！）
+# 搜尋被去除重複的收件者
 ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # 時間範圍查詢
@@ -217,7 +217,7 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 
 注意：以下範例均需以 root 身份執行（使用 `sudo` 或直接以 root 登入）。
 
-#### Web UI 模式（推薦）
+#### Web UI 模式
 
 ```bash
 # 啟動 Web UI（預設 port 8989）
@@ -255,7 +255,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 # 搜尋特定寄件者
 ./jt_zmmsgtrace.py -s "user@domain.com"
 
-# 搜尋被去除重複的收件者（關鍵改進！）
+# 搜尋被去除重複的收件者
 ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # 搜尋特定 Message-ID

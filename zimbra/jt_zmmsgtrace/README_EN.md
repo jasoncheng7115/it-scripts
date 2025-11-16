@@ -111,7 +111,7 @@ python3 --version
 # No additional packages needed, uses standard library
 ```
 
-### Web UI Mode (Recommended)
+### Web UI Mode
 
 ```bash
 # 1. Launch Web UI as root
@@ -133,7 +133,7 @@ Note: This program needs to run as root to read Zimbra log files. When executing
 # Search for specific sender
 ./jt_zmmsgtrace.py -s "user@domain.com"
 
-# Search for deduplicated recipient (key improvement!)
+# Search for deduplicated recipient
 ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # Time range query
@@ -217,7 +217,7 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 
 Note: All examples below need to run as root (using `sudo` or logging in as root directly).
 
-#### Web UI Mode (Recommended)
+#### Web UI Mode
 
 ```bash
 # Launch Web UI (default port 8989)
@@ -255,7 +255,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 # Search for specific sender
 ./jt_zmmsgtrace.py -s "user@domain.com"
 
-# Search for deduplicated recipient (key improvement!)
+# Search for deduplicated recipient
 ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # Search for specific Message-ID
