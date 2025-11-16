@@ -222,5 +222,5 @@ Error: Invalid regex pattern: missing ), unterminated subpattern at position 0
 
 ---
 
-**最後更新**: 2025-01-11
+**最後更新**: 2025-11-15
 **版本**: 2.1.0

@@ -222,5 +222,5 @@ If you discover a security vulnerability, please contact:
 
 ---
 
-**Last Updated**: 2025-01-11
+**Last Updated**: 2025-11-15
 **Version**: 2.1.0
