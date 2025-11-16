@@ -13,7 +13,7 @@ Original zmmsgtrace:
   Licensed under GNU GPL v2
 
 Python rewrite (jt_zmmsgtrace):
-  Author: Jason Cheng (Jason Tools)
+  Author: Jason Cheng (Jason Tools) (Collaborated with Claude Code)
   Date: 2025-11-15
   Version: 2.3.1
   License: GNU GPL v2
