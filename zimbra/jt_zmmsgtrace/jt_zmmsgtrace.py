@@ -14,8 +14,8 @@ Original zmmsgtrace:
 
 Python rewrite (jt_zmmsgtrace):
   Author: Jason Cheng (Jason Tools) (Collaborated with Claude Code)
-  Date: 2025-11-15
-  Version: 2.3.1
+  Date: 2025-11-16
+  Version: 2.3.3
   License: GNU GPL v2
 """
 
@@ -35,9 +35,10 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+from email.header import decode_header
 import threading
 
-VERSION = "2.3.1"
+VERSION = "2.3.2"
 DEFAULT_LOGFILE = "/var/log/zimbra.log"
 
 # Language translations
@@ -190,7 +191,7 @@ TRANSLATIONS = {
         'loading_email_title': '載入郵件中...',
         'loading_email_heading': '正在載入郵件...',
         'connecting_server': '正在連接伺服器...',
-        'loading_timeout': '載入超時，正在重試...',
+        'loading_timeout': '載入逾時，正在重試...',
         'connection_error': '連接錯誤，正在重試...',
         'checking_accounts': '正在檢查帳號',
         'and_x_more_accounts': '等 {count} 個帳號',
@@ -251,6 +252,7 @@ TRANSLATIONS = {
         'email_may_be_deleted': '郵件可能已被刪除',
         'outbound_check_sender': '如果是寄出的郵件，請確認寄件者是內部帳號',
         'inbound_check_recipient': '如果是收到的郵件，請確認收件者是內部帳號',
+        'forward_no_local_copy': '可能該帳號有設定郵件自動轉寄並且不儲存',
         'insufficient_permissions': '系統權限不足（請確認 sudo 設定）',
     },
     'en': {
@@ -462,6 +464,7 @@ TRANSLATIONS = {
         'email_may_be_deleted': 'Email may have been deleted',
         'outbound_check_sender': 'If outbound email, please verify sender is an internal account',
         'inbound_check_recipient': 'If inbound email, please verify recipient is an internal account',
+        'forward_no_local_copy': 'Account may have email forwarding enabled without keeping local copy',
         'insufficient_permissions': 'Insufficient system permissions (please check sudo configuration)',
     }
 }
@@ -502,6 +505,44 @@ def debug_print(message: str, file=sys.stderr):
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Include milliseconds
     print(f"[{timestamp}] {message}", file=file)
+
+
+def decode_header_value(value: str) -> str:
+    """
+    Decode RFC 2047 encoded email header value.
+
+    Example:
+        '=?utf-8?B?5ris6Kmm?=' -> '測試'
+        '=?iso-8859-1?Q?Andr=E9?=' -> 'André'
+
+    Args:
+        value: Encoded header value
+
+    Returns:
+        Decoded string
+    """
+    if not value:
+        return ''
+
+    try:
+        decoded_parts = decode_header(value)
+        result = []
+        for part, encoding in decoded_parts:
+            if isinstance(part, bytes):
+                if encoding:
+                    result.append(part.decode(encoding, errors='replace'))
+                else:
+                    # Try UTF-8 first, fall back to latin1
+                    try:
+                        result.append(part.decode('utf-8'))
+                    except UnicodeDecodeError:
+                        result.append(part.decode('latin1', errors='replace'))
+            else:
+                result.append(str(part))
+        return ''.join(result)
+    except Exception:
+        # If decoding fails, return the original value
+        return value
 
 
 @dataclass
@@ -655,7 +696,8 @@ class LogParser:
         # subject
         match = re.search(r'header Subject:\s+(.+?)\s+from\s+', content)
         if match:
-            obj['subject'] = match.group(1).strip()
+            # Decode RFC 2047 encoded subject (e.g., =?utf-8?B?5ris6Kmm?=)
+            obj['subject'] = decode_header_value(match.group(1).strip())
             return
 
         # client
@@ -4159,23 +4201,7 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
                             update_progress(t('rendering_email'), complete=True)
                             msg = message_from_string(email_content)
 
-                            # Extract headers
-                            def decode_header_value(value):
-                                """Decode email header value"""
-                                if not value:
-                                    return ''
-                                decoded_parts = decode_header(value)
-                                result = []
-                                for part, encoding in decoded_parts:
-                                    if isinstance(part, bytes):
-                                        if encoding:
-                                            result.append(part.decode(encoding, errors='replace'))
-                                        else:
-                                            result.append(part.decode('utf-8', errors='replace'))
-                                    else:
-                                        result.append(str(part))
-                                return ''.join(result)
-
+                            # Extract headers (using global decode_header_value function)
                             email_from = decode_header_value(msg.get('From', ''))
                             email_to = decode_header_value(msg.get('To', ''))
                             email_cc = decode_header_value(msg.get('Cc', ''))
@@ -4200,7 +4226,28 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
 
                                     # Parse components
                                     from_match = re.search(r'from\s+([^\s]+(?:\s+\([^)]+\))?)', received_clean, re.IGNORECASE)
-                                    by_match = re.search(r'by\s+([^\s]+(?:\s+\([^)]+\))?)', received_clean, re.IGNORECASE)
+
+                                    # Extract 'by' hostname only (without program info)
+                                    by_match = re.search(r'by\s+([^\s]+)', received_clean, re.IGNORECASE)
+
+                                    # Look for program info: any parenthesis after 'by hostname (...)'
+                                    # Format: by hostname (IP/hostname) (program info)
+                                    # Or: by hostname (program info) - if parenthesis doesn't contain IP/hostname
+                                    program_match = None
+
+                                    # First try: match second parenthesis after 'by'
+                                    second_paren_match = re.search(r'by\s+[^\s]+\s+\([^)]+\)\s*(\([^)]+\))', received_clean, re.IGNORECASE)
+                                    if second_paren_match:
+                                        program_match = second_paren_match
+                                    else:
+                                        # Second try: single parenthesis that doesn't look like IP/hostname
+                                        single_paren_match = re.search(r'by\s+[^\s]+\s+(\([^)]+\))(?:\s+with|\s+id|;)', received_clean, re.IGNORECASE)
+                                        if single_paren_match:
+                                            content = single_paren_match.group(1)
+                                            # If doesn't contain IP characteristics ([, numbers.numbers), likely a program name
+                                            if not re.search(r'\[|\d+\.\d+', content):
+                                                program_match = single_paren_match
+
                                     with_match = re.search(r'with\s+([^\s]+)', received_clean, re.IGNORECASE)
                                     for_match = re.search(r'for\s+<([^>]+)>', received_clean, re.IGNORECASE)
                                     date_match = re.search(r';\s*(.+)$', received_clean)
@@ -4209,6 +4256,7 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
                                         'hop': idx + 1,
                                         'from': from_match.group(1).strip() if from_match else 'Unknown',
                                         'by': by_match.group(1).strip() if by_match else 'Unknown',
+                                        'program': program_match.group(1).strip() if program_match else '',
                                         'with': with_match.group(1).strip() if with_match else '',
                                         'for': for_match.group(1).strip() if for_match else '',
                                         'date': date_match.group(1).strip() if date_match else '',
@@ -4581,9 +4629,13 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
                                 # Clean display names
                                 from_display = html.escape(hop['from'])
                                 by_display = html.escape(hop['by'])
+                                program_display = html.escape(hop['program']) if hop.get('program') else ''
                                 with_display = html.escape(hop['with']) if hop['with'] else ''
                                 for_display = html.escape(hop['for']) if hop['for'] else ''
                                 date_display = html.escape(hop['date']) if hop['date'] else ''
+
+                                # Combine 'by' and 'program' for display
+                                by_full_display = f"{by_display} {program_display}" if program_display else by_display
 
                                 hop_html = f'''<div class="route-hop">
                                 <div class="route-hop-number">{hop['hop']}</div>
@@ -4594,7 +4646,7 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
                                         </div>
                                         <div class="route-arrow">→</div>
                                         <div class="route-hop-by">
-                                            <span class="route-label">{t('to_server')}:</span> {by_display}
+                                            <span class="route-label">{t('to_server')}:</span> {by_full_display}
                                         </div>
                                     </div>
                                     <div class="route-hop-details">
@@ -5347,6 +5399,7 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
             • {t("email_may_be_deleted")}<br>
             • {t("outbound_check_sender")}<br>
             • {t("inbound_check_recipient")}<br>
+            • {t("forward_no_local_copy")}<br>
             • {t("insufficient_permissions")}'''
 
         self._send_error_html(t('email_not_found'), error_msg, lang=lang)
@@ -5847,6 +5900,7 @@ class JtZmmsgtraceRequestHandler(BaseHTTPRequestHandler):
             • {t("email_may_be_deleted")}<br>
             • {t("outbound_check_sender")}<br>
             • {t("inbound_check_recipient")}<br>
+            • {t("forward_no_local_copy")}<br>
             • {t("insufficient_permissions")}'''
 
         self._send_error_html(t('email_not_found'), error_msg, lang=lang)

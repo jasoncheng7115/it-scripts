@@ -83,7 +83,6 @@ Added `Log:` field showing which log file the record was found in:
 - **Security Analysis**: Display DKIM, SPF, DMARC, SPAM check results
 - **Email Routing**: Visualize email delivery path
 - **Download Function**: Support downloading .eml format emails
-- **Responsive Design**: Support for mobile, tablet, and desktop
 - **Password Protection**: Requires administrator password login
 
 ### 4. **Compatibility**
@@ -241,7 +240,6 @@ sudo ./jt_zmmsgtrace.py --web --debug
 - Security analysis (DKIM/SPF/DMARC/SPAM)
 - Email routing visualization
 - Support .eml download
-- Responsive design
 - Automatically mark deduplicated recipients
 
 #### Command-Line Mode
@@ -470,9 +468,11 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
 
 ## Version History
 
+- **v2.3.3** (2025-11-16): Fix duplicate program name display in email routing
+- **v2.3.2** (2025-11-16): Support RFC 2047 email subject decoding
 - **v2.3.1** (2025-11-15): UI fixes (text overflow, Chinese translation)
-- **v2.3.0** (2025-01-12): Multi-language support, Message-ID format improvements
-- **v2.2.0** (2025-01-12): Use zmsoap, email viewing function
+- **v2.3.0** (2025-11-12): Multi-language support, Message-ID format improvements
+- **v2.2.0** (2025-11-12): Use zmsoap, email viewing function
 - **v2.1.0** (2025-01-11): Add Web UI interface
 - **v2.0.0** (2025-01-10): Python rewrite, solve deduplication problem
 
@@ -555,30 +555,36 @@ Output includes:
 
 ## Version Information
 
-- **Version**: 2.3.1
+- **Version**: 2.3.2
 - **Language**: Python 3.7+
 - **Original**: Perl (v1.05)
 - **Author**: Jason Cheng (Jason Tools) (Collaborated with Claude Code)
-- **Date**: 2025-11-15
+- **Date**: 2025-11-16
 - **License**: GNU GPL v2
 
 ---
 
-## Latest Updates (v2.3.1)
+## Latest Updates (v2.3.3)
 
 ### Bug Fixes
+- **Fixed duplicate program name display in email routing**: Some servers in email routing page showed duplicate program names
+  - Issue: `mail.jason.tools (Postfix) (Postfix)` displayed twice
+  - Cause: `by_match` regex captured parenthesis content, then `program_match` captured it again
+  - Solution: Modified `by_match` to only capture hostname, program info handled by `program_match` exclusively
+  - Affected file: `jt_zmmsgtrace.py` line 4231
+
+### v2.3.2 Updates
+- **RFC 2047 Email Subject Decoding Support**: When Zimbra enables `custom_header_check`, subjects appear in encoded format in logs
+  - Support Base64 encoding: `=?utf-8?B?5ris6Kmm?=` → `測試`
+  - Support Quoted-Printable encoding: `=?iso-8859-1?Q?Andr=E9?=` → `André`
+  - Support multiple character sets: UTF-8, ISO-8859-1, Latin1, etc.
+  - Both CLI and Web UI can correctly display decoded subjects
+  - Added `decode_header_value()` utility function for email header decoding
+
+### v2.3.1 Updates
 - **Fixed CLI mode empty email display issue**: CLI execution no longer displays empty NOQUEUE emails
-  - Filter out emails without recipients
-  - Cleaner CLI output
 - **Fixed email view page overflow issue**: Raw content and full headers area no longer overflow right boundary
-  - Add `box-sizing: border-box` to ensure padding/border included in width
-  - Use `white-space: pre-wrap` for automatic line wrapping
 - **Fixed Traditional Chinese translation**: Email header fields correctly display in Chinese
-  - Message ID → 郵件 ID
-  - Subject → 主旨
-  - From → 寄件者
-  - To → 收件者
-  - Date → 日期
 
 ### Multi-language Support (v2.3.0)
 - **Automatic language detection**: Automatically select interface based on browser language
