@@ -131,13 +131,13 @@ Note: This program needs to run as root to read Zimbra log files. When executing
 
 ```bash
 # Search for specific sender
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # Search for deduplicated recipient
-./jt_zmmsgtrace.py -r "user2@domain.com"
+sudo ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # Time range query
-./jt_zmmsgtrace.py -t 20250101,20250131
+sudo ./jt_zmmsgtrace.py -t 20250101,20250131
 ```
 
 ---
@@ -147,14 +147,14 @@ Note: This program needs to run as root to read Zimbra log files. When executing
 ### Basic Installation
 
 ```bash
-# 1. Copy to server
-scp jt_zmmsgtrace.py root@mail-server:/opt/jasontools/
+# 1. Download the program to server
+curl -o /opt/jasontools/jt_zmmsgtrace.py https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/zimbra/jt_zmmsgtrace/jt_zmmsgtrace.py
 
 # 2. Set permissions
 chmod +x /opt/jasontools/jt_zmmsgtrace.py
 
 # 3. Test execution
-./jt_zmmsgtrace.py --help
+sudo /opt/jasontools/jt_zmmsgtrace.py --help
 ```
 
 **Firewall and Security Settings**:
@@ -250,62 +250,62 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ```bash
 # Track all emails (using default log file)
-./jt_zmmsgtrace.py
+sudo ./jt_zmmsgtrace.py
 
 # Search for specific sender
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # Search for deduplicated recipient
-./jt_zmmsgtrace.py -r "user2@domain.com"
+sudo ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # Search for specific Message-ID
-./jt_zmmsgtrace.py -i "ABC123@domain.com"
+sudo ./jt_zmmsgtrace.py -i "ABC123@domain.com"
 
 # Time range query
-./jt_zmmsgtrace.py -t 20250101,20250131
+sudo ./jt_zmmsgtrace.py -t 20250101,20250131
 
 # Complex query (using regex)
-./jt_zmmsgtrace.py -s "^admin" -r "@example.com$" -t 202501
+sudo ./jt_zmmsgtrace.py -s "^admin" -r "@example.com$" -t 202501
 ```
 
 ##### Specify Log Files
 
 ```bash
 # Specify single log file
-./jt_zmmsgtrace.py /var/log/zimbra.log
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log
 
 # Specify multiple log files (including compressed)
-./jt_zmmsgtrace.py /var/log/zimbra.log.1.gz /var/log/zimbra.log
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log.1.gz /var/log/zimbra.log
 
 # Use wildcards to specify multiple files
-./jt_zmmsgtrace.py /var/log/zimbra.log*
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log*
 
 # Load all zimbra log files (including archived)
-./jt_zmmsgtrace.py --all-logs
+sudo ./jt_zmmsgtrace.py --all-logs
 
 # Don't sort files (process in command-line order)
-./jt_zmmsgtrace.py --nosort /var/log/zimbra.log.2.gz /var/log/zimbra.log.1.gz
+sudo ./jt_zmmsgtrace.py --nosort /var/log/zimbra.log.2.gz /var/log/zimbra.log.1.gz
 ```
 
 ##### Debug and Advanced Options
 
 ```bash
 # Debug mode (show detailed processing information)
-./jt_zmmsgtrace.py --debug -r "user@domain.com"
+sudo ./jt_zmmsgtrace.py --debug -r "user@domain.com"
 
 # More verbose debug (can repeat --debug)
-./jt_zmmsgtrace.py --debug --debug -s "admin@"
+sudo ./jt_zmmsgtrace.py --debug --debug -s "admin@"
 
 # Specify log file year (when viewing old logs)
 # Zimbra log time format is "Jan 15 10:30:00" (no year)
 # Must specify --year 2024 when viewing 2024 old logs
-./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
 
 # Search December 2024 logs with time range
-./jt_zmmsgtrace.py --year 2024 -t 20241201,20241231 /var/log/old-zimbra.log
+sudo ./jt_zmmsgtrace.py --year 2024 -t 20241201,20241231 /var/log/old-zimbra.log
 
 # Display version information
-./jt_zmmsgtrace.py --version
+sudo ./jt_zmmsgtrace.py --version
 ```
 
 ##### Web UI Advanced Options
@@ -417,10 +417,10 @@ Zimbra log files (`/var/log/zimbra.log`) timestamp format is `Jan 15 10:30:00`, 
 **Examples**:
 ```bash
 # View 2025 logs in 2025 (no need for --year)
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # View 2024 old logs in 2025 (must specify --year 2024)
-./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
 ```
 
 **Note**: If `--year` is not specified, the program will misidentify old logs as current year data, causing time comparison errors.

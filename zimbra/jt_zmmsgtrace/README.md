@@ -131,13 +131,13 @@ http://192.168.1.100:8989/
 
 ```bash
 # 搜尋特定寄件者
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # 搜尋被去除重複的收件者
-./jt_zmmsgtrace.py -r "user2@domain.com"
+sudo ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # 時間範圍查詢
-./jt_zmmsgtrace.py -t 20250101,20250131
+sudo ./jt_zmmsgtrace.py -t 20250101,20250131
 ```
 
 ---
@@ -147,14 +147,14 @@ http://192.168.1.100:8989/
 ### 基本安裝
 
 ```bash
-# 1. 複製到伺服器
-scp jt_zmmsgtrace.py root@mail-server:/opt/jasontools/
+# 1. 下載程式到伺服器
+curl -o /opt/jasontools/jt_zmmsgtrace.py https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/zimbra/jt_zmmsgtrace/jt_zmmsgtrace.py
 
 # 2. 設定權限
 chmod +x /opt/jasontools/jt_zmmsgtrace.py
 
 # 3. 測試執行
-./jt_zmmsgtrace.py --help
+sudo /opt/jasontools/jt_zmmsgtrace.py --help
 ```
 
 **防火牆與安全設定**：
@@ -250,62 +250,62 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ```bash
 # 追蹤所有郵件（使用預設記錄檔案）
-./jt_zmmsgtrace.py
+sudo ./jt_zmmsgtrace.py
 
 # 搜尋特定寄件者
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # 搜尋被去除重複的收件者
-./jt_zmmsgtrace.py -r "user2@domain.com"
+sudo ./jt_zmmsgtrace.py -r "user2@domain.com"
 
 # 搜尋特定 Message-ID
-./jt_zmmsgtrace.py -i "ABC123@domain.com"
+sudo ./jt_zmmsgtrace.py -i "ABC123@domain.com"
 
 # 時間範圍查詢
-./jt_zmmsgtrace.py -t 20250101,20250131
+sudo ./jt_zmmsgtrace.py -t 20250101,20250131
 
 # 複合查詢（使用正則表達式）
-./jt_zmmsgtrace.py -s "^admin" -r "@example.com$" -t 202501
+sudo ./jt_zmmsgtrace.py -s "^admin" -r "@example.com$" -t 202501
 ```
 
 ##### 指定記錄檔案
 
 ```bash
 # 指定單一記錄檔案
-./jt_zmmsgtrace.py /var/log/zimbra.log
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log
 
 # 指定多個記錄檔案（包含壓縮檔）
-./jt_zmmsgtrace.py /var/log/zimbra.log.1.gz /var/log/zimbra.log
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log.1.gz /var/log/zimbra.log
 
 # 使用萬用字元指定多個檔案
-./jt_zmmsgtrace.py /var/log/zimbra.log*
+sudo ./jt_zmmsgtrace.py /var/log/zimbra.log*
 
 # 載入所有 zimbra 記錄檔案（包含已歸檔的）
-./jt_zmmsgtrace.py --all-logs
+sudo ./jt_zmmsgtrace.py --all-logs
 
 # 不排序檔案（依指令列順序處理）
-./jt_zmmsgtrace.py --nosort /var/log/zimbra.log.2.gz /var/log/zimbra.log.1.gz
+sudo ./jt_zmmsgtrace.py --nosort /var/log/zimbra.log.2.gz /var/log/zimbra.log.1.gz
 ```
 
 ##### 除錯與進階選項
 
 ```bash
 # 除錯模式（顯示詳細處理資訊）
-./jt_zmmsgtrace.py --debug -r "user@domain.com"
+sudo ./jt_zmmsgtrace.py --debug -r "user@domain.com"
 
 # 更詳細的除錯（可重複使用 --debug）
-./jt_zmmsgtrace.py --debug --debug -s "admin@"
+sudo ./jt_zmmsgtrace.py --debug --debug -s "admin@"
 
 # 指定記錄檔所屬年份（檢視舊記錄檔時）
 # Zimbra 記錄的時間格式是 "Jan 15 10:30:00"（沒有年份）
 # 檢視 2024 年的舊記錄必須指定 --year 2024
-./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
 
 # 搭配時間範圍搜尋 2024 年 12 月的記錄
-./jt_zmmsgtrace.py --year 2024 -t 20241201,20241231 /var/log/old-zimbra.log
+sudo ./jt_zmmsgtrace.py --year 2024 -t 20241201,20241231 /var/log/old-zimbra.log
 
 # 顯示版本資訊
-./jt_zmmsgtrace.py --version
+sudo ./jt_zmmsgtrace.py --version
 ```
 
 ##### Web UI 進階選項
@@ -417,10 +417,10 @@ Zimbra 記錄檔（`/var/log/zimbra.log`）的時間戳記格式是 `Jan 15 10:3
 **範例**：
 ```bash
 # 2025 年檢視 2025 年的記錄（不需要 --year）
-./jt_zmmsgtrace.py -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py -s "user@domain.com"
 
 # 2025 年檢視 2024 年的舊記錄（必須指定 --year 2024）
-./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
+sudo ./jt_zmmsgtrace.py --year 2024 /var/log/zimbra.log.2024.gz -s "user@domain.com"
 ```
 
 **注意**：如果不指定 `--year`，程式會將舊記錄誤認為今年的資料，導致時間比對錯誤。
