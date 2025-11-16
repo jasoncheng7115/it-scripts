@@ -125,7 +125,7 @@ http://192.168.1.100:8989/
 # 4. 在網頁介面中搜尋郵件
 ```
 
-注意：本程式需要以 root 身份執行，以便讀取 Zimbra 記錄檔案和使用 zmprov 指令。
+注意：本程式需要以 root 身份執行，以便讀取 Zimbra 記錄檔案。當需要執行 Zimbra 指令（如 zmprov、zmsoap、zmmailbox）時，程式會自動切換至 zimbra 身份執行。
 
 ### 指令列模式
 
@@ -376,7 +376,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 
 ### 部署建議
 
-1. **以 root 使用者執行**（需要讀取 Zimbra 記錄檔案和執行 zmprov）
+1. **以 root 使用者執行**（需要讀取 Zimbra 記錄檔案；Zimbra 指令如 zmprov、zmsoap、zmmailbox 會自動切換至 zimbra 身份執行）
 2. **使用 HTTPS**（透過反向代理）
 3. **啟用防火牆**（限制存取 IP）
 4. **正確設定檔案權限**
@@ -397,7 +397,7 @@ sudo ./jt_zmmsgtrace.py --web --debug
 ### Q3: Web UI 無法檢視郵件內容？
 
 請確認：
-1. 程式以 root 使用者執行（需要執行 zmprov 和讀取郵件內容）
+1. 程式以 root 使用者執行（需要讀取郵件內容；Zimbra 指令如 zmprov、zmsoap、zmmailbox 會自動切換至 zimbra 身份執行）
 2. 帳號是 Zimbra 內部帳號（外部帳號無法檢視）
 
 ### Q4: 如何切換語言？

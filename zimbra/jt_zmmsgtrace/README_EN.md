@@ -125,7 +125,7 @@ http://192.168.1.100:8989/
 # 4. Search emails in the web interface
 ```
 
-Note: This program needs to run as root to read Zimbra log files and use the zmprov command.
+Note: This program needs to run as root to read Zimbra log files. When executing Zimbra commands (such as zmprov, zmsoap, zmmailbox), the program will automatically switch to the zimbra user.
 
 ### Command-Line Mode
 
@@ -376,7 +376,7 @@ For detailed security information, see [SECURITY.md](SECURITY.md)
 
 ### Deployment Recommendations
 
-1. **Run as root user** (needs to read Zimbra log files and execute zmprov)
+1. **Run as root user** (needs to read Zimbra log files; Zimbra commands such as zmprov, zmsoap, zmmailbox will automatically switch to zimbra user)
 2. **Use HTTPS** (via reverse proxy)
 3. **Enable firewall** (restrict access IP)
 4. **Properly set file permissions**
@@ -397,7 +397,7 @@ If you see multiple recipients in the output, but only some have complete delive
 ### Q3: Web UI cannot view email content?
 
 Please confirm:
-1. Program runs as root user (needs to execute zmprov and read email content)
+1. Program runs as root user (needs to read email content; Zimbra commands such as zmprov, zmsoap, zmmailbox will automatically switch to zimbra user)
 2. Account is a Zimbra internal account (external accounts cannot view)
 
 ### Q4: How to switch language?
