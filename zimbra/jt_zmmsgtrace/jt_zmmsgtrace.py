@@ -14,7 +14,7 @@ Original zmmsgtrace:
 
 Python rewrite (jt_zmmsgtrace):
   Author: Jason Cheng (Jason Tools)
-  Date: 2025-01-15
+  Date: 2025-11-15
   Version: 2.3.1
   License: GNU GPL v2
 """
