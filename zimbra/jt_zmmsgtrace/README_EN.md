@@ -193,9 +193,9 @@ chmod +x /opt/jasontools/jt_zmmsgtrace.py
 | `--login-timeout` | Login failure tracking time range in minutes (default: 10 minutes) |
 
 **Login Failure Protection Mechanism**:
-- When the same IP address exceeds the `--login-attempts` limit within `--login-timeout` period, that IP will be temporarily blocked
-- During the block period, the IP cannot continue login attempts and will see "Too many failed login attempts" error message
-- Block duration is `--login-timeout` minutes, automatically unblocked after expiration
+- When the total number of login failures from all IP addresses exceeds the `--login-attempts` limit within the `--login-timeout` time window, **the entire Web UI server will automatically shut down**
+- After the server shuts down, all users (including other IPs) cannot access the Web UI
+- **Manual server restart by administrator is required**, will not automatically recover
 - This mechanism effectively prevents brute force attacks
 
 #### Log File Parameters
@@ -427,21 +427,24 @@ Zimbra log files (`/var/log/zimbra.log`) timestamp format is `Jan 15 10:30:00`, 
 
 ### Q6: What happens when login failures exceed the limit?
 
-When the same IP address exceeds the login failure limit (default 5 times):
+When the total number of login failures from all IP addresses exceeds the limit (default 5 times) within the time window:
 
-1. **Block Status**: The IP will be temporarily blocked and cannot continue login attempts
-2. **Error Message**: Displays "Too many failed login attempts. Please try again later."
-3. **Block Duration**: Default 10 minutes (adjustable via `--login-timeout`)
-4. **Automatic Unblock**: Automatically unblocked after expiration, allowing retry
+1. **Server Shutdown**: The entire Web UI server will automatically shut down, not just blocking a single IP
+2. **Error Message**: Displays "Too many failed login attempts! Server will shut down. Please wait X seconds before restarting."
+3. **Impact Scope**: All users (including other IPs) cannot access the Web UI
+4. **Recovery Method**: **Administrator must manually restart the program**, will not automatically recover
+5. **Time Window**: Default 10 minutes (adjustable via `--login-timeout`)
 
 **Adjust Security Settings Examples**:
 ```bash
-# Stricter setting: 3 failures, block for 30 minutes
+# Stricter setting: 3 failures, 30-minute time window
 sudo ./jt_zmmsgtrace.py --web --login-attempts 3 --login-timeout 30
 
-# Looser setting: 10 failures, block for 5 minutes
+# Looser setting: 10 failures, 5-minute time window
 sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
 ```
+
+**Important Reminder**: Since failure counts track the total across all IPs, it's recommended to appropriately increase the `--login-attempts` value in multi-user environments to avoid server shutdown due to multiple people entering incorrect passwords.
 
 ---
 
