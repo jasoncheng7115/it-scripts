@@ -473,8 +473,8 @@ sudo ./jt_zmmsgtrace.py --web --login-attempts 10 --login-timeout 5
 - **v2.3.1** (2025-11-15): UI fixes (text overflow, Chinese translation)
 - **v2.3.0** (2025-11-12): Multi-language support, Message-ID format improvements
 - **v2.2.0** (2025-11-12): Use zmsoap, email viewing function
-- **v2.1.0** (2025-01-11): Add Web UI interface
-- **v2.0.0** (2025-01-10): Python rewrite, solve deduplication problem
+- **v2.1.0** (2025-11-11): Add Web UI interface
+- **v2.0.0** (2025-11-10): Python rewrite, solve deduplication problem
 
 For detailed changes, see [CHANGELOG.md](CHANGELOG.md)
 
