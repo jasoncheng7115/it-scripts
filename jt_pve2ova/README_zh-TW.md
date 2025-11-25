@@ -59,12 +59,13 @@ chmod +x /opt/jt_pve2ova.sh
 /opt/jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 ```
 
-| 參數             | 說明                                                 |
-| -------------- | -------------------------------------------------- |
-| `VMID`         | Proxmox VE VM ID（ex. `203`）                               |
-| `WORK_DIR`     | 暫存 / 輸出目錄（必須有足夠空間，程式會自動估算並檢查）          |
-| `ESXI_VERSION` | 目標 ESXi 版本：8.0 / 7.0u3 / 7.0 / 6.7 / 6.5 |
-| `MODE`         | `keep` 保留轉換後的 VMX/VMDK；`clean` 轉換完成後刪除，僅留 OVA（預設）                |
+| 參數             | 說明                                                                                 |
+|------------------|--------------------------------------------------------------------------------------|
+| `VMID`           | Proxmox VE VM ID（ex. `203`）                                                       |
+| `WORK_DIR`       | 暫存 / 輸出目錄（必須有足夠空間，程式會自動估算並檢查）                              |
+| `ESXI_VERSION`   | 目標 ESXi 版本：8.0 / 7.0u3 / 7.0 / 6.7 / 6.5                                       |
+| `MODE`           | `keep` 保留轉換後的 VMX/VMDK<br>`clean` 轉換完成後刪除 VMX/VMDK，僅保留 OVA（預設）<br>`vmx` 僅產生 VMX，不輸出 VMDK、不打包 OVA |
+
 
 ### 快速範例
 
