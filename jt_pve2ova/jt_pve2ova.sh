@@ -3,18 +3,21 @@
 #  jt_pve2ova.sh - Convert a Proxmox-VE VM to a thin-provisioned OVA
 #                  suitable for VMware ESXi
 #
-#  Author   : Jason Cheng  (Jason Tools) 
+#  Author   : Jason Cheng  (Jason Tools Co., Ltd.)
 #  E-mail   : jason@jason.tools
 #
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
-#  Version  : 1.5  (2025-11-25)
+#  Version  : 1.6  (2025-11-25)
+#             * Detect disk format (raw/qcow2) from config or pvesm list
+#               and pass correct -f to qemu-img to avoid broken VMDKs
 #             * Fix handling of disks without "size=" (e.g. local-lvm-thin)
 #             * Determine disk size via pvesm list or blockdev when needed
 #             * Activate inactive LVM/LVM-thin LVs on PVE 9 when VM is off
 #             * Correct CPU sockets/cores/vCPU mapping in generated VMX
 #             * Do not abort when optional fields (vcpus, smbios1) are missing
+#             * ASCII-only output
 ##########################################################################
 set -euo pipefail
 
@@ -169,14 +172,13 @@ printf "INFO: Target ESXi %s -> virtualHW %d\n" "$ESXIVER_RAW" "$VHW"
 # ---------------------- collect data disks ----------------------------- #
 
 set +e
-declare -a src_disks vmdk_files vmx_lines sizes
+declare -a src_disks vmdk_files vmx_lines sizes src_formats
 declare -A seen_vol
 idx=0
 
 while IFS= read -r line; do
   [[ $line =~ media=cdrom ]] && { echo "INFO: Skip optical: $line"; continue; }
 
-  # only scsi/sata/ide/virtio disk lines are fed here, from grep below
   raw=${line#*: }
   storage=${raw%%:*}
   rest=${raw#*:}
@@ -189,7 +191,9 @@ while IFS= read -r line; do
   seen_vol[$volname]=1
 
   size_field="$(echo "$raw" | grep -oP '(?<=size=)[^,]+' 2>/dev/null || true)"
+  fmt_field="$(echo "$raw" | grep -oP '(?<=format=)[^,]+' 2>/dev/null || true)"
   size_bytes=""
+  src_fmt=""
 
   # detect storage type (lvm, lvmthin, rbd, dir, zfs, etc.)
   stype="$(awk -v s="$storage" '
@@ -203,6 +207,7 @@ while IFS= read -r line; do
 
   if [[ "$stype" == "rbd" ]]; then
     src="rbd:${storage}/${volname}"
+    [[ -z "$fmt_field" ]] && src_fmt="raw"
   else
     src="$(pvesm path "${storage}:${volname}" 2>/dev/null)"
     if [[ -z "$src" ]]; then
@@ -211,7 +216,7 @@ while IFS= read -r line; do
     fi
 
     if [[ "$stype" == lvm* ]]; then
-      lv_id="${src#/dev/}"   # e.g. ovatest/vm-156-disk-0
+      lv_id="${src#/dev/}"
       if lvdisplay "$lv_id" 2>/dev/null | grep -q "LV Status *NOT available"; then
         echo "INFO: LV $lv_id is inactive (NOT available); activating with lvchange -ay..."
         if ! lvchange -ay "$lv_id" 2>/dev/null; then
@@ -223,6 +228,7 @@ while IFS= read -r line; do
       if [[ ! -e "$src" ]]; then
         src="/dev/$lv_id"
       fi
+      [[ -z "$fmt_field" ]] && src_fmt="raw"
     fi
   fi
 
@@ -233,12 +239,11 @@ while IFS= read -r line; do
   fi
 
   if [[ -z "$size_bytes" ]]; then
-    # try pvesm list <storage>
     size_bytes="$(pvesm list "$storage" 2>/dev/null | \
       awk -v v="${storage}:${volname}" '$1 == v {print $4; exit}')"
   fi
 
-  if [[ -z "$size_bytes" && -n "$src" && -e "$src" ]] then
+  if [[ -z "$size_bytes" && -n "$src" && -e "$src" ]]; then
     if command -v blockdev >/dev/null 2>&1; then
       size_bytes="$(blockdev --getsize64 "$src" 2>/dev/null || true)"
     fi
@@ -249,15 +254,28 @@ while IFS= read -r line; do
     continue
   fi
 
+  # determine disk format for qemu-img
+  if [[ -z "$src_fmt" && -n "$fmt_field" ]]; then
+    src_fmt="$fmt_field"
+  fi
+  if [[ -z "$src_fmt" ]]; then
+    src_fmt="$(pvesm list "$storage" 2>/dev/null | \
+      awk -v v="${storage}:${volname}" '$1 == v {print $2; exit}')"
+  fi
+  if [[ -z "$src_fmt" ]]; then
+    src_fmt="raw"
+  fi
+
   dest="disk${idx}.vmdk"
   src_disks+=("$src")
   vmdk_files+=("$dest")
   sizes+=("$size_bytes")
+  src_formats+=("$src_fmt")
   vmx_lines+=("scsi0:${idx}.present = \"TRUE\"")
   vmx_lines+=("scsi0:${idx}.fileName = \"${dest}\"")
   vmx_lines+=("scsi0:${idx}.deviceType = \"disk\"")
 
-  echo "INFO: Added disk $src (${size_bytes} bytes)"
+  echo "INFO: Added disk $src (${size_bytes} bytes, format=${src_fmt})"
   ((idx++))
 done < <("${CFG_CMD[@]}" | grep -E '^[[:space:]]*(scsi|sata|ide|virtio)[0-9]+:')
 
@@ -271,7 +289,7 @@ need=0
 for s in "${sizes[@]}"; do
   ((need += s))
 done
-need=$((need * 12 / 10))   # +20% headroom
+need=$((need * 12 / 10))
 
 avail="$(df --output=avail -B1 "$WORKDIR" | tail -n1)"
 
@@ -284,10 +302,13 @@ printf "INFO: Required space ~%s, available %s\n" \
 
 echo "INFO: Converting disks to streamOptimized VMDK..."
 for i in "${!src_disks[@]}"; do
-  echo "INFO: [${i}/${#src_disks[@]}] ${src_disks[$i]} -> ${vmdk_files[$i]}"
-  qemu-img convert -p -f raw "${src_disks[$i]}" \
+  src="${src_disks[$i]}"
+  dest="${vmdk_files[$i]}"
+  fmt="${src_formats[$i]}"
+  echo "INFO: [${i}/${#src_disks[@]}] ${src} (format=${fmt}) -> ${dest}"
+  qemu-img convert -p -f "$fmt" "$src" \
     -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic,compat6 \
-    "${WORKDIR}/${vmdk_files[$i]}"
+    "${WORKDIR}/${dest}"
 done
 echo "INFO: All disks converted."
 
