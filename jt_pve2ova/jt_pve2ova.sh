@@ -3,18 +3,18 @@
 #  jt_pve2ova.sh - Convert a Proxmox-VE VM to a thin-provisioned OVA
 #                  suitable for VMware ESXi
 #
-#  Author   : Jason Cheng  (Jason Tools Co., Ltd.)
+#  Author   : Jason Cheng  (Jason Tools) 
 #  E-mail   : jason@jason.tools
 #
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
-#  Version  : 1.4  (2025-11-25)
-#             * Fix storage type detection for LVM/LVM-thin
+#  Version  : 1.5  (2025-11-25)
+#             * Fix handling of disks without "size=" (e.g. local-lvm-thin)
+#             * Determine disk size via pvesm list or blockdev when needed
 #             * Activate inactive LVM/LVM-thin LVs on PVE 9 when VM is off
 #             * Correct CPU sockets/cores/vCPU mapping in generated VMX
 #             * Do not abort when optional fields (vcpus, smbios1) are missing
-#             * ASCII-only output
 ##########################################################################
 set -euo pipefail
 
@@ -175,8 +175,8 @@ idx=0
 
 while IFS= read -r line; do
   [[ $line =~ media=cdrom ]] && { echo "INFO: Skip optical: $line"; continue; }
-  echo "$line" | grep -q 'size=' || { echo "INFO: Skip non-disk: $line"; continue; }
 
+  # only scsi/sata/ide/virtio disk lines are fed here, from grep below
   raw=${line#*: }
   storage=${raw%%:*}
   rest=${raw#*:}
@@ -188,11 +188,10 @@ while IFS= read -r line; do
   fi
   seen_vol[$volname]=1
 
-  size_field="$(echo "$raw" | grep -oP '(?<=size=)[^,]+')"
-  size_bytes="$(numfmt --from=iec "$size_field" 2>/dev/null || \
-                numfmt --from=si  "$size_field")"
+  size_field="$(echo "$raw" | grep -oP '(?<=size=)[^,]+' 2>/dev/null || true)"
+  size_bytes=""
 
-  # Detect storage type by matching "type: storageid" lines
+  # detect storage type (lvm, lvmthin, rbd, dir, zfs, etc.)
   stype="$(awk -v s="$storage" '
     $2 == s && $1 ~ /:$/ {
       t = $1
@@ -211,8 +210,6 @@ while IFS= read -r line; do
       src="/var/lib/vz/images/$VMID/${volname##*/}"
     fi
 
-    # For LVM / LVM-thin volumes, on PVE 9 the LV can be inactive when the VM
-    # is powered off. Use the VG/LV name to check and activate.
     if [[ "$stype" == lvm* ]]; then
       lv_id="${src#/dev/}"   # e.g. ovatest/vm-156-disk-0
       if lvdisplay "$lv_id" 2>/dev/null | grep -q "LV Status *NOT available"; then
@@ -223,11 +220,33 @@ while IFS= read -r line; do
             error "Unable to activate LV for $lv_id; please check LVM state."
         fi
       fi
-      # Ensure src points to a device path after activation
       if [[ ! -e "$src" ]]; then
         src="/dev/$lv_id"
       fi
     fi
+  fi
+
+  # determine disk size in bytes
+  if [[ -n "$size_field" ]]; then
+    size_bytes="$(numfmt --from=iec "$size_field" 2>/dev/null || \
+                  numfmt --from=si  "$size_field" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$size_bytes" ]]; then
+    # try pvesm list <storage>
+    size_bytes="$(pvesm list "$storage" 2>/dev/null | \
+      awk -v v="${storage}:${volname}" '$1 == v {print $4; exit}')"
+  fi
+
+  if [[ -z "$size_bytes" && -n "$src" && -e "$src" ]] then
+    if command -v blockdev >/dev/null 2>&1; then
+      size_bytes="$(blockdev --getsize64 "$src" 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ -z "$size_bytes" ]]; then
+    echo "WARN: Unable to determine size for ${storage}:${volname}; skipping this disk."
+    continue
   fi
 
   dest="disk${idx}.vmdk"
@@ -238,7 +257,7 @@ while IFS= read -r line; do
   vmx_lines+=("scsi0:${idx}.fileName = \"${dest}\"")
   vmx_lines+=("scsi0:${idx}.deviceType = \"disk\"")
 
-  echo "INFO: Added disk $src ($size_field)"
+  echo "INFO: Added disk $src (${size_bytes} bytes)"
   ((idx++))
 done < <("${CFG_CMD[@]}" | grep -E '^[[:space:]]*(scsi|sata|ide|virtio)[0-9]+:')
 
