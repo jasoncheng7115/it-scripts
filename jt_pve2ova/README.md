@@ -63,12 +63,14 @@ chmod +x /opt/jt_pve2ova.sh
 /opt/jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 ```
 
+更新後的 GitHub markdown 可以改成這樣，把 `vmx` 一起寫進去：
+
 | Parameter      | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `VMID`         | Proxmox VE VM ID (e.g. `203`)                                                          |
 | `WORK_DIR`     | Temp / output directory (must have enough space; script will estimate and check)       |
 | `ESXI_VERSION` | Target ESXi version: **8.0 / 7.0u3 / 7.0 / 6.7 / 6.5**                                 |
-| `MODE`         | `keep` – keep converted VMX/VMDK<br>`clean` – remove them after OVA is built (default) |
+| `MODE`         | `keep` – keep converted VMX/VMDK<br>`clean` – remove them after OVA is built (default)<br>`vmx` – generate only the VMX file (no VMDK conversion, no OVA) |
 
 ### Quick examples
 
