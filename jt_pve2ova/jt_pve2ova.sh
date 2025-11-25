@@ -9,10 +9,9 @@
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
-#  Version  : 1.6  (2025-11-25)
+#  Version  : 1.7  (2025-11-25)
+#             * Add MODE "vmx" to generate VMX only (no VMDK, no OVA)
 #             * Detect disk format (raw/qcow2) from config or pvesm list
-#               and pass correct -f to qemu-img to avoid broken VMDKs
-#             * Fix handling of disks without "size=" (e.g. local-lvm-thin)
 #             * Determine disk size via pvesm list or blockdev when needed
 #             * Activate inactive LVM/LVM-thin LVs on PVE 9 when VM is off
 #             * Correct CPU sockets/cores/vCPU mapping in generated VMX
@@ -30,8 +29,9 @@ Usage:  jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
   <VMID>         Proxmox-VE virtual-machine ID (e.g. 203)
   <WORK_DIR>     Temporary working directory for output files
   <ESXI_VERSION> Target ESXi version (8.0 | 7.0u3 | 7.0 | 6.7 | 6.5)
-  [MODE]         keep  -> keep VMX/VMDK files after OVA is built
-                 clean -> delete temporary files  (default)
+  [MODE]         clean -> convert to VMDK and build OVA, then remove VMX/VMDK (default)
+                 keep  -> convert to VMDK and build OVA, keep VMX/VMDK
+                 vmx   -> generate VMX only (no VMDK conversion, no OVA)
 USAGE
 }
 
@@ -48,25 +48,29 @@ ESXIVER_RAW="$3"
 MODE="${4:-clean}"
 
 [[ $VMID =~ ^[0-9]+$ ]] || error "VMID must be numeric"
-[[ $MODE =~ ^(keep|clean)$ ]] || error "MODE must be keep | clean"
+[[ $MODE =~ ^(keep|clean|vmx)$ ]] || error "MODE must be keep | clean | vmx"
 
 OVFTOOL="/opt/ovftool/ovftool"
 STORAGE_CFG="/etc/pve/storage.cfg"
 
 # ------------------------ sanity checks -------------------------------- #
 
-[[ -x $OVFTOOL ]]     || error "ovftool not found at $OVFTOOL"
 [[ -f $STORAGE_CFG ]] || error "storage.cfg not found at $STORAGE_CFG"
 
-command -v qemu-img  >/dev/null || error "qemu-img not installed"
 command -v qm        >/dev/null || error "qm command not found"
 command -v pvesm     >/dev/null || error "pvesm command not found"
 command -v lvdisplay >/dev/null || error "lvdisplay command not found"
 command -v lvchange  >/dev/null || error "lvchange command not found"
 command -v numfmt    >/dev/null || error "numfmt command not found"
 
-qemu_ver="$(qemu-img --version | head -n1 | awk '{print $3}')"
-printf "INFO: Detected qemu-img %s\n" "$qemu_ver"
+if [[ "$MODE" != "vmx" ]]; then
+  [[ -x $OVFTOOL ]] || error "ovftool not found at $OVFTOOL"
+  command -v qemu-img >/dev/null || error "qemu-img not installed"
+  qemu_ver="$(qemu-img --version | head -n1 | awk '{print $3}')"
+  printf "INFO: Detected qemu-img %s\n" "$qemu_ver"
+else
+  echo "INFO: VMX-only mode (no VMDK conversion, no OVA packaging)"
+fi
 
 mkdir -p "$WORKDIR"
 
@@ -215,7 +219,8 @@ while IFS= read -r line; do
       src="/var/lib/vz/images/$VMID/${volname##*/}"
     fi
 
-    if [[ "$stype" == lvm* ]]; then
+    if [[ "$MODE" != "vmx" && "$stype" == lvm* ]]; then
+      # only touch LVM state when we really need to read the block device
       lv_id="${src#/dev/}"
       if lvdisplay "$lv_id" 2>/dev/null | grep -q "LV Status *NOT available"; then
         echo "INFO: LV $lv_id is inactive (NOT available); activating with lvchange -ay..."
@@ -232,38 +237,46 @@ while IFS= read -r line; do
     fi
   fi
 
-  # determine disk size in bytes
-  if [[ -n "$size_field" ]]; then
-    size_bytes="$(numfmt --from=iec "$size_field" 2>/dev/null || \
-                  numfmt --from=si  "$size_field" 2>/dev/null || true)"
-  fi
-
-  if [[ -z "$size_bytes" ]]; then
-    size_bytes="$(pvesm list "$storage" 2>/dev/null | \
-      awk -v v="${storage}:${volname}" '$1 == v {print $4; exit}')"
-  fi
-
-  if [[ -z "$size_bytes" && -n "$src" && -e "$src" ]]; then
-    if command -v blockdev >/dev/null 2>&1; then
-      size_bytes="$(blockdev --getsize64 "$src" 2>/dev/null || true)"
+  # determine disk size in bytes (only needed when we convert)
+  if [[ "$MODE" != "vmx" ]]; then
+    if [[ -n "$size_field" ]]; then
+      size_bytes="$(numfmt --from=iec "$size_field" 2>/dev/null || \
+                    numfmt --from=si  "$size_field" 2>/dev/null || true)"
     fi
-  fi
 
-  if [[ -z "$size_bytes" ]]; then
-    echo "WARN: Unable to determine size for ${storage}:${volname}; skipping this disk."
-    continue
+    if [[ -z "$size_bytes" ]]; then
+      size_bytes="$(pvesm list "$storage" 2>/dev/null | \
+        awk -v v="${storage}:${volname}" '$1 == v {print $4; exit}')"
+    fi
+
+    if [[ -z "$size_bytes" && -n "$src" && -e "$src" ]]; then
+      if command -v blockdev >/dev/null 2>&1; then
+        size_bytes="$(blockdev --getsize64 "$src" 2>/dev/null || true)"
+      fi
+    fi
+
+    if [[ -z "$size_bytes" ]]; then
+      echo "WARN: Unable to determine size for ${storage}:${volname}; skipping this disk."
+      continue
+    fi
+  else
+    size_bytes=0
   fi
 
   # determine disk format for qemu-img
-  if [[ -z "$src_fmt" && -n "$fmt_field" ]]; then
-    src_fmt="$fmt_field"
-  fi
-  if [[ -z "$src_fmt" ]]; then
-    src_fmt="$(pvesm list "$storage" 2>/dev/null | \
-      awk -v v="${storage}:${volname}" '$1 == v {print $2; exit}')"
-  fi
-  if [[ -z "$src_fmt" ]]; then
-    src_fmt="raw"
+  if [[ "$MODE" != "vmx" ]]; then
+    if [[ -z "$src_fmt" && -n "$fmt_field" ]]; then
+      src_fmt="$fmt_field"
+    fi
+    if [[ -z "$src_fmt" ]]; then
+      src_fmt="$(pvesm list "$storage" 2>/dev/null | \
+        awk -v v="${storage}:${volname}" '$1 == v {print $2; exit}')"
+    fi
+    if [[ -z "$src_fmt" ]]; then
+      src_fmt="raw"
+    fi
+  else
+    src_fmt=""
   fi
 
   dest="disk${idx}.vmdk"
@@ -275,7 +288,12 @@ while IFS= read -r line; do
   vmx_lines+=("scsi0:${idx}.fileName = \"${dest}\"")
   vmx_lines+=("scsi0:${idx}.deviceType = \"disk\"")
 
-  echo "INFO: Added disk $src (${size_bytes} bytes, format=${src_fmt})"
+  if [[ "$MODE" != "vmx" ]]; then
+    echo "INFO: Added disk $src (${size_bytes} bytes, format=${src_fmt})"
+  else
+    echo "INFO: Added disk $src (VMX-only mode, no export)"
+  fi
+
   ((idx++))
 done < <("${CFG_CMD[@]}" | grep -E '^[[:space:]]*(scsi|sata|ide|virtio)[0-9]+:')
 
@@ -285,32 +303,36 @@ set -e
 
 # ---------------- verify enough workspace capacity -------------------- #
 
-need=0
-for s in "${sizes[@]}"; do
-  ((need += s))
-done
-need=$((need * 12 / 10))
+if [[ "$MODE" != "vmx" ]]; then
+  need=0
+  for s in "${sizes[@]}"; do
+    ((need += s))
+  done
+  need=$((need * 12 / 10))
 
-avail="$(df --output=avail -B1 "$WORKDIR" | tail -n1)"
+  avail="$(df --output=avail -B1 "$WORKDIR" | tail -n1)"
 
-printf "INFO: Required space ~%s, available %s\n" \
-  "$(numfmt --to=iec "$need")" "$(numfmt --to=iec "$avail")"
+  printf "INFO: Required space ~%s, available %s\n" \
+    "$(numfmt --to=iec "$need")" "$(numfmt --to=iec "$avail")"
 
-(( avail >= need )) || error "Not enough free space in $WORKDIR"
+  (( avail >= need )) || error "Not enough free space in $WORKDIR"
+fi
 
 # --------------- convert each disk to streamOptimized VMDK ------------ #
 
-echo "INFO: Converting disks to streamOptimized VMDK..."
-for i in "${!src_disks[@]}"; do
-  src="${src_disks[$i]}"
-  dest="${vmdk_files[$i]}"
-  fmt="${src_formats[$i]}"
-  echo "INFO: [${i}/${#src_disks[@]}] ${src} (format=${fmt}) -> ${dest}"
-  qemu-img convert -p -f "$fmt" "$src" \
-    -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic,compat6 \
-    "${WORKDIR}/${dest}"
-done
-echo "INFO: All disks converted."
+if [[ "$MODE" != "vmx" ]]; then
+  echo "INFO: Converting disks to streamOptimized VMDK..."
+  for i in "${!src_disks[@]}"; do
+    src="${src_disks[$i]}"
+    dest="${vmdk_files[$i]}"
+    fmt="${src_formats[$i]}"
+    echo "INFO: [${i}/${#src_disks[@]}] ${src} (format=${fmt}) -> ${dest}"
+    qemu-img convert -p -f "$fmt" "$src" \
+      -O vmdk -o subformat=streamOptimized,adapter_type=lsilogic,compat6 \
+      "${WORKDIR}/${dest}"
+  done
+  echo "INFO: All disks converted."
+fi
 
 # ---------------------- generate the VMX file -------------------------- #
 
@@ -347,18 +369,22 @@ echo "INFO: VMX generated -> $vmx"
 
 # ------------------------ build the OVA package ------------------------ #
 
-ova="${WORKDIR}/${name:-pve-vm$VMID}.ova"
+if [[ "$MODE" != "vmx" ]]; then
+  ova="${WORKDIR}/${name:-pve-vm$VMID}.ova"
 
-echo "INFO: Packing OVA with ovftool..."
-"$OVFTOOL" --acceptAllEulas --diskMode=thin "$vmx" "$ova"
-echo "SUCCESS: OVA ready -> $ova"
+  echo "INFO: Packing OVA with ovftool..."
+  "$OVFTOOL" --acceptAllEulas --diskMode=thin "$vmx" "$ova"
+  echo "SUCCESS: OVA ready -> $ova"
 
-# ----------------------------- cleanup -------------------------------- #
+  # ----------------------------- cleanup -------------------------------- #
 
-if [[ "$MODE" == "clean" ]]; then
-  echo "INFO: Removing temporary VMX/VMDK files..."
-  rm -f "$vmx" "${WORKDIR}/"disk*.vmdk
-  echo "INFO: Temporary files removed."
+  if [[ "$MODE" == "clean" ]]; then
+    echo "INFO: Removing temporary VMX/VMDK files..."
+    rm -f "$vmx" "${WORKDIR}/"disk*.vmdk
+    echo "INFO: Temporary files removed."
+  else
+    echo "INFO: Temporary VMX/VMDK files kept as requested."
+  fi
 else
-  echo "INFO: Temporary VMX/VMDK files kept as requested."
+  echo "INFO: VMX-only mode complete. No VMDK conversion or OVA created."
 fi
