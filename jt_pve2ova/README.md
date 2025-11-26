@@ -63,8 +63,6 @@ chmod +x /opt/jt_pve2ova.sh
 /opt/jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 ```
 
-更新後的 GitHub markdown 可以改成這樣，把 `vmx` 一起寫進去：
-
 | Parameter      | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `VMID`         | Proxmox VE VM ID (e.g. `203`)                                                          |
