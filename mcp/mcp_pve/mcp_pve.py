@@ -1,14 +1,52 @@
 #!/usr/bin/env python3
 """
-Proxmox VE MCP Server - Enhanced Edition with Batch Operations
+Proxmox VE MCP Server - Enhanced Edition with Batch Operations and Pagination
 Provides comprehensive Proxmox VE management functionality including batch data collection
 
 Author: Jason Cheng (jason@jason.tools)
-Version: 1.2.2
+Version: 1.3.3
+Last Updated: 2025-11-29
 License: MIT
 Repository: https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/mcp/mcp_pve/mcp_pve.py
 
 Changelog:
+v1.3.3 (2025-11-29) - Enhancement: Improved get_ceph_osd_details
+         - Added node-specific endpoint /nodes/{node}/ceph/osd as primary method when node is specified
+         - Improved API endpoint fallback strategy for better compatibility
+         - Enhanced error diagnostics with 4 methods instead of 3
+         - Fixed: Added type checking and better error handling for API responses
+         - Fixed: Properly handle tree structure from /nodes/{node}/ceph/osd endpoint
+         - Fixed: Added recursive tree traversal to find OSDs for specific host
+         - Fixed: Support Proxmox API key-value pairs format: {"data": [{"key": "root", "value": {...}}]}
+         - Fixed: Support multiple response formats (key-value pairs, tree with "root", flat list)
+         - Fixed: Support querying all OSDs from all nodes when no node parameter specified
+         - Added find_all_osds() helper to extract all OSDs from tree without filtering
+
+v1.3.2 (2025-11-29) - SECURITY FIX: Implement feature toggles
+         - CRITICAL: Fixed feature toggles not being enforced (security issue)
+         - Added permission checking in handle_list_tools() - tools are filtered based on ENABLE_* flags
+         - Added permission checking in execute_tool() - operations blocked if disabled
+         - Dangerous operations now properly require ENABLE_* flags to be True
+         - Clear error messages when trying to use disabled operations
+
+v1.3.1 (2025-11-29) - Bug fixes and enhancements
+         - Fixed get_ceph_osd_details error handling (improved fallback on all errors, not just 501/404)
+         - Added enhanced diagnostics to get_ceph_osd_details (detailed error reporting)
+         - Fixed get_storage_content HTTP 500 error (added content parameter)
+         - Added filter functionality to list_vms (filter_id, filter_name, filter_status)
+         - Added filter functionality to list_containers (filter_id, filter_name, filter_status)
+         - Removed all Chinese text from output (English only)
+         - Removed all emojis from output and startup messages
+         - Documentation: Created 9 comprehensive markdown files for fixes and features
+
+v1.3.0 - MAJOR IMPROVEMENT: Added pagination and feature toggles
+         - Added feature toggle system for dangerous operations (create/modify/delete)
+         - All batch operations now support pagination (limit/offset)
+         - Added display_message to show pagination status
+         - Enhanced tool descriptions with detailed parameter explanations
+         - Added create_pagination_message() helper function
+         - Prevents context overflow by limiting result sizes
+
 v1.2.2 - Fixed get_node_resources and get_ceph_osds functions
          - get_node_resources: Now uses /cluster/resources with node filtering
          - get_ceph_osds: Enhanced with multiple endpoint fallbacks and OSD tree parsing
@@ -39,10 +77,55 @@ from pydantic import AnyUrl
 import mcp.types as types
 
 # Version information
-__version__ = "1.2.2"
+__version__ = "1.3.3"
+__last_updated__ = "2025-11-29"
 __author__ = "Jason Cheng"
 __email__ = "jason@jason.tools"
 __license__ = "MIT"
+
+# ============================================================================
+# FEATURE TOGGLES - Control which operations are available via MCP
+# ============================================================================
+# SAFETY: Modification operations are DISABLED by default to prevent accidents
+# Set to True to enable these operations (use with caution!)
+
+# VM/Container Creation Operations
+ENABLE_VM_CREATE = False        # Allow creating new VMs
+ENABLE_CT_CREATE = False        # Allow creating new containers
+ENABLE_VM_CLONE = False         # Allow cloning VMs
+ENABLE_CT_CLONE = False         # Allow cloning containers
+
+# VM/Container Modification Operations
+ENABLE_VM_UPDATE = False        # Allow updating VM configurations
+ENABLE_CT_UPDATE = False        # Allow updating container configurations
+ENABLE_VM_DELETE = False        # Allow deleting VMs
+ENABLE_CT_DELETE = False        # Allow deleting containers
+
+# VM/Container Control Operations
+ENABLE_VM_START = False         # Allow starting VMs
+ENABLE_VM_STOP = False          # Allow stopping VMs
+ENABLE_VM_SHUTDOWN = False      # Allow shutting down VMs
+ENABLE_VM_REBOOT = False        # Allow rebooting VMs
+ENABLE_VM_RESET = False         # Allow resetting VMs
+ENABLE_CT_START = False         # Allow starting containers
+ENABLE_CT_STOP = False          # Allow stopping containers
+ENABLE_CT_SHUTDOWN = False      # Allow shutting down containers
+ENABLE_CT_REBOOT = False        # Allow rebooting containers
+
+# Advanced Operations
+ENABLE_VM_MIGRATE = False       # Allow migrating VMs between nodes
+ENABLE_CT_MIGRATE = False       # Allow migrating containers between nodes
+ENABLE_VM_BACKUP = True         # Allow creating VM backups
+ENABLE_CT_BACKUP = True         # Allow creating container backups
+ENABLE_VM_SNAPSHOT = True       # Allow creating VM snapshots
+ENABLE_CT_SNAPSHOT = True       # Allow creating container snapshots
+ENABLE_BACKUP_JOB = False       # Allow creating backup jobs
+
+# Default pagination limits (prevent context overflow)
+DEFAULT_BATCH_LIMIT = 100       # Default limit for batch operations
+MAX_BATCH_LIMIT = 500          # Maximum allowed limit for batch operations
+DEFAULT_LOG_LIMIT = 50         # Default limit for log entries
+MAX_LOG_LIMIT = 200            # Maximum allowed limit for log entries
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +134,72 @@ logger = logging.getLogger("pve-mcp-server")
 class ProxmoxVEError(Exception):
     """Custom exception for Proxmox VE related errors"""
     pass
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def create_pagination_message(returned_count: int, total_count: int, has_more: bool,
+                              item_type: str = "items", limit: int = None, offset: int = 0) -> str:
+    """
+    Create clear pagination display message for users
+
+    Args:
+        returned_count: Number of items in current response
+        total_count: Total number of items available (or estimated)
+        has_more: Whether more items are available
+        item_type: Type of items (e.g., "VMs", "containers", "logs")
+        limit: Requested limit
+        offset: Current offset
+
+    Returns:
+        Human-readable pagination message in English
+
+    Examples:
+        "Showing first 100 VMs (250 total, 150 remaining)"
+        "Showing items 101-200 of 500 containers"
+        "Showing all 15 logs (complete)"
+    """
+    if offset == 0:
+        if not has_more:
+            return f"Showing all {returned_count} {item_type} (complete)"
+        remaining = total_count - returned_count if total_count > returned_count else "unknown"
+        return f"Showing first {returned_count} {item_type} ({total_count} total, {remaining} remaining)"
+    else:
+        start = offset + 1
+        end = offset + returned_count
+        if not has_more:
+            return f"Showing items {start}-{end} of {total_count} {item_type} (complete)"
+        return f"Showing items {start}-{end} of {total_count} {item_type} (more available)"
+
+def validate_pagination_params(limit: Optional[int], offset: Optional[int],
+                               default_limit: int, max_limit: int) -> tuple:
+    """
+    Validate and normalize pagination parameters
+
+    Args:
+        limit: Requested limit (or None)
+        offset: Requested offset (or None)
+        default_limit: Default limit if not specified
+        max_limit: Maximum allowed limit
+
+    Returns:
+        Tuple of (validated_limit, validated_offset)
+    """
+    # Validate limit
+    if limit is None:
+        limit = default_limit
+    elif limit < 1:
+        limit = default_limit
+    elif limit > max_limit:
+        logger.warning(f"Requested limit {limit} exceeds maximum {max_limit}, using {max_limit}")
+        limit = max_limit
+
+    # Validate offset
+    if offset is None or offset < 0:
+        offset = 0
+
+    return int(limit), int(offset)
 
 class ProxmoxVEClient:
     """Proxmox VE API Client with improved error handling and connection management"""
@@ -269,21 +418,81 @@ def get_pve_client():
     )
 
 # Create MCP server
-server = Server("proxmox-ve-mcp")
+server = Server("Proxmox_VE")
 
 @server.list_tools()
 async def handle_list_tools() -> List[Tool]:
     """List all available tools with comprehensive descriptions"""
-    return [
+
+    # Define tool permissions mapping for feature toggles
+    # Added in v1.3.2 (2025-11-29): Implement actual feature toggle enforcement
+    tool_permissions = {
+        # VM Creation/Modification
+        "create_vm": ENABLE_VM_CREATE,
+        "clone_vm": ENABLE_VM_CLONE,
+        "update_vm_config": ENABLE_VM_UPDATE,
+        "delete_vm": ENABLE_VM_DELETE,
+
+        # Container Creation/Modification
+        "create_container": ENABLE_CT_CREATE,
+        "clone_container": ENABLE_CT_CLONE,
+        "update_container_config": ENABLE_CT_UPDATE,
+        "delete_container": ENABLE_CT_DELETE,
+
+        # VM Control
+        "vm_start": ENABLE_VM_START,
+        "vm_stop": ENABLE_VM_STOP,
+        "vm_shutdown": ENABLE_VM_SHUTDOWN,
+        "vm_reboot": ENABLE_VM_REBOOT,
+        "vm_reset": ENABLE_VM_RESET,
+
+        # Container Control
+        "ct_start": ENABLE_CT_START,
+        "ct_stop": ENABLE_CT_STOP,
+        "ct_shutdown": ENABLE_CT_SHUTDOWN,
+        "ct_reboot": ENABLE_CT_REBOOT,
+
+        # Advanced Operations
+        "vm_migrate": ENABLE_VM_MIGRATE,
+        "ct_migrate": ENABLE_CT_MIGRATE,
+        "vm_backup": ENABLE_VM_BACKUP,
+        "ct_backup": ENABLE_CT_BACKUP,
+        "vm_snapshot": ENABLE_VM_SNAPSHOT,
+        "ct_snapshot": ENABLE_CT_SNAPSHOT,
+        "create_backup_job": ENABLE_BACKUP_JOB
+    }
+
+    # Build complete tool list
+    all_tools = [
         # NEW: Batch Operations for Data Collection
         Tool(
             name="get_all_vm_firewall_rules",
-            description="Get firewall rules and firewall options for all VMs and containers across all nodes",
+            description="""Get firewall rules and firewall options for all VMs and containers across all nodes.
+
+            This tool queries firewall configurations from every VM and container in the cluster.
+            For large environments, use pagination to prevent context overflow.
+
+            Parameters:
+            - include_containers: Whether to include LXC containers (default: True)
+            - include_disabled: Whether to include disabled firewall rules (default: True)
+            - limit: Maximum number of VMs/containers to query (default: 100, max: 500)
+            - offset: Number of VMs/containers to skip for pagination (default: 0)
+
+            Returns:
+            - data: Array of firewall configurations
+            - summary: Count statistics and pagination info
+            - display_message: Human-readable pagination status
+
+            Example: To get first 50 items, use limit=50, offset=0
+                     To get next 50 items, use limit=50, offset=50
+            """,
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "include_containers": {"type": "boolean", "description": "Include LXC containers (default: True)", "default": True},
-                    "include_disabled": {"type": "boolean", "description": "Include disabled firewall rules (default: True)", "default": True}
+                    "include_containers": {"type": "boolean", "description": "Include LXC containers", "default": True},
+                    "include_disabled": {"type": "boolean", "description": "Include disabled firewall rules", "default": True},
+                    "limit": {"type": "integer", "description": "Maximum number of items to return (default: 100, max: 500)", "default": 100, "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "description": "Number of items to skip for pagination", "default": 0, "minimum": 0}
                 },
                 "additionalProperties": False
             }
@@ -437,11 +646,36 @@ async def handle_list_tools() -> List[Tool]:
         # Virtual Machine Management
         Tool(
             name="list_vms",
-            description="List all virtual machines across all nodes or on a specific node",
+            description="""List virtual machines with pagination, filtering, and summary options to prevent context overflow.
+
+            Returns list of VMs from one node or all nodes with configurable detail level.
+
+            Parameters:
+            - node: Specific node name (optional - if not provided, lists from all nodes)
+            - summary_only: Return only essential info (ID, name, status) to prevent overflow (default: True)
+            - limit: Maximum number of VMs to return (default: 100, max: 500)
+            - offset: Number of VMs to skip for pagination (default: 0)
+            - filter_id: Filter by VM ID (supports single ID or comma-separated list, e.g., "100" or "100,101,102")
+            - filter_name: Filter by VM name (case-insensitive partial match, e.g., "web" matches "web-server")
+            - filter_status: Filter by status (running, stopped, paused)
+
+            Filters are applied before pagination (limit/offset).
+            Multiple filters can be combined (AND logic).
+
+            When summary_only=True (default), returns only: vmid, name, status, node
+            When summary_only=False, returns full VM details (may cause overflow with many VMs)
+
+            Response includes pagination info in display_message.""",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name (optional - if not provided, lists VMs from all nodes)"}
+                    "node": {"type": "string", "description": "Node name (optional - lists from all nodes if not provided)"},
+                    "summary_only": {"type": "boolean", "description": "Return only essential info to prevent overflow", "default": True},
+                    "limit": {"type": "integer", "description": "Maximum number of VMs to return", "default": 100, "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "description": "Number of VMs to skip for pagination", "default": 0, "minimum": 0},
+                    "filter_id": {"type": "string", "description": "Filter by VM ID (single or comma-separated, e.g., '100,101,102')"},
+                    "filter_name": {"type": "string", "description": "Filter by VM name (case-insensitive partial match)"},
+                    "filter_status": {"type": "string", "description": "Filter by status (running, stopped, paused)"}
                 },
                 "additionalProperties": False
             }
@@ -808,7 +1042,17 @@ async def handle_list_tools() -> List[Tool]:
         # VM Control Operations (requires confirmation)
         Tool(
             name="vm_start",
-            description="Start virtual machine (requires confirmation to prevent accidental operations)",
+            description="""Start a virtual machine.
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name (e.g., "host-110")
+            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
+            - confirm (boolean): Must be true to execute
+
+            CORRECT EXAMPLE:
+            {"node": "host-110", "vmid": 166, "confirm": true}
+
+            If you only know VM name: First call list_vms(filter_name="name") to get node and vmid.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -822,7 +1066,17 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="vm_shutdown",
-            description="Shutdown virtual machine gracefully using ACPI (requires confirmation)",
+            description="""Shutdown a virtual machine gracefully using ACPI (recommended method).
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name (e.g., "host-110")
+            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
+            - confirm (boolean): Must be true to execute
+
+            CORRECT EXAMPLE:
+            {"node": "host-110", "vmid": 166, "confirm": true}
+
+            Note: This is the recommended shutdown method. Use vm_stop only if this fails or hangs.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -836,7 +1090,19 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="vm_stop",
-            description="Stop virtual machine forcefully (equivalent to power off - requires confirmation)",
+            description="""Stop a virtual machine forcefully (hard power off).
+
+            WARNING: May cause data loss! Use vm_shutdown instead when possible.
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name (e.g., "host-110")
+            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
+            - confirm (boolean): Must be true to execute
+
+            CORRECT EXAMPLE:
+            {"node": "host-110", "vmid": 166, "confirm": true}
+
+            Only use if vm_shutdown fails. This is like pulling the power cable.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -894,7 +1160,20 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="vm_backup",
-            description="Create backup of virtual machine (requires confirmation)",
+            description="""Create backup of a virtual machine to specified storage.
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name (e.g., "host-110")
+            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
+            - storage (string): Backup storage name (e.g., "backup-storage", "local")
+            - confirm (boolean): Must be true to execute
+
+            OPTIONAL PARAMETERS:
+            - mode (string): "snapshot" (default, VM running), "suspend", or "stop"
+            - compress (string): "zstd" (default), "gzip", "lzo", "1", or "0"
+
+            CORRECT EXAMPLE:
+            {"node": "host-110", "vmid": 166, "storage": "backup-storage", "confirm": true}""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -911,7 +1190,43 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="vm_snapshot",
-            description="Create snapshot of virtual machine (requires confirmation)",
+            description="""Create snapshot of a virtual machine for point-in-time recovery.
+
+            ⚠️ CRITICAL: Parameter names are EXACT - do NOT use variations!
+            ✅ CORRECT: snapname
+            ❌ WRONG: snapshot_name, snapshotname, snap_name
+
+            IMPORTANT: You must provide the exact parameter names: node, vmid, snapname, confirm
+
+            WORKFLOW:
+            1. If you only know VM name (e.g., "mon5"), first call: list_vms with filter_name="mon5"
+            2. From the result, get the node and vmid values
+            3. Then call vm_snapshot with the correct parameters
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name where VM is located (e.g., "host-110", "pve-node1")
+            - vmid (integer): Virtual machine ID number (e.g., 166, 100) - NOT the VM name!
+            - snapname (string): Snapshot name (e.g., "snapshot1", "before-update", "快照")
+            - confirm (boolean): Must be true to execute
+
+            OPTIONAL PARAMETERS:
+            - description (string): Description text (default: "")
+            - vmstate (boolean): Include RAM state (default: false)
+
+            CORRECT EXAMPLE:
+            {
+              "node": "host-110",
+              "vmid": 166,
+              "snapname": "snapshot1",
+              "confirm": true
+            }
+
+            WRONG - DO NOT USE:
+            {"vm": "mon5", "snapshot_name": "snapshot1"}  ❌ Wrong parameter names!
+
+            Step-by-step for VM named "mon5":
+            Step 1: list_vms(filter_name="mon5") → returns node="host-110", vmid=166
+            Step 2: vm_snapshot(node="host-110", vmid=166, snapname="snapshot1", confirm=true)""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -920,9 +1235,9 @@ async def handle_list_tools() -> List[Tool]:
                     "snapname": {"type": "string", "description": "Snapshot name (must be unique)"},
                     "description": {"type": "string", "description": "Snapshot description", "default": ""},
                     "vmstate": {"type": "boolean", "description": "Include VM memory state in snapshot", "default": False},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
+                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute"}
                 },
-                "required": ["node", "vmid", "snapname"],
+                "required": ["node", "vmid", "snapname", "confirm"],
                 "additionalProperties": False
             }
         ),
@@ -1002,7 +1317,22 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="ct_backup",
-            description="Create backup of LXC container (requires confirmation)",
+            description="""Create backup of an LXC container to specified storage.
+
+            Use this tool to create a full backup of a container with specified compression and backup mode.
+
+            Required parameters:
+            - node: Node name where the container is located (e.g., "pve-node1", "host-109")
+            - vmid: Container ID (e.g., 100, 200)
+            - storage: Backup storage name where backup will be saved
+
+            Optional parameters:
+            - mode: Backup mode - "snapshot" (default, container keeps running), "suspend" (paused), or "stop" (stopped)
+            - compress: Compression - "zstd" (default, best), "gzip", "lzo", "1" (on), or "0" (off)
+            - confirm: Must be true to execute (safety feature)
+
+            Example: To backup container 200 on node host-109 to backup-storage:
+            ct_backup(node="host-109", vmid=200, storage="backup-storage", confirm=true)""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1019,7 +1349,25 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="ct_snapshot",
-            description="Create snapshot of LXC container (requires confirmation)",
+            description="""Create snapshot of an LXC container for point-in-time recovery.
+
+            ⚠️ CRITICAL: Parameter names are EXACT - do NOT use variations!
+            ✅ CORRECT: snapname
+            ❌ WRONG: snapshot_name, snapshotname, snap_name
+
+            REQUIRED PARAMETERS (exact names):
+            - node (string): Node name (e.g., "host-110")
+            - vmid (integer): Container ID number (e.g., 200) - NOT the container name!
+            - snapname (string): Snapshot name (e.g., "snapshot1", "before-update")
+            - confirm (boolean): Must be true to execute
+
+            OPTIONAL PARAMETERS:
+            - description (string): Description text (default: "")
+
+            CORRECT EXAMPLE:
+            {"node": "host-109", "vmid": 200, "snapname": "before-update", "confirm": true}
+
+            If you only know container name: First call list_containers(filter_name="name") to get node and vmid.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1027,21 +1375,46 @@ async def handle_list_tools() -> List[Tool]:
                     "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
                     "snapname": {"type": "string", "description": "Snapshot name (must be unique)"},
                     "description": {"type": "string", "description": "Snapshot description", "default": ""},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
+                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute"}
                 },
-                "required": ["node", "vmid", "snapname"],
+                "required": ["node", "vmid", "snapname", "confirm"],
                 "additionalProperties": False
             }
         ),
-        
+
         # Container Management
         Tool(
             name="list_containers",
-            description="List all LXC containers across all nodes or on a specific node",
+            description="""List LXC containers with pagination, filtering, and summary options to prevent context overflow.
+
+            Returns list of containers from one node or all nodes with configurable detail level.
+
+            Parameters:
+            - node: Specific node name (optional - if not provided, lists from all nodes)
+            - summary_only: Return only essential info (ID, name, status) to prevent overflow (default: True)
+            - limit: Maximum number of containers to return (default: 100, max: 500)
+            - offset: Number of containers to skip for pagination (default: 0)
+            - filter_id: Filter by container ID (supports single ID or comma-separated list, e.g., "100" or "100,101,102")
+            - filter_name: Filter by container name (case-insensitive partial match, e.g., "web" matches "web-server")
+            - filter_status: Filter by status (running, stopped, paused)
+
+            Filters are applied before pagination (limit/offset).
+            Multiple filters can be combined (AND logic).
+
+            When summary_only=True (default), returns only: vmid, name, status, node
+            When summary_only=False, returns full container details (may cause overflow with many containers)
+
+            Response includes pagination info in display_message.""",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name (optional - if not provided, lists containers from all nodes)"}
+                    "node": {"type": "string", "description": "Node name (optional - lists from all nodes if not provided)"},
+                    "summary_only": {"type": "boolean", "description": "Return only essential info to prevent overflow", "default": True},
+                    "limit": {"type": "integer", "description": "Maximum number of containers to return", "default": 100, "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "description": "Number of containers to skip for pagination", "default": 0, "minimum": 0},
+                    "filter_id": {"type": "string", "description": "Filter by container ID (single or comma-separated, e.g., '100,101,102')"},
+                    "filter_name": {"type": "string", "description": "Filter by container name (case-insensitive partial match)"},
+                    "filter_status": {"type": "string", "description": "Filter by status (running, stopped, paused)"}
                 },
                 "additionalProperties": False
             }
@@ -1087,12 +1460,28 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_storage_content",
-            description="Get storage content list including VMs, templates, and ISOs",
+            description="""Get storage content list including VMs, templates, ISOs, and backups.
+
+            Parameters:
+            - node: Node name
+            - storage: Storage name
+            - content: Content type filter (optional, e.g., 'images', 'iso', 'vztmpl', 'backup', 'rootdir')
+
+            Common content types:
+            - images: VM disk images
+            - iso: ISO images
+            - vztmpl: Container templates
+            - backup: Backup files
+            - rootdir: Container volumes
+            - snippets: Snippets
+
+            If content is not specified, returns all content types (may fail on some storage types).""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "node": {"type": "string", "description": "Node name"},
-                    "storage": {"type": "string", "description": "Storage name"}
+                    "storage": {"type": "string", "description": "Storage name"},
+                    "content": {"type": "string", "description": "Content type (images, iso, vztmpl, backup, rootdir, snippets)"}
                 },
                 "required": ["node", "storage"],
                 "additionalProperties": False
@@ -1112,10 +1501,46 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_ceph_status",
-            description="Get Ceph cluster status and health information",
+            description="""Get Ceph cluster status and health information with optional detail control.
+
+            By default, returns only essential health summary to prevent context overflow.
+            Use include_details parameter to get comprehensive information when needed.
+
+            Parameters:
+            - summary_only: Return only critical health information (default: True)
+                           When True: Returns health status, mon status, basic OSD/PG counts
+                           When False: Returns full Ceph status with detailed breakdown
+            - include_details: Include complete raw Ceph status output (default: False)
+                              Warning: May cause context overflow in large clusters!
+
+            Returns:
+            - health_status: Overall health (HEALTH_OK, HEALTH_WARN, HEALTH_ERR)
+            - summary: Brief status information
+            - monitors/osds/placement_groups/storage: Key metrics (if not summary_only)
+            - full_details: Complete Ceph status (only if include_details=True)
+            - display_message: Human-readable status summary
+
+            Example:
+            - Quick health check: summary_only=True (default, safest)
+            - Standard status: summary_only=False (recommended)
+            - Full details: include_details=True (use with caution!)
+
+            Safety: Default parameters prevent context overflow
+            """,
             inputSchema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "summary_only": {
+                        "type": "boolean",
+                        "description": "Return only essential health summary (default: True, safest)",
+                        "default": True
+                    },
+                    "include_details": {
+                        "type": "boolean",
+                        "description": "Include full raw Ceph status (may overflow context)",
+                        "default": False
+                    }
+                },
                 "additionalProperties": False
             }
         ),
@@ -1125,6 +1550,35 @@ async def handle_list_tools() -> List[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {},
+                "additionalProperties": False
+            }
+        ),
+        Tool(
+            name="get_ceph_osd_details",
+            description="""Get detailed information for specific Ceph OSD(s).
+
+            Returns detailed status, performance, and metadata for one or more OSDs.
+
+            Parameters:
+            - osd_id: Specific OSD ID (e.g., 0, 1, 2) to get details for
+            - node: Node name (optional - if provided, only checks OSDs on this node)
+            - include_metadata: Include device and filesystem metadata (default: True)
+
+            Returns for each OSD:
+            - Status: up/down, in/out
+            - Performance: operations/sec, read/write bytes
+            - Utilization: used space, total space, percentage
+            - Device info: device path, type (SSD/HDD)
+            - Host/location information
+
+            If osd_id not specified, returns details for all OSDs (may be large).""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "osd_id": {"type": "integer", "description": "Specific OSD ID to query (optional - if not provided, shows all OSDs)", "minimum": 0},
+                    "node": {"type": "string", "description": "Filter by node name (optional)"},
+                    "include_metadata": {"type": "boolean", "description": "Include device metadata", "default": True}
+                },
                 "additionalProperties": False
             }
         ),
@@ -1179,7 +1633,12 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_cpu_info",
-            description="Get detailed CPU information and capabilities",
+            description="""Get CPU information and capabilities. Automatically tries multiple endpoints for compatibility.
+
+            Returns CPU model, count, sockets, and usage information.
+            Tries multiple API endpoints to ensure compatibility across Proxmox VE versions.
+
+            Response includes '_source' field indicating which endpoint provided the data.""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1191,7 +1650,12 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_disk_info",
-            description="Get disk information including SMART data",
+            description="""Get disk information including SMART health and wearout data.
+
+            Returns detailed disk information with corrected wearout percentage display.
+
+            Note: Wearout shows disk wear level (0% = new, 100% = worn out).
+            Health status shows SMART health (PASSED, FAILED, UNKNOWN).""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1234,14 +1698,24 @@ async def handle_list_tools() -> List[Tool]:
         # Log Monitoring
         Tool(
             name="get_system_logs",
-            description="Get system logs from journal or syslog",
+            description="""Get system logs from node journal or syslog. Automatically tries multiple parameter formats and fallback endpoints.
+
+            Retrieves systemd journal logs or syslog entries from a specific node.
+            The response includes '_params_used' or '_endpoint_used' to indicate which method succeeded.
+
+            Parameters:
+            - node: Node name (required)
+            - limit: Maximum number of log entries to return
+            - service: Filter by systemd service name (e.g., 'pveproxy', 'pvedaemon')
+
+            Note: Automatically tries different API parameter formats and falls back to syslog if journal unavailable.""",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "node": {"type": "string", "description": "Node name"},
-                    "limit": {"type": "integer", "description": "Limit number of log entries", "default": 100, "minimum": 1, "maximum": 1000},
-                    "start": {"type": "integer", "description": "Start offset for log entries", "default": 0},
-                    "service": {"type": "string", "description": "Filter by systemd service name (optional)"}
+                    "limit": {"type": "integer", "description": "Maximum number of log entries to return", "default": 100, "minimum": 1, "maximum": 1000},
+                    "start": {"type": "integer", "description": "Start offset (for future use)", "default": 0, "minimum": 0},
+                    "service": {"type": "string", "description": "Filter by systemd service name (e.g., 'pveproxy', 'pvedaemon')"}
                 },
                 "required": ["node"],
                 "additionalProperties": False
@@ -1249,11 +1723,25 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_cluster_logs",
-            description="Get cluster-wide task and event logs",
+            description="""Get cluster-wide logs and task history. Automatically tries multiple endpoints to find available cluster logs.
+
+            Returns cluster event logs or task history depending on Proxmox VE version.
+            The response includes '_endpoint_used' to indicate which API endpoint was successful.
+
+            Parameters:
+            - limit: Maximum number of log entries/tasks to return
+            - start: Offset for pagination (tasks only)
+            - errors: Filter to show only failed tasks (tasks only)
+            - vmid: Filter by specific VM ID (tasks only)
+
+            Note: Some filters only work with certain endpoints. The tool will try the best available endpoint.""",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "Limit number of log entries", "default": 100, "minimum": 1, "maximum": 1000}
+                    "limit": {"type": "integer", "description": "Maximum number of entries to return", "default": 100, "minimum": 1, "maximum": 1000},
+                    "start": {"type": "integer", "description": "Offset for pagination", "default": 0, "minimum": 0},
+                    "errors": {"type": "boolean", "description": "Only show tasks with errors", "default": False},
+                    "vmid": {"type": "integer", "description": "Only show tasks for this VM ID", "minimum": 100}
                 },
                 "additionalProperties": False
             }
@@ -1321,6 +1809,22 @@ async def handle_list_tools() -> List[Tool]:
         )
     ]
 
+    # Filter tools based on feature toggles
+    # Added in v1.3.2 (2025-11-29): Enforce feature toggles for dangerous operations
+    enabled_tools = []
+    for tool in all_tools:
+        tool_name = tool.name
+        # Check if this tool requires permission
+        if tool_name in tool_permissions:
+            # Only include if permission is enabled
+            if tool_permissions[tool_name]:
+                enabled_tools.append(tool)
+        else:
+            # Always include tools not in permission map (read-only operations)
+            enabled_tools.append(tool)
+
+    return enabled_tools
+
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextContent, types.ImageContent]]:
     """Handle tool calls with comprehensive error handling"""
@@ -1346,7 +1850,55 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
 
 async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
     """Execute specific tool operations with enhanced validation and error handling"""
-    
+
+    # Check feature toggles - Added in v1.3.2 (2025-11-29)
+    # Map operations to their feature toggle flags
+    operation_permissions = {
+        # VM Creation/Modification
+        "create_vm": ("ENABLE_VM_CREATE", ENABLE_VM_CREATE),
+        "clone_vm": ("ENABLE_VM_CLONE", ENABLE_VM_CLONE),
+        "update_vm_config": ("ENABLE_VM_UPDATE", ENABLE_VM_UPDATE),
+        "delete_vm": ("ENABLE_VM_DELETE", ENABLE_VM_DELETE),
+
+        # Container Creation/Modification
+        "create_container": ("ENABLE_CT_CREATE", ENABLE_CT_CREATE),
+        "clone_container": ("ENABLE_CT_CLONE", ENABLE_CT_CLONE),
+        "update_container_config": ("ENABLE_CT_UPDATE", ENABLE_CT_UPDATE),
+        "delete_container": ("ENABLE_CT_DELETE", ENABLE_CT_DELETE),
+
+        # VM Control
+        "vm_start": ("ENABLE_VM_START", ENABLE_VM_START),
+        "vm_stop": ("ENABLE_VM_STOP", ENABLE_VM_STOP),
+        "vm_shutdown": ("ENABLE_VM_SHUTDOWN", ENABLE_VM_SHUTDOWN),
+        "vm_reboot": ("ENABLE_VM_REBOOT", ENABLE_VM_REBOOT),
+        "vm_reset": ("ENABLE_VM_RESET", ENABLE_VM_RESET),
+
+        # Container Control
+        "ct_start": ("ENABLE_CT_START", ENABLE_CT_START),
+        "ct_stop": ("ENABLE_CT_STOP", ENABLE_CT_STOP),
+        "ct_shutdown": ("ENABLE_CT_SHUTDOWN", ENABLE_CT_SHUTDOWN),
+        "ct_reboot": ("ENABLE_CT_REBOOT", ENABLE_CT_REBOOT),
+
+        # Advanced Operations
+        "vm_migrate": ("ENABLE_VM_MIGRATE", ENABLE_VM_MIGRATE),
+        "ct_migrate": ("ENABLE_CT_MIGRATE", ENABLE_CT_MIGRATE),
+        "vm_backup": ("ENABLE_VM_BACKUP", ENABLE_VM_BACKUP),
+        "ct_backup": ("ENABLE_CT_BACKUP", ENABLE_CT_BACKUP),
+        "vm_snapshot": ("ENABLE_VM_SNAPSHOT", ENABLE_VM_SNAPSHOT),
+        "ct_snapshot": ("ENABLE_CT_SNAPSHOT", ENABLE_CT_SNAPSHOT),
+        "create_backup_job": ("ENABLE_BACKUP_JOB", ENABLE_BACKUP_JOB)
+    }
+
+    # Check if operation requires permission
+    if name in operation_permissions:
+        flag_name, flag_value = operation_permissions[name]
+        if not flag_value:
+            raise ProxmoxVEError(
+                f"Operation '{name}' is disabled. "
+                f"To enable this operation, set {flag_name} = True in the configuration. "
+                f"This is a safety feature to prevent accidental modifications."
+            )
+
     # Validate VM/Container IDs
     if 'vmid' in arguments:
         vmid = arguments['vmid']
@@ -2381,23 +2933,122 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         # Virtual Machine Management
         elif name == "list_vms":
-            if "node" in arguments:
-                node = arguments["node"]
-                return await client.get(f"/nodes/{node}/qemu")
+            # Enhanced in v1.3.1 (2025-11-29):
+            # - Added filter_id: filter by VM ID (single or comma-separated)
+            # - Added filter_name: filter by name (case-insensitive partial match)
+            # - Added filter_status: filter by status (running, stopped, paused)
+            # - Filters applied before pagination with AND logic
+            node = arguments.get("node")
+            summary_only = arguments.get("summary_only", True)
+            limit = arguments.get("limit", 100)
+            offset = arguments.get("offset", 0)
+            filter_id = arguments.get("filter_id")
+            filter_name = arguments.get("filter_name")
+            filter_status = arguments.get("filter_status")
+
+            # Validate pagination parameters
+            limit, offset = validate_pagination_params(limit, offset, DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT)
+
+            # Collect all VMs
+            all_vms = []
+
+            if node:
+                # Get VMs from specific node
+                try:
+                    vms_result = await client.get(f"/nodes/{node}/qemu")
+                    if vms_result.get("data"):
+                        for vm in vms_result["data"]:
+                            vm["node"] = node
+                        all_vms = vms_result["data"]
+                except Exception as e:
+                    logger.error(f"Cannot get VMs from node {node}: {e}")
+                    raise ProxmoxVEError(f"Failed to get VMs from node {node}: {e}")
             else:
+                # Get VMs from all nodes
                 nodes_result = await client.get("/nodes")
-                all_vms = []
                 for node_info in nodes_result.get("data", []):
-                    node = node_info["node"]
+                    node_name = node_info["node"]
                     try:
-                        vms_result = await client.get(f"/nodes/{node}/qemu")
+                        vms_result = await client.get(f"/nodes/{node_name}/qemu")
                         if vms_result.get("data"):
                             for vm in vms_result["data"]:
-                                vm["node"] = node
+                                vm["node"] = node_name
                             all_vms.extend(vms_result["data"])
                     except Exception as e:
-                        logger.warning(f"Cannot get VMs from node {node}: {e}")
-                return {"data": all_vms}
+                        logger.warning(f"Cannot get VMs from node {node_name}: {e}")
+
+            # Apply filters before pagination
+            filtered_vms = all_vms
+            filter_info = {}
+
+            # Filter by ID
+            if filter_id:
+                # Support comma-separated IDs
+                id_list = [int(x.strip()) for x in filter_id.split(",") if x.strip().isdigit()]
+                if id_list:
+                    filtered_vms = [vm for vm in filtered_vms if vm.get("vmid") in id_list]
+                    filter_info["filter_id"] = filter_id
+
+            # Filter by name (case-insensitive partial match)
+            if filter_name:
+                filter_name_lower = filter_name.lower()
+                filtered_vms = [vm for vm in filtered_vms if filter_name_lower in vm.get("name", "").lower()]
+                filter_info["filter_name"] = filter_name
+
+            # Filter by status
+            if filter_status:
+                filter_status_lower = filter_status.lower()
+                filtered_vms = [vm for vm in filtered_vms if vm.get("status", "").lower() == filter_status_lower]
+                filter_info["filter_status"] = filter_status
+
+            # Total count after filtering but before pagination
+            total_count = len(filtered_vms)
+
+            # Apply pagination
+            paginated_vms = filtered_vms[offset:offset + limit]
+            returned_count = len(paginated_vms)
+            has_more = (offset + returned_count) < total_count
+
+            # Apply summary filter if requested
+            if summary_only:
+                summary_vms = []
+                for vm in paginated_vms:
+                    summary_vms.append({
+                        "vmid": vm.get("vmid"),
+                        "name": vm.get("name"),
+                        "status": vm.get("status"),
+                        "node": vm.get("node")
+                    })
+                paginated_vms = summary_vms
+
+            # Create pagination message
+            display_msg = create_pagination_message(
+                returned_count=returned_count,
+                total_count=total_count,
+                has_more=has_more,
+                item_type="VMs",
+                limit=limit,
+                offset=offset
+            )
+
+            # Add filter info to summary if filters were applied
+            summary_dict = {
+                "total_count": total_count,
+                "returned_count": returned_count,
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "next_offset": offset + returned_count if has_more else None,
+                "summary_only": summary_only
+            }
+            if filter_info:
+                summary_dict["filters_applied"] = filter_info
+
+            return {
+                "data": paginated_vms,
+                "summary": summary_dict,
+                "display_message": display_msg
+            }
         
         elif name == "get_vm_status":
             node = arguments["node"]
@@ -2439,8 +3090,8 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             node = arguments["node"]
             vmid = arguments["vmid"]
             return await client.post(f"/nodes/{node}/qemu/{vmid}/status/reset")
-        
-        # **修正：添加 vm_migrate 的實作**
+
+        # VM migrate implementation
         elif name == "vm_migrate":
             node = arguments["node"]
             vmid = arguments["vmid"]
@@ -2486,23 +3137,122 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         # Container Management
         elif name == "list_containers":
-            if "node" in arguments:
-                node = arguments["node"]
-                return await client.get(f"/nodes/{node}/lxc")
+            # Enhanced in v1.3.1 (2025-11-29):
+            # - Added filter_id: filter by container ID (single or comma-separated)
+            # - Added filter_name: filter by name (case-insensitive partial match)
+            # - Added filter_status: filter by status (running, stopped, paused)
+            # - Filters applied before pagination with AND logic
+            node = arguments.get("node")
+            summary_only = arguments.get("summary_only", True)
+            limit = arguments.get("limit", 100)
+            offset = arguments.get("offset", 0)
+            filter_id = arguments.get("filter_id")
+            filter_name = arguments.get("filter_name")
+            filter_status = arguments.get("filter_status")
+
+            # Validate pagination parameters
+            limit, offset = validate_pagination_params(limit, offset, DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT)
+
+            # Collect all containers
+            all_containers = []
+
+            if node:
+                # Get containers from specific node
+                try:
+                    containers_result = await client.get(f"/nodes/{node}/lxc")
+                    if containers_result.get("data"):
+                        for container in containers_result["data"]:
+                            container["node"] = node
+                        all_containers = containers_result["data"]
+                except Exception as e:
+                    logger.error(f"Cannot get containers from node {node}: {e}")
+                    raise ProxmoxVEError(f"Failed to get containers from node {node}: {e}")
             else:
+                # Get containers from all nodes
                 nodes_result = await client.get("/nodes")
-                all_containers = []
                 for node_info in nodes_result.get("data", []):
-                    node = node_info["node"]
+                    node_name = node_info["node"]
                     try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
+                        containers_result = await client.get(f"/nodes/{node_name}/lxc")
                         if containers_result.get("data"):
                             for container in containers_result["data"]:
-                                container["node"] = node
+                                container["node"] = node_name
                             all_containers.extend(containers_result["data"])
                     except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-                return {"data": all_containers}
+                        logger.warning(f"Cannot get containers from node {node_name}: {e}")
+
+            # Apply filters before pagination
+            filtered_containers = all_containers
+            filter_info = {}
+
+            # Filter by ID
+            if filter_id:
+                # Support comma-separated IDs
+                id_list = [int(x.strip()) for x in filter_id.split(",") if x.strip().isdigit()]
+                if id_list:
+                    filtered_containers = [ct for ct in filtered_containers if ct.get("vmid") in id_list]
+                    filter_info["filter_id"] = filter_id
+
+            # Filter by name (case-insensitive partial match)
+            if filter_name:
+                filter_name_lower = filter_name.lower()
+                filtered_containers = [ct for ct in filtered_containers if filter_name_lower in ct.get("name", "").lower()]
+                filter_info["filter_name"] = filter_name
+
+            # Filter by status
+            if filter_status:
+                filter_status_lower = filter_status.lower()
+                filtered_containers = [ct for ct in filtered_containers if ct.get("status", "").lower() == filter_status_lower]
+                filter_info["filter_status"] = filter_status
+
+            # Total count after filtering but before pagination
+            total_count = len(filtered_containers)
+
+            # Apply pagination
+            paginated_containers = filtered_containers[offset:offset + limit]
+            returned_count = len(paginated_containers)
+            has_more = (offset + returned_count) < total_count
+
+            # Apply summary filter if requested
+            if summary_only:
+                summary_containers = []
+                for container in paginated_containers:
+                    summary_containers.append({
+                        "vmid": container.get("vmid"),
+                        "name": container.get("name"),
+                        "status": container.get("status"),
+                        "node": container.get("node")
+                    })
+                paginated_containers = summary_containers
+
+            # Create pagination message
+            display_msg = create_pagination_message(
+                returned_count=returned_count,
+                total_count=total_count,
+                has_more=has_more,
+                item_type="containers",
+                limit=limit,
+                offset=offset
+            )
+
+            # Add filter info to summary if filters were applied
+            summary_dict = {
+                "total_count": total_count,
+                "returned_count": returned_count,
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
+                "next_offset": offset + returned_count if has_more else None,
+                "summary_only": summary_only
+            }
+            if filter_info:
+                summary_dict["filters_applied"] = filter_info
+
+            return {
+                "data": paginated_containers,
+                "summary": summary_dict,
+                "display_message": display_msg
+            }
         
         elif name == "get_container_status":
             node = arguments["node"]
@@ -2597,16 +3347,182 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 return {"data": all_storage}
         
         elif name == "get_storage_content":
+            # Fixed in v1.3.1 (2025-11-29):
+            # - Added content parameter to fix HTTP 500 errors
+            # - Enhanced error messages with helpful suggestions
+            # - Added _content_type field to response
             node = arguments["node"]
             storage = arguments["storage"]
-            return await client.get(f"/nodes/{node}/storage/{storage}/content")
+            content = arguments.get("content")
+
+            # Build parameters
+            params = {}
+            if content:
+                params["content"] = content
+
+            # Try to get storage content
+            try:
+                result = await client.get(f"/nodes/{node}/storage/{storage}/content", params if params else None)
+
+                # Add information about what was queried
+                if isinstance(result, dict):
+                    if "data" not in result:
+                        result = {"data": result}
+                    if content:
+                        result["_content_type"] = content
+                    else:
+                        result["_content_type"] = "all"
+
+                return result
+
+            except ProxmoxVEError as e:
+                # If query failed and no content type was specified, provide helpful error
+                if not content and "500" in str(e):
+                    raise ProxmoxVEError(
+                        f"Failed to get storage content: {e}. "
+                        f"This storage may require a 'content' parameter. "
+                        f"Try specifying content type: images, iso, vztmpl, backup, rootdir, or snippets"
+                    )
+                else:
+                    raise
         
         elif name == "get_zfs_pools":
             node = arguments["node"]
             return await client.get(f"/nodes/{node}/disks/zfs")
         
         elif name == "get_ceph_status":
-            return await client.get("/cluster/ceph/status")
+            summary_only = arguments.get("summary_only", True)
+            include_details = arguments.get("include_details", False)
+
+            # Get full Ceph status
+            full_status = await client.get("/cluster/ceph/status")
+            ceph_data = full_status.get("data", {})
+
+            # If full details requested, return raw data (may overflow context)
+            if include_details:
+                logger.warning("Returning full Ceph details - may cause context overflow!")
+                return {
+                    "full_details": ceph_data,
+                    "display_message": "Returning full Ceph details (may cause context overflow)",
+                    "warning": "Full details included - may cause context overflow in large clusters"
+                }
+
+            # Extract core health information
+            health = ceph_data.get("health", {})
+            health_status = health.get("status", "UNKNOWN")
+
+            # Extract health check summary (key information only)
+            health_checks = health.get("checks", {})
+            health_summary = []
+            for check_name, check_data in health_checks.items():
+                check_info = {
+                    "check": check_name,
+                    "severity": check_data.get("severity", "INFO"),
+                    "summary": check_data.get("summary", {}).get("message", "")
+                }
+
+                # Extract detailed information (especially for MON_DOWN, OSD_DOWN, etc.)
+                detail_list = check_data.get("detail", [])
+                if detail_list:
+                    check_info["details"] = detail_list
+
+                health_summary.append(check_info)
+
+            # If summary-only mode, return health status only
+            if summary_only:
+                display_msg = f"Ceph cluster health: {health_status}"
+                if health_summary:
+                    display_msg += f" ({len(health_summary)} checks)"
+
+                return {
+                    "health_status": health_status,
+                    "health_checks_count": len(health_summary),
+                    "health_issues": health_summary if health_status != "HEALTH_OK" else [],
+                    "display_message": display_msg,
+                    "recommendation": "Use summary_only=false for more details, include_details=true for full output"
+                }
+
+            # Standard mode: return key metrics without detailed data
+            mon_status = ceph_data.get("monmap", {})
+            osd_status = ceph_data.get("osdmap", {}).get("osdmap", {})
+            pg_status = ceph_data.get("pgmap", {})
+
+            # Extract OSD key information
+            osd_summary = {
+                "total": osd_status.get("num_osds", 0),
+                "up": osd_status.get("num_up_osds", 0),
+                "in": osd_status.get("num_in_osds", 0),
+                "full": osd_status.get("full", False),
+                "nearfull": osd_status.get("nearfull", False)
+            }
+
+            # Extract Monitor key information
+            all_mons = mon_status.get("mons", [])
+            quorum_ranks = mon_status.get("quorum", [])
+
+            mon_summary = {
+                "total": len(all_mons),
+                "quorum": quorum_ranks,
+                "quorum_count": len(quorum_ranks),
+                "monitors_up": [m.get("name") for m in all_mons if m.get("rank") in quorum_ranks],
+                "monitors_down": [m.get("name") for m in all_mons if m.get("rank") not in quorum_ranks]
+            }
+
+            # Extract PG key information
+            pg_summary = {
+                "total": pg_status.get("num_pgs", 0),
+                "active_clean": 0,
+                "degraded": 0,
+                "states": {}
+            }
+
+            # Simplify PG states (counts only, no detailed lists)
+            pgs_by_state = pg_status.get("pgs_by_state", [])
+            for pg_state in pgs_by_state:
+                state_name = pg_state.get("state_name", "unknown")
+                count = pg_state.get("count", 0)
+                pg_summary["states"][state_name] = count
+                if "active+clean" in state_name:
+                    pg_summary["active_clean"] += count
+                if "degraded" in state_name:
+                    pg_summary["degraded"] += count
+
+            # Extract storage usage information
+            storage_summary = {
+                "total_bytes": pg_status.get("bytes_total", 0),
+                "used_bytes": pg_status.get("bytes_used", 0),
+                "available_bytes": pg_status.get("bytes_avail", 0),
+                "percent_used": round(pg_status.get("bytes_used", 0) / max(pg_status.get("bytes_total", 1), 1) * 100, 2)
+            }
+
+            # Create status message
+            display_msg = f"Ceph cluster status: {health_status} | "
+
+            # If monitors are down, show them first
+            if mon_summary["monitors_down"]:
+                display_msg += f"Monitor DOWN: {', '.join(mon_summary['monitors_down'])} | "
+                display_msg += f"Monitor: {mon_summary['quorum_count']}/{mon_summary['total']} up | "
+            else:
+                display_msg += f"Monitor: {mon_summary['quorum_count']}/{mon_summary['total']} up | "
+
+            display_msg += f"OSD: {osd_summary['up']}/{osd_summary['total']} up | "
+            display_msg += f"PG: {pg_summary['active_clean']}/{pg_summary['total']} active+clean | "
+            display_msg += f"Storage used: {storage_summary['percent_used']}%"
+
+            if health_summary:
+                display_msg += f" | {len(health_summary)} health checks"
+
+            return {
+                "health_status": health_status,
+                "health_checks": health_summary,
+                "monitors": mon_summary,
+                "osds": osd_summary,
+                "placement_groups": pg_summary,
+                "storage": storage_summary,
+                "display_message": display_msg,
+                "summary_mode": "standard",
+                "recommendation": "Use include_details=true for full Ceph status output (may cause context overflow)"
+            }
         
         elif name == "get_ceph_osds":
             # First, try the cluster-wide endpoint
@@ -2732,6 +3648,531 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 "summary": summary
             }
         
+        elif name == "get_ceph_osd_details":
+            # Enhanced in v1.3.1 (2025-11-29):
+            # - Improved error handling: fallback on any error, not just 501/404
+            # - Added detailed diagnostics: tracks all failed methods with specific errors
+            # - Better error messages: includes possible causes and diagnostic steps
+            osd_id = arguments.get("osd_id")
+            node = arguments.get("node")
+            include_metadata = arguments.get("include_metadata", True)
+
+            osd_details = []
+
+            # If specific OSD ID provided, get details for that OSD only
+            if osd_id is not None:
+                try:
+                    # Try to get detailed OSD information
+                    osd_info = await client.get(f"/cluster/ceph/osd/{osd_id}")
+
+                    if osd_info.get("data"):
+                        osd_data = osd_info["data"]
+                        osd_data["osd_id"] = osd_id
+
+                        # Try to get additional metadata if requested
+                        if include_metadata:
+                            try:
+                                metadata = await client.get(f"/cluster/ceph/osd/{osd_id}/metadata")
+                                if metadata.get("data"):
+                                    osd_data["metadata"] = metadata["data"]
+                            except ProxmoxVEError:
+                                logger.debug(f"Metadata not available for OSD {osd_id}")
+
+                        osd_details.append(osd_data)
+
+                except ProxmoxVEError as e:
+                    raise ProxmoxVEError(f"Failed to get details for OSD {osd_id}: {e}")
+
+            else:
+                # Get details for all OSDs
+                # Try multiple methods to get OSD list
+                # v1.3.3 enhancement: Added node-specific endpoint as primary method when node is specified
+                osd_list = []
+                use_tree = False
+                failed_methods = []  # Track which methods failed and why
+
+                # Method 1: Try node-specific endpoint to get full tree
+                # Added in v1.3.3: Use /nodes/{node}/ceph/osd endpoint
+                # Note: This endpoint returns a tree structure with ALL OSDs from ALL nodes
+                # We can use any node to get the tree, then filter by target node if specified
+
+                # Try to get a node name (use specified node, or get first available node)
+                query_node = node
+                if not query_node:
+                    # Get first available node to query the tree
+                    try:
+                        nodes_result = await client.get("/nodes")
+                        nodes_data = nodes_result.get("data", [])
+                        if nodes_data and len(nodes_data) > 0:
+                            query_node = nodes_data[0].get("node")
+                            logger.info(f"No node specified, using '{query_node}' to get full OSD tree")
+                    except Exception as e:
+                        logger.warning(f"Could not get nodes list: {e}")
+
+                if query_node:
+                    try:
+                        logger.info(f"Trying node-specific OSD endpoint using node '{query_node}'")
+                        node_osd_result = await client.get(f"/nodes/{query_node}/ceph/osd")
+
+                        # Helper function to recursively find OSDs for a specific host in tree structure
+                        def find_host_osds(tree_node, target_host):
+                            """Recursively search tree for OSDs belonging to target_host"""
+                            osds = []
+
+                            if not isinstance(tree_node, dict):
+                                return osds
+
+                            node_type = tree_node.get("type")
+                            node_name = tree_node.get("name")
+
+                            # Check if this node is a host node matching our target
+                            if node_type == "host" and node_name == target_host:
+                                # This is our target host, extract its OSD children
+                                children = tree_node.get("children", [])
+                                for child in children:
+                                    if isinstance(child, dict) and child.get("type") == "osd":
+                                        osds.append(child)
+                                return osds
+
+                            # Otherwise, recursively search children
+                            children = tree_node.get("children", [])
+                            for child in children:
+                                osds.extend(find_host_osds(child, target_host))
+
+                            return osds
+
+                        # Helper function to extract all OSDs from tree (no host filtering)
+                        def find_all_osds(tree_node):
+                            """Recursively extract all OSDs from entire tree"""
+                            osds = []
+
+                            if not isinstance(tree_node, dict):
+                                return osds
+
+                            # If this is an OSD node, add it
+                            if tree_node.get("type") == "osd":
+                                osds.append(tree_node)
+
+                            # Recursively search children
+                            children = tree_node.get("children", [])
+                            for child in children:
+                                osds.extend(find_all_osds(child))
+
+                            return osds
+
+                        # Parse the tree structure
+                        # Format: {"flags": "...", "root": {"children": [...]}}
+                        osd_list = []
+
+                        if isinstance(node_osd_result, dict):
+                            # Check if response has "data" key first (most common)
+                            if "data" in node_osd_result:
+                                data = node_osd_result["data"]
+
+                                # Check if data is a list of key-value pairs
+                                if isinstance(data, list) and len(data) > 0:
+                                    # Format: {"data": [{"key": "flags", "value": "..."}, {"key": "root", "value": {...}}]}
+                                    root_item = None
+                                    for item in data:
+                                        if isinstance(item, dict) and item.get("key") == "root":
+                                            root_item = item.get("value")
+                                            break
+
+                                    if root_item:
+                                        # Found root in key-value pairs
+                                        # Use appropriate function based on whether we're filtering by node
+                                        if node:
+                                            osd_items = find_host_osds(root_item, node)
+                                        else:
+                                            osd_items = find_all_osds(root_item)
+
+                                        # Convert to consistent structure
+                                        for osd in osd_items:
+                                            osd_id = osd.get("id")
+                                            if osd_id is None:
+                                                continue
+
+                                            osd_list.append({
+                                                "id": int(osd_id),
+                                                "name": osd.get("name", f"osd.{osd_id}"),
+                                                "host": osd.get("host", node if node else osd.get("host")),
+                                                "status": osd.get("status"),
+                                                "in": osd.get("in"),
+                                                "crush_weight": osd.get("crush_weight"),
+                                                "reweight": osd.get("reweight"),
+                                                "percent_used": osd.get("percent_used"),
+                                                "pgs": osd.get("pgs")
+                                            })
+                                    else:
+                                        # data is a list but not key-value pairs, might be direct OSD list
+                                        for osd in data:
+                                            if not isinstance(osd, dict):
+                                                continue
+                                            osd_name = osd.get("name", "")
+                                            if not osd_name or not osd_name.startswith("osd."):
+                                                continue
+                                            osd_id = osd_name.replace("osd.", "")
+                                            if osd_id and osd_id.isdigit():
+                                                osd_list.append({
+                                                    "id": int(osd_id),
+                                                    "name": osd_name,
+                                                    "host": node,
+                                                    "status": osd.get("status", osd.get("state"))
+                                                })
+
+                                # Check if data is a dict with "root" key
+                                elif isinstance(data, dict) and "root" in data:
+                                    # Format: {"data": {"flags": "...", "root": {...}}}
+                                    root = data["root"]
+                                    # Use appropriate function based on whether we're filtering by node
+                                    if node:
+                                        osd_items = find_host_osds(root, node)
+                                    else:
+                                        osd_items = find_all_osds(root)
+
+                                    for osd in osd_items:
+                                        osd_id = osd.get("id")
+                                        if osd_id is None:
+                                            continue
+
+                                        osd_list.append({
+                                            "id": int(osd_id),
+                                            "name": osd.get("name", f"osd.{osd_id}"),
+                                            "host": osd.get("host", node if node else osd.get("host")),
+                                            "status": osd.get("status"),
+                                            "in": osd.get("in"),
+                                            "crush_weight": osd.get("crush_weight"),
+                                            "reweight": osd.get("reweight"),
+                                            "percent_used": osd.get("percent_used"),
+                                            "pgs": osd.get("pgs")
+                                        })
+
+                            # Check if response directly has "root" key (no "data" wrapper)
+                            elif "root" in node_osd_result:
+                                root = node_osd_result["root"]
+                                # Use appropriate function based on whether we're filtering by node
+                                if node:
+                                    osd_items = find_host_osds(root, node)
+                                else:
+                                    osd_items = find_all_osds(root)
+
+                                for osd in osd_items:
+                                    osd_id = osd.get("id")
+                                    if osd_id is None:
+                                        continue
+
+                                    osd_list.append({
+                                        "id": int(osd_id),
+                                        "name": osd.get("name", f"osd.{osd_id}"),
+                                        "host": osd.get("host", node if node else osd.get("host")),
+                                        "status": osd.get("status"),
+                                        "in": osd.get("in"),
+                                        "crush_weight": osd.get("crush_weight"),
+                                        "reweight": osd.get("reweight"),
+                                        "percent_used": osd.get("percent_used"),
+                                        "pgs": osd.get("pgs")
+                                    })
+
+                        elif isinstance(node_osd_result, list):
+                            # Direct list format
+                            for osd in node_osd_result:
+                                if not isinstance(osd, dict):
+                                    continue
+                                osd_name = osd.get("name", "")
+                                if not osd_name or not osd_name.startswith("osd."):
+                                    continue
+                                osd_id = osd_name.replace("osd.", "")
+                                if osd_id and osd_id.isdigit():
+                                    osd_list.append({
+                                        "id": int(osd_id),
+                                        "name": osd_name,
+                                        "host": node,
+                                        "status": osd.get("status", osd.get("state"))
+                                    })
+
+                        if osd_list:
+                            use_tree = True  # Mark that we got data from tree
+                            if node:
+                                logger.info(f"Got {len(osd_list)} OSDs for node '{node}' from node-specific endpoint")
+                            else:
+                                logger.info(f"Got {len(osd_list)} OSDs from all nodes using node '{query_node}' endpoint")
+                        else:
+                            # Build detailed diagnostic message
+                            diag = []
+                            if node:
+                                diag.append(f"Method 1 returned 0 OSDs for node '{node}'")
+                            else:
+                                diag.append(f"Method 1 returned 0 OSDs (queried via node '{query_node}')")
+
+                            if isinstance(node_osd_result, dict):
+                                diag.append(f"Response type: dict with keys {list(node_osd_result.keys())}")
+
+                                if "root" in node_osd_result:
+                                    root = node_osd_result["root"]
+                                    diag.append(f"Root type: {type(root)}")
+
+                                    if isinstance(root, dict):
+                                        diag.append(f"Root keys: {list(root.keys())}")
+                                        if "children" in root:
+                                            children = root.get("children", [])
+                                            diag.append(f"Root has {len(children)} children")
+
+                                            # Check what's in the first level
+                                            if children and isinstance(children, list) and len(children) > 0:
+                                                first_child = children[0]
+                                                if isinstance(first_child, dict):
+                                                    diag.append(f"First child type: {first_child.get('type')}, name: {first_child.get('name')}")
+                                                    if "children" in first_child:
+                                                        diag.append(f"First child has {len(first_child.get('children', []))} children")
+
+                                                        # List host names found
+                                                        host_names = []
+                                                        for child in first_child.get("children", []):
+                                                            if isinstance(child, dict) and child.get("type") == "host":
+                                                                host_names.append(child.get("name"))
+                                                        diag.append(f"Hosts found in tree: {host_names}")
+                                                        diag.append(f"Target node: '{node}' (looking for exact match)")
+
+                                elif "data" in node_osd_result:
+                                    diag.append(f"Has 'data' key with {len(node_osd_result['data'])} items")
+                            else:
+                                diag.append(f"Response type: {type(node_osd_result)}")
+
+                            failed_methods.append(f"Method 1 (/nodes/{node}/ceph/osd): " + " | ".join(diag))
+
+                    except ProxmoxVEError as e:
+                        error_msg = str(e)
+                        failed_methods.append(f"Method 1 (/nodes/{node}/ceph/osd): {error_msg}")
+                        logger.info(f"Node-specific OSD endpoint not available ({error_msg}), trying fallback methods")
+                    except Exception as e:
+                        error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
+                        failed_methods.append(f"Method 1 (/nodes/{node}/ceph/osd): {error_msg}")
+                        logger.warning(f"Node-specific OSD endpoint failed unexpectedly: {error_msg}")
+
+                # Method 2: Try to get OSD tree (best for cluster-wide - includes host info)
+                if not osd_list:
+                    try:
+                        logger.info("Trying to get OSD tree")
+                        tree_result = await client.get("/cluster/ceph/osd/tree")
+                        tree_data = tree_result.get("data", {})
+                        tree_nodes = tree_data.get("nodes", [])
+
+                        # Filter to get only OSD nodes
+                        osd_nodes = [n for n in tree_nodes if n.get("type") == "osd"]
+
+                        # Filter by node if specified
+                        if node:
+                            osd_nodes = [n for n in osd_nodes if n.get("host") == node]
+
+                        osd_list = osd_nodes
+                        use_tree = True
+                        logger.info(f"Got {len(osd_list)} OSDs from tree")
+
+                    except ProxmoxVEError as e:
+                        # Try fallback methods for any error (not just 501/404)
+                        error_msg = str(e)
+                        failed_methods.append(f"Method 2 (/cluster/ceph/osd/tree): {error_msg}")
+                        logger.info(f"OSD tree not available ({error_msg}), trying fallback methods")
+
+                # Method 3: If tree failed, try cluster OSD list
+                if not osd_list:
+                    try:
+                        logger.info("Trying cluster OSD list endpoint")
+                        osd_result = await client.get("/cluster/ceph/osd")
+                        osd_data = osd_result.get("data", [])
+
+                        # Convert to node-like structure
+                        osd_list = [{"id": osd.get("name", "").replace("osd.", ""), "name": osd.get("name")}
+                                   for osd in osd_data if osd.get("name", "").startswith("osd.")]
+
+                        logger.info(f"Got {len(osd_list)} OSDs from cluster endpoint")
+
+                        # Node filtering not available without tree
+                        if node:
+                            logger.warning(f"Node filtering requested but OSD tree not available - returning all OSDs")
+
+                    except ProxmoxVEError as e:
+                        error_msg = str(e)
+                        failed_methods.append(f"Method 3 (/cluster/ceph/osd): {error_msg}")
+                        logger.warning(f"Cluster OSD endpoint failed: {error_msg}")
+
+                # Method 4: If still no OSDs, try getting from Ceph status
+                if not osd_list:
+                    try:
+                        logger.info("Trying to extract OSD list from Ceph status")
+                        status_result = await client.get("/cluster/ceph/status")
+                        status_data = status_result.get("data", {})
+                        osdmap = status_data.get("osdmap", {}).get("osdmap", {})
+
+                        num_osds = osdmap.get("num_osds", 0)
+                        if num_osds > 0:
+                            # Generate OSD list based on count
+                            osd_list = [{"id": i, "name": f"osd.{i}"} for i in range(num_osds)]
+                            logger.info(f"Generated list of {len(osd_list)} OSDs from status")
+
+                            if node:
+                                logger.warning(f"Node filtering requested but OSD tree not available - returning all OSDs")
+                        else:
+                            failed_methods.append(f"Method 4 (/cluster/ceph/status): Ceph status shows 0 OSDs")
+
+                    except ProxmoxVEError as e:
+                        error_msg = str(e)
+                        failed_methods.append(f"Method 4 (/cluster/ceph/status): {error_msg}")
+                        logger.warning(f"Could not extract OSD list from status: {error_msg}")
+
+                # If we still don't have OSDs, raise detailed error
+                if not osd_list:
+                    error_details = "\n  ".join(failed_methods) if failed_methods else "All methods failed with unknown errors"
+
+                    # Build helpful diagnostic message
+                    diagnostic_msg = (
+                        f"Unable to retrieve OSD list. Tried {len(failed_methods)} methods:\n  {error_details}\n\n"
+                        f"Possible causes:\n"
+                        f"  - Ceph is not configured on this cluster\n"
+                        f"  - Ceph service is not running\n"
+                        f"  - API permissions issue\n"
+                    )
+
+                    if node:
+                        diagnostic_msg += (
+                            f"  - Node '{node}' has no OSDs\n"
+                            f"  - Node-specific endpoint /nodes/{node}/ceph/osd not available\n\n"
+                            f"To diagnose:\n"
+                            f"  1. Check if Ceph is configured: pveceph status\n"
+                            f"  2. Check Ceph service on node: ssh {node} 'systemctl status ceph.target'\n"
+                            f"  3. Check OSDs on node: ssh {node} 'pveceph osd tree'\n"
+                            f"  4. Try without node filter: get_ceph_osd_details()\n"
+                            f"  5. Verify node name is correct (case-sensitive)"
+                        )
+                    else:
+                        diagnostic_msg += (
+                            f"  - Cluster-wide Ceph endpoints not available\n\n"
+                            f"To diagnose:\n"
+                            f"  1. Check if Ceph is configured: pveceph status\n"
+                            f"  2. Check Ceph service: systemctl status ceph.target\n"
+                            f"  3. Try with specific node: get_ceph_osd_details(node='your-node-name')\n"
+                            f"  4. Check API user permissions for Ceph access"
+                        )
+
+                    raise ProxmoxVEError(diagnostic_msg)
+
+                # Get detailed info for each OSD
+                for osd_item in osd_list:
+                    osd_num = osd_item.get("id")
+                    if osd_num is None:
+                        continue
+
+                    # Convert to int if it's a string
+                    try:
+                        osd_num = int(osd_num)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid OSD ID: {osd_num}")
+                        continue
+
+                    # Check if we already have all the data from tree (Method 1)
+                    # Tree data from node-specific endpoint already contains detailed info
+                    if use_tree and "crush_weight" in osd_item:
+                        # We have detailed data from tree, use it directly
+                        osd_data = {
+                            "osd_id": osd_num,
+                            "name": osd_item.get("name", f"osd.{osd_num}"),
+                            "host": osd_item.get("host"),
+                            "in": osd_item.get("in"),
+                            "up": 1 if osd_item.get("status") == "up" else 0,
+                            "status": osd_item.get("status"),
+                            "crush_weight": osd_item.get("crush_weight"),
+                            "reweight": osd_item.get("reweight"),
+                            "percent_used": osd_item.get("percent_used"),
+                            "pgs": osd_item.get("pgs"),
+                            "bytes_used": osd_item.get("bytes_used"),
+                            "total_space": osd_item.get("total_space"),
+                            "apply_latency_ms": osd_item.get("apply_latency_ms"),
+                            "commit_latency_ms": osd_item.get("commit_latency_ms"),
+                            "device_class": osd_item.get("device_class"),
+                            "osdtype": osd_item.get("osdtype"),
+                            "ceph_version": osd_item.get("ceph_version"),
+                            "ceph_version_short": osd_item.get("ceph_version_short"),
+                            "tree_info": {
+                                "name": osd_item.get("name"),
+                                "host": osd_item.get("host"),
+                                "status": osd_item.get("status"),
+                                "crush_weight": osd_item.get("crush_weight"),
+                                "reweight": osd_item.get("reweight")
+                            }
+                        }
+
+                        # Try to get metadata if requested
+                        if include_metadata:
+                            try:
+                                metadata = await client.get(f"/cluster/ceph/osd/{osd_num}/metadata")
+                                if metadata.get("data"):
+                                    osd_data["metadata"] = metadata["data"]
+                            except ProxmoxVEError:
+                                logger.debug(f"Metadata not available for OSD {osd_num}")
+
+                        osd_details.append(osd_data)
+
+                    else:
+                        # Need to fetch OSD details from API
+                        try:
+                            # Get OSD details
+                            osd_info = await client.get(f"/cluster/ceph/osd/{osd_num}")
+
+                            if osd_info.get("data"):
+                                osd_data = osd_info["data"]
+                                osd_data["osd_id"] = osd_num
+
+                                # Add tree information if we got it from tree
+                                if use_tree:
+                                    osd_data["tree_info"] = {
+                                        "name": osd_item.get("name"),
+                                        "host": osd_item.get("host"),
+                                        "status": osd_item.get("status"),
+                                        "reweight": osd_item.get("reweight"),
+                                        "primary_affinity": osd_item.get("primary_affinity"),
+                                        "crush_weight": osd_item.get("crush_weight")
+                                    }
+                                else:
+                                    # Basic tree info without host
+                                    osd_data["tree_info"] = {
+                                        "name": osd_item.get("name", f"osd.{osd_num}"),
+                                        "host": "unknown (tree not available)"
+                                    }
+
+                                # Try to get metadata if requested
+                                if include_metadata:
+                                    try:
+                                        metadata = await client.get(f"/cluster/ceph/osd/{osd_num}/metadata")
+                                        if metadata.get("data"):
+                                            osd_data["metadata"] = metadata["data"]
+                                            # If we didn't get host from tree, try to get from metadata
+                                            if not use_tree and "hostname" in metadata["data"]:
+                                                osd_data["tree_info"]["host"] = metadata["data"]["hostname"]
+                                    except ProxmoxVEError:
+                                        logger.debug(f"Metadata not available for OSD {osd_num}")
+
+                                osd_details.append(osd_data)
+
+                        except ProxmoxVEError as e:
+                            logger.warning(f"Failed to get details for OSD {osd_num}: {e}")
+                            continue
+
+            # Create summary
+            total_osds = len(osd_details)
+            up_osds = sum(1 for osd in osd_details if osd.get("in") and osd.get("up"))
+
+            return {
+                "data": osd_details,
+                "summary": {
+                    "total_osds": total_osds,
+                    "up_and_in": up_osds,
+                    "queried_osd_id": osd_id,
+                    "filtered_by_node": node,
+                    "metadata_included": include_metadata
+                },
+                "display_message": f"Retrieved details for {total_osds} OSD(s)" + (f" on node {node}" if node else "")
+            }
+
         elif name == "get_ceph_pools":
             return await client.get("/cluster/ceph/pool")
         
@@ -2772,11 +4213,81 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
         
         elif name == "get_cpu_info":
             node = arguments["node"]
-            return await client.get(f"/nodes/{node}/hardware/cpu")
+
+            # Try multiple endpoints as API varies by version
+            # 1. Try hardware/cpu endpoint (newer versions)
+            try:
+                result = await client.get(f"/nodes/{node}/hardware/cpu")
+                result["_source"] = "hardware/cpu"
+                return result
+            except ProxmoxVEError as e:
+                if "501" not in str(e) and "404" not in str(e):
+                    # If not "not implemented" or "not found", raise the error
+                    raise
+
+            # 2. Try to get CPU info from node status (fallback)
+            try:
+                status = await client.get(f"/nodes/{node}/status")
+                if status.get("data"):
+                    node_data = status["data"]
+                    cpu_info = {
+                        "model": node_data.get("cpuinfo", {}).get("model", "Unknown"),
+                        "cpus": node_data.get("cpuinfo", {}).get("cpus", 0),
+                        "sockets": node_data.get("cpuinfo", {}).get("sockets", 0),
+                        "cores": node_data.get("cpuinfo", {}).get("cores", 0),
+                        "usage": node_data.get("cpu", 0),
+                        "flags": node_data.get("cpuinfo", {}).get("flags", ""),
+                        "_source": "node/status",
+                        "_note": "CPU details extracted from node status (hardware/cpu endpoint not available)"
+                    }
+                    return {"data": cpu_info}
+            except ProxmoxVEError:
+                pass
+
+            # 3. Final fallback: Try to get basic info from cluster resources
+            try:
+                resources = await client.get("/cluster/resources", {"type": "node"})
+                for resource in resources.get("data", []):
+                    if resource.get("node") == node:
+                        cpu_info = {
+                            "model": "Unknown (use get_node_status for details)",
+                            "cpus": resource.get("maxcpu", 0),
+                            "usage_percent": round(resource.get("cpu", 0) * 100, 2) if resource.get("cpu") else 0,
+                            "_source": "cluster/resources",
+                            "_note": "Limited CPU info from cluster resources (hardware/cpu endpoint not available)"
+                        }
+                        return {"data": cpu_info}
+            except ProxmoxVEError:
+                pass
+
+            # If all attempts failed
+            raise ProxmoxVEError(f"Unable to retrieve CPU information for node {node}. Try using get_node_status instead.")
         
         elif name == "get_disk_info":
             node = arguments["node"]
-            return await client.get(f"/nodes/{node}/disks/list")
+            result = await client.get(f"/nodes/{node}/disks/list")
+
+            # Process disk data to fix wearout display
+            if result.get("data"):
+                for disk in result["data"]:
+                    # Fix wearout percentage
+                    # Proxmox API returns remaining life percentage (100 = healthy, 0 = worn out)
+                    # We need to convert it to wearout percentage (0 = new, 100 = worn out)
+                    if "wearout" in disk:
+                        wearout_value = disk.get("wearout")
+                        if wearout_value is not None:
+                            # Convert: API value of 100 (100% remaining) -> 0% wearout
+                            #          API value of 0 (0% remaining) -> 100% wearout
+                            try:
+                                remaining_pct = float(wearout_value)
+                                disk["wearout"] = 100 - remaining_pct
+                                disk["wearout_display"] = f"{disk['wearout']:.0f}%"
+                                disk["remaining_life"] = f"{remaining_pct:.0f}%"
+                            except (ValueError, TypeError):
+                                # If conversion fails, keep original value
+                                disk["wearout_display"] = str(wearout_value)
+
+            return result
         
         elif name == "get_performance_stats":
             node = arguments["node"]
@@ -2795,16 +4306,107 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             limit = arguments.get("limit", 100)
             start = arguments.get("start", 0)
             service = arguments.get("service")
-            
-            params = {"limit": limit, "start": start}
-            if service:
-                params["service"] = service
-            
-            return await client.get(f"/nodes/{node}/journal", params)
+
+            # Try different parameter combinations as API varies by version
+            param_combinations = [
+                {"lastentries": limit},  # Most common: get last N entries
+                {"lines": limit},        # Alternative parameter name
+                {},                      # No params - get recent logs
+            ]
+
+            last_error = None
+            for params in param_combinations:
+                try:
+                    # Add optional service filter if specified
+                    if service:
+                        params["service"] = service
+
+                    # Try the request
+                    result = await client.get(f"/nodes/{node}/journal", params if params else None)
+
+                    # Success - return with params info
+                    if isinstance(result, dict):
+                        result["_params_used"] = params
+                        return result
+                    else:
+                        return {
+                            "data": result if isinstance(result, list) else [result],
+                            "_params_used": params
+                        }
+
+                except ProxmoxVEError as e:
+                    last_error = e
+                    logger.warning(f"Failed to get system logs with params {params}: {e}")
+                    continue
+
+            # If all attempts failed, try syslog as fallback
+            try:
+                result = await client.get(f"/nodes/{node}/syslog", {"limit": limit})
+                result["_endpoint_used"] = "syslog"
+                return result
+            except ProxmoxVEError:
+                pass
+
+            # If everything failed, raise the last error
+            if last_error:
+                raise last_error
+            else:
+                raise ProxmoxVEError(f"Failed to retrieve system logs from node {node}")
         
         elif name == "get_cluster_logs":
             limit = arguments.get("limit", 100)
-            return await client.get("/cluster/tasks", {"limit": limit})
+            start = arguments.get("start", 0)
+            errors = arguments.get("errors", False)
+            vmid = arguments.get("vmid")
+
+            # Try different endpoints as Proxmox VE API varies by version
+            endpoints_to_try = [
+                ("/cluster/log", {"max": limit}),  # Cluster event log
+                ("/cluster/tasks", None),           # Task history (no params)
+            ]
+
+            last_error = None
+            for endpoint, default_params in endpoints_to_try:
+                try:
+                    # Build params for this endpoint
+                    if default_params:
+                        params = default_params.copy()
+                    else:
+                        params = {}
+
+                    # Add optional filters if supported
+                    if vmid and endpoint == "/cluster/tasks":
+                        params["vmid"] = vmid
+
+                    if errors and endpoint == "/cluster/tasks":
+                        params["errors"] = 1
+
+                    if start > 0 and endpoint == "/cluster/tasks":
+                        params["start"] = start
+
+                    # Try the request
+                    result = await client.get(endpoint, params if params else None)
+
+                    # Success - return with endpoint info
+                    if isinstance(result, dict) and "data" in result:
+                        result["_endpoint_used"] = endpoint
+                        return result
+                    else:
+                        return {
+                            "data": result if isinstance(result, list) else [result],
+                            "_endpoint_used": endpoint
+                        }
+
+                except ProxmoxVEError as e:
+                    last_error = e
+                    logger.warning(f"Failed to get logs from {endpoint}: {e}")
+                    continue
+
+            # If all endpoints failed, raise the last error
+            if last_error:
+                raise last_error
+            else:
+                raise ProxmoxVEError("Failed to retrieve cluster logs from any endpoint")
         
         # Backup Management
         elif name == "get_backup_jobs":
@@ -4079,26 +5681,9 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             node = arguments["node"]
             limit = arguments.get("limit", 50)
             return await client.get(f"/nodes/{node}/tasks", {"limit": limit})
-        
-        elif name == "list_vms":
-            if "node" in arguments:
-                node = arguments["node"]
-                return await client.get(f"/nodes/{node}/qemu")
-            else:
-                nodes_result = await client.get("/nodes")
-                all_vms = []
-                for node_info in nodes_result.get("data", []):
-                    node = node_info["node"]
-                    try:
-                        vms_result = await client.get(f"/nodes/{node}/qemu")
-                        if vms_result.get("data"):
-                            for vm in vms_result["data"]:
-                                vm["node"] = node
-                            all_vms.extend(vms_result["data"])
-                    except Exception as e:
-                        logger.warning(f"Cannot get VMs from node {node}: {e}")
-                return {"data": all_vms}
-        
+
+        # Duplicate list_vms removed - see line 2612 for the actual implementation
+
         elif name == "get_vm_status":
             node = arguments["node"]
             vmid = arguments["vmid"]
@@ -4204,11 +5789,11 @@ async def main():
         
         # Show startup information
         auth_method = "API Token" if (config['api_token_id'] and config['api_token_secret']) else "Username/Password"
-        print(f"🚀 Proxmox VE MCP Server v{__version__} - Enhanced Edition starting...", file=sys.stderr)
-        print(f"🔗 Host: {config['host']}", file=sys.stderr)
-        print(f"🔐 Auth: {auth_method}", file=sys.stderr)
-        print(f"🆕 Features: {len(await handle_list_tools())} tools available", file=sys.stderr)
-        print("✅ Enhanced MCP Server ready for connections", file=sys.stderr)
+        print(f"Proxmox VE MCP Server v{__version__} - Enhanced Edition starting...", file=sys.stderr)
+        print(f"Host: {config['host']}", file=sys.stderr)
+        print(f"Auth: {auth_method}", file=sys.stderr)
+        print(f"Features: {len(await handle_list_tools())} tools available", file=sys.stderr)
+        print("Enhanced MCP Server ready for connections", file=sys.stderr)
         
         # Run MCP server
         from mcp.server.stdio import stdio_server
@@ -4218,7 +5803,7 @@ async def main():
                 read_stream,
                 write_stream,
                 InitializationOptions(
-                    server_name="proxmox-ve-mcp",
+                    server_name="Proxmox_VE",
                     server_version=__version__,
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
