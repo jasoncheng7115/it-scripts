@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-MCP server for LibreNMS API – v3.5 Enhanced with ARP Table and IP-to-MAC Support
+MCP server for LibreNMS API – v3.10.2 Emoji-Free Docstrings
 ===============================================================================
 Author: Jason Cheng (Jason Tools) - Enhanced by Claude
 Created: 2025-06-24
-Updated: 2025-07-07
+Updated: 2025-11-22
 License: MIT
 
 FastMCP-based LibreNMS integration with comprehensive batch operations,
@@ -28,20 +28,41 @@ Features:
 Installation:
 pip install mcp requests
 
-Environment Variables:
-LIBRENMS_URL - LibreNMS base URL (e.g., https://librenms.example.com/api/v0)
-LIBRENMS_TOKEN - LibreNMS API token
-LIBRENMS_CACHE_TTL - Cache TTL in seconds (default: 300)
-LIBRENMS_TIMEOUT - API timeout in seconds (default: 30)
+Configuration Methods (Priority: CLI Args > Environment Variables > Defaults):
+
+1. Command Line Arguments (Recommended):
+   uvx --with mcp python3 mcp_librenms.py --url "http://192.168.1.68" --token "your_token"
+
+   Available arguments:
+   --url, --host         LibreNMS base URL (e.g., http://192.168.1.68)
+   --token, --api-token  LibreNMS API token
+   --verify-ssl          Verify SSL certificates (true/false, default: true)
+   --cache-ttl           Cache TTL in seconds (default: 300)
+   --timeout             API timeout in seconds (default: 30)
+   --max-retries         Max retries for failed requests (default: 3)
+   --batch-size          Batch size for paginated requests (default: 200)
+
+2. Environment Variables:
+   LIBRENMS_URL          LibreNMS base URL
+   LIBRENMS_TOKEN        LibreNMS API token
+   LIBRENMS_VERIFY_SSL   Verify SSL (true/false, default: true)
+   LIBRENMS_CACHE_TTL    Cache TTL in seconds (default: 300)
+   LIBRENMS_TIMEOUT      API timeout in seconds (default: 30)
+   LIBRENMS_MAX_RETRIES  Max retries (default: 3)
+   LIBRENMS_BATCH_SIZE   Batch size (default: 200)
+
+3. Mixed Configuration:
+   LIBRENMS_URL="http://192.168.1.68" python3 mcp_librenms.py --token "your_token" --cache-ttl 600
 
 Run steps:
 chmod +x mcp_librenms.py
-/path/to/python mcp_librenms.py
+python3 mcp_librenms.py --help  # Show all available options
 """
 import json
 import os
 import sys
 import time
+import argparse
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timedelta
 from functools import wraps
@@ -59,30 +80,52 @@ logger = logging.getLogger('mcp-librenms')
 
 # Environment configuration with validation
 class Config:
-    def __init__(self):
-        self.BASE_URL = os.getenv("LIBRENMS_URL")
-        self.TOKEN = os.getenv("LIBRENMS_TOKEN")
-        self.CACHE_TTL = int(os.getenv("LIBRENMS_CACHE_TTL", "300"))
-        self.TIMEOUT = int(os.getenv("LIBRENMS_TIMEOUT", "30"))
-        self.MAX_RETRIES = int(os.getenv("LIBRENMS_MAX_RETRIES", "3"))
-        self.BATCH_SIZE = int(os.getenv("LIBRENMS_BATCH_SIZE", "200"))  # 增加預設批次大小
-        
+    def __init__(self, args=None):
+        """Initialize config from command line args (priority) or environment variables (fallback)
+
+        Args:
+            args: Parsed argparse.Namespace object with command line arguments
+        """
+        # Priority: Command line args > Environment variables > Defaults
+        if args:
+            self.BASE_URL = args.url or os.getenv("LIBRENMS_URL")
+            self.TOKEN = args.token or os.getenv("LIBRENMS_TOKEN")
+            self.CACHE_TTL = args.cache_ttl if args.cache_ttl is not None else int(os.getenv("LIBRENMS_CACHE_TTL", "300"))
+            self.TIMEOUT = args.timeout if args.timeout is not None else int(os.getenv("LIBRENMS_TIMEOUT", "30"))
+            self.MAX_RETRIES = args.max_retries if args.max_retries is not None else int(os.getenv("LIBRENMS_MAX_RETRIES", "3"))
+            self.BATCH_SIZE = args.batch_size if args.batch_size is not None else int(os.getenv("LIBRENMS_BATCH_SIZE", "200"))
+            self.VERIFY_SSL = args.verify_ssl if args.verify_ssl is not None else True
+        else:
+            # Fallback to environment variables only
+            self.BASE_URL = os.getenv("LIBRENMS_URL")
+            self.TOKEN = os.getenv("LIBRENMS_TOKEN")
+            self.CACHE_TTL = int(os.getenv("LIBRENMS_CACHE_TTL", "300"))
+            self.TIMEOUT = int(os.getenv("LIBRENMS_TIMEOUT", "30"))
+            self.MAX_RETRIES = int(os.getenv("LIBRENMS_MAX_RETRIES", "3"))
+            self.BATCH_SIZE = int(os.getenv("LIBRENMS_BATCH_SIZE", "200"))
+            self.VERIFY_SSL = os.getenv("LIBRENMS_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+
         self.validate()
-    
+
     def validate(self):
         if not self.BASE_URL or not self.TOKEN:
-            logger.error("LIBRENMS_URL or LIBRENMS_TOKEN environment variables not set")
+            logger.error("LibreNMS URL and API Token are required!")
+            logger.error("Provide via command line arguments or environment variables:")
+            logger.error("  Command line: --url <URL> --token <TOKEN>")
+            logger.error("  Environment:  LIBRENMS_URL=<URL> LIBRENMS_TOKEN=<TOKEN>")
             sys.exit(1)
-        
+
         # Clean up BASE_URL
         self.BASE_URL = self.BASE_URL.rstrip('/')
         if not self.BASE_URL.endswith('/api/v0'):
             self.BASE_URL += '/api/v0'
-        
+
         logger.info(f"LibreNMS URL: {self.BASE_URL}")
         logger.info(f"Cache TTL: {self.CACHE_TTL}s, Timeout: {self.TIMEOUT}s")
+        logger.info(f"SSL Verification: {self.VERIFY_SSL}")
 
-config = Config()
+# Config will be initialized in main() after parsing command line args
+config = None
 
 # Improved JSON encoder for datetime objects
 class DateTimeEncoder(json.JSONEncoder):
@@ -130,19 +173,24 @@ class SimpleCache:
             "ttl_seconds": self.ttl
         }
 
-cache = SimpleCache(config.CACHE_TTL)
-
-# Initialize requests session with retry logic
-session = requests.Session()
-session.headers.update({
-    "X-Auth-Token": config.TOKEN,
-    "User-Agent": "mcp-librenms/3.4-arp",
-    "Accept": "application/json",
-    "Content-Type": "application/json"
-})
+# Cache and session will be initialized after config is created
+cache = None
+session = None
 
 # Create FastMCP server
 mcp = FastMCP("LibreNMS")
+
+def initialize_session():
+    """Initialize session with config values"""
+    global session
+    session = requests.Session()
+    session.headers.update({
+        "X-Auth-Token": config.TOKEN,
+        "User-Agent": "mcp-librenms/3.6.2",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    })
+    session.verify = config.VERIFY_SSL
 
 # ───────────────────────── Helper Functions ─────────────────────────
 
@@ -167,45 +215,56 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
         return wrapper
     return decorator
 
-@retry_on_failure(max_retries=config.MAX_RETRIES)
 def _api_request(method: str, endpoint: str, params: Optional[Dict[str, Any]] = None,
                  json_body: Optional[Dict[str, Any]] = None, use_cache: bool = True) -> Dict[str, Any]:
     """Send API request to LibreNMS with caching and retry logic"""
-    
+
     # Create cache key with better serialization
     cache_key = f"{method}:{endpoint}:{json.dumps(params, sort_keys=True)}:{json.dumps(json_body, sort_keys=True)}" if use_cache else None
-    
+
     # Check cache first
     if cache_key and method.upper() == 'GET':
         cached_result = cache.get(cache_key)
         if cached_result:
             logger.debug(f"Cache hit for {endpoint}")
             return cached_result
-    
+
     url = f"{config.BASE_URL}/{endpoint.lstrip('/')}"
     logger.debug(f"API request: {method} {url} params={params}")
-    
-    try:
-        response = session.request(
-            method.upper(), 
-            url, 
-            params=params, 
-            json=json_body, 
-            timeout=config.TIMEOUT
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Cache successful GET requests
-        if cache_key and method.upper() == 'GET' and response.status_code == 200:
-            cache.set(cache_key, result)
-        
-        return result
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API request failed: {method} {url} - {e}")
-        raise Exception(f"LibreNMS API error: {str(e)}")
+
+    # Retry logic with exponential backoff
+    max_retries = config.MAX_RETRIES if config else 3
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            response = session.request(
+                method.upper(),
+                url,
+                params=params,
+                json=json_body,
+                timeout=config.TIMEOUT
+            )
+            response.raise_for_status()
+
+            result = response.json()
+
+            # Cache successful GET requests
+            if cache_key and method.upper() == 'GET' and response.status_code == 200:
+                cache.set(cache_key, result)
+
+            return result
+
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                wait_time = 1.0 * (2 ** attempt)
+                logger.warning(f"API request attempt {attempt + 1} failed: {e}, retrying in {wait_time}s")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"All {max_retries} attempts failed for {method} {url}")
+
+    raise Exception(f"LibreNMS API error: {str(last_exception)}")
 
 def _safe_parse_datetime(timestamp_str: Any) -> Optional[datetime]:
     """Safely parse datetime string with multiple format support"""
@@ -632,7 +691,24 @@ def health_check() -> str:
 @mcp.tool()
 def search_ip_to_mac(ip_address: str, detailed: bool = True, prefer_arp_vlan: bool = True) -> str:
     """Search ARP table to find MAC address for specific IP address - FIXED VLAN MAPPING
-    
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "What's the MAC address for IP 192.168.1.100?"
+       - "Find MAC for this IP"
+       - "這個 IP 的 MAC address 是什麼？"
+       - "IP 對應的 MAC 是？"
+       - "從 IP 找 MAC"
+
+    [NO] DO NOT use when user asks:
+       - "Find device/switch for this IP" → use search_fdb_by_mac() after getting MAC
+       - "Which port is this IP on?" → use search_fdb_by_mac() after getting MAC
+       - "Find IP for this MAC" → use search_mac_to_ip()
+
+    [NOTE] TYPICAL WORKFLOW:
+       1. search_ip_to_mac() to get MAC from IP
+       2. search_fdb_by_mac() to find device/port location
+
     Args:
         ip_address: IP address to search for (e.g., "192.168.1.200")
         detailed: Include detailed device and port information (default: True)
@@ -681,18 +757,20 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True, prefer_arp_vlan: bo
                 for device in devices_data:
                     device_id = device.get('device_id')
                     hostname = device.get('hostname', f'device_{device_id}')
-                    
+                    sysname = device.get('sysName', hostname)
+
                     if device_id:
                         try:
                             device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
                             device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
-                            
+
                             for entry in device_arp_data:
                                 entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
                                 if entry_ip == ip_address:
                                     entry["debug_info"] = {
                                         "source_device_id": device_id,
                                         "source_hostname": hostname,
+                                        "source_sysName": sysname,
                                         "query_method": "device_specific_arp"
                                     }
                                     arp_entries.append(entry)
@@ -901,7 +979,25 @@ def search_ip_to_mac(ip_address: str, detailed: bool = True, prefer_arp_vlan: bo
 @mcp.tool()
 def search_fdb_by_mac(mac_address: str, detailed: bool = True) -> str:
     """Search FDB table for specific MAC address with CORRECT VLAN mapping
-    
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Which switch/device is this MAC on?"
+       - "Find port for MAC address aa:bb:cc:dd:ee:ff"
+       - "這個 MAC 在哪個交換機？"
+       - "MAC 在哪個 port？"
+       - "從 MAC 找設備位置"
+       - "Where is this device connected?" (after getting MAC from IP)
+
+    [NO] DO NOT use when user asks:
+       - "Find MAC for this IP" → use search_ip_to_mac()
+       - "Find IP for this MAC" → use search_mac_to_ip()
+
+    [NOTE] TYPICAL WORKFLOW:
+       1. (Optional) search_ip_to_mac() to get MAC from IP
+       2. search_fdb_by_mac() to find switch/port location
+       3. Results show: device_id, hostname, port_id, ifName, VLAN
+
     Args:
         mac_address: MAC address to search for (various formats accepted)
         detailed: Include detailed device and port information (default: True)
@@ -1229,27 +1325,30 @@ def compare_arp_sources(ip_address: str) -> str:
             for device in devices_data:
                 device_id = device.get('device_id')
                 hostname = device.get('hostname', f'device_{device_id}')
-                
+                sysname = device.get('sysName', hostname)
+
                 try:
                     device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
                     device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
-                    
+
                     matching_entries = []
                     for entry in device_arp_data:
                         entry_ip = entry.get("ipv4_address") or entry.get("ip_address")
                         if entry_ip == ip_address:
                             matching_entries.append(entry)
-                    
+
                     if matching_entries:
                         device_results[hostname] = {
                             "device_id": device_id,
+                            "hostname": hostname,
+                            "sysName": sysname,
                             "method": f"GET /devices/{device_id}/arp",
                             "matching_entries": matching_entries,
                             "vlans_found": [str(entry.get("vlan_id") or entry.get("vlan", "")) for entry in matching_entries if (entry.get("vlan_id") or entry.get("vlan"))]
                         }
-                        
+
                 except Exception as e:
-                    device_results[hostname] = {"error": str(e)}
+                    device_results[hostname] = {"error": str(e), "hostname": hostname, "sysName": sysname}
             
             comparison_results["sources"]["device_specific_arp"] = device_results
             
@@ -1405,15 +1504,16 @@ def diagnose_ip_vlan_discrepancy(ip_address: str) -> str:
             devices_data = _extract_data_from_response(devices_result, ['devices'])
             
             device_arp_vlans = {}
-            
+
             for device in devices_data:
                 device_id = device.get('device_id')
                 hostname = device.get('hostname', f'device_{device_id}')
-                
+                sysname = device.get('sysName', hostname)
+
                 try:
                     device_arp_result = _api_request("GET", f"devices/{device_id}/arp")
                     device_arp_data = _extract_data_from_response(device_arp_result, ['arp', 'ip_arp'])
-                    
+
                     for entry in device_arp_data:
                         if entry.get("ipv4_address") == ip_address or entry.get("ip_address") == ip_address:
                             vlan = entry.get("vlan_id") or entry.get("vlan")
@@ -1421,11 +1521,13 @@ def diagnose_ip_vlan_discrepancy(ip_address: str) -> str:
                             device_arp_vlans[hostname] = {
                                 "vlan": str(vlan) if vlan else None,
                                 "mac": mac,
-                                "device_id": device_id
+                                "device_id": device_id,
+                                "hostname": hostname,
+                                "sysName": sysname
                             }
-                            
+
                 except Exception as e:
-                    device_arp_vlans[hostname] = {"error": str(e)}
+                    device_arp_vlans[hostname] = {"error": str(e), "hostname": hostname, "sysName": sysname}
             
             results["sources"]["device_specific_arp"] = device_arp_vlans
             
@@ -1500,18 +1602,21 @@ def diagnose_ip_vlan_discrepancy(ip_address: str) -> str:
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
+def get_network_arp_table(network_cidr: str, detailed: bool = False, limit: int = 1000) -> str:
     """Get ARP table entries for a specific network segment with CORRECT VLAN mapping
-    
+
+    [WARNING] SAFETY: Default limit is 1000 entries to prevent memory issues.
+
     Args:
         network_cidr: Network in CIDR format (e.g., "192.168.1.0/24")
         detailed: Include detailed device information (default: False)
-        
+        limit: Maximum number of ARP entries to retrieve (default: 1000)
+
     Returns:
         JSON string with network ARP table and statistics with CORRECT VLAN tags
     """
-    logger.info(f"VLAN FIXED: Getting ARP table for network: {network_cidr}")
-    
+    logger.info(f"VLAN FIXED: Getting ARP table for network: {network_cidr}, limit={limit}")
+
     try:
         # Validate network CIDR format
         if not _validate_network_cidr(network_cidr):
@@ -1519,16 +1624,16 @@ def get_network_arp_table(network_cidr: str, detailed: bool = False) -> str:
                 "error": f"Invalid network CIDR format: {network_cidr}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2, ensure_ascii=False)
-        
+
         # Build VLAN mapping cache
         vlan_mapping_cache = _build_vlan_mapping_cache()
-        
+
         arp_entries = []
-        
+
         # Filter all ARP entries by network
         try:
             logger.info("Filtering all ARP entries by network...")
-            all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=5000)
+            all_arp_result = _paginate_request("resources/ip/arp", params={}, max_items=limit)
             
             if all_arp_result:
                 network = ipaddress.ip_network(network_cidr, strict=False)
@@ -1939,7 +2044,7 @@ def get_fdb_summary() -> str:
         
         if isinstance(summary_info.get("total_fdb_entries"), int):
             if summary_info["total_fdb_entries"] > 100000:
-                recommendations.insert(0, "⚠️  Large FDB table detected - always use filters!")
+                recommendations.insert(0, "[WARNING]  Large FDB table detected - always use filters!")
         
         result = {
             "fdb_summary": summary_info,
@@ -2041,7 +2146,24 @@ def _apply_vlan_mapping(entry, vlan_mapping_cache, source_prefix=""):
 @mcp.tool()
 def search_mac_to_ip(mac_address: str, detailed: bool = True) -> str:
     """Search ARP table to find IP addresses for specific MAC address - VLAN FIXED
-    
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "What's the IP for this MAC?"
+       - "Find IP address for MAC aa:bb:cc:dd:ee:ff"
+       - "這個 MAC 的 IP 是什麼？"
+       - "MAC 對應的 IP 是？"
+       - "從 MAC 找 IP"
+       - "Reverse ARP lookup"
+
+    [NO] DO NOT use when user asks:
+       - "Find MAC for this IP" → use search_ip_to_mac()
+       - "Find device/switch for this MAC" → use search_fdb_by_mac()
+
+    [NOTE] NOTE:
+       - A single MAC can have multiple IPs (common for routers, servers)
+       - Results include VLAN information and device context
+
     Args:
         mac_address: MAC address to search for (various formats accepted)
         detailed: Include detailed device and port information (default: True)
@@ -2548,10 +2670,42 @@ def analyze_fdb_statistics(days: int = 7) -> str:
 # ───────────────────────── Enhanced Device Management ─────────────────────────
 
 @mcp.tool()
-def list_devices(limit: int = 0, status: Optional[str] = None, 
+def list_devices(limit: int = 0, status: Optional[str] = None,
                 type_filter: Optional[str] = None, location: Optional[str] = None) -> str:
-    """List devices with enhanced filtering options
-    
+    """List devices ONLY (without ports) - Use get_devices_with_ports() for devices+ports
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Show me all devices"
+       - "List all network devices"
+       - "給我看所有設備"
+       - "Show proxmox devices" (use type_filter="proxmox")
+       - "Which devices are down?" (use status="down")
+       - "List devices in datacenter1" (use location="datacenter1")
+       - "How many devices do we have?"
+       - "Get device list by OS/status/location"
+
+    [NO] DO NOT use when user asks:
+       - "Get devices and their ports" → use get_devices_with_ports()
+       - "Show devices WITH ports" → use get_devices_with_ports()
+       - "Query devices then get ports for each" → use get_devices_with_ports()
+       - "List proxmox devices and show their ifOperStatus" → use get_devices_with_ports()
+       - "For each device, retrieve port information" → use get_devices_with_ports()
+       - "Show device details for device 123" → use get_device_info()
+
+    [WARNING] IMPORTANT:
+       This function returns ONLY device information (hostname, IP, status, etc.)
+       It does NOT return port/interface information.
+
+       If you need BOTH devices AND their ports in one query,
+       use get_devices_with_ports() instead!
+
+    [NOTE] FILTERING OPTIONS:
+       - status: "up", "down", "disabled"
+       - type_filter: "proxmox", "linux", "ios", etc.
+       - location: any location string
+       - limit: 0 = all devices (default)
+
     Args:
         limit: Maximum number of devices to return (default: 0 = all devices)
         status: Filter by device status (up, down, disabled) (optional)
@@ -2628,30 +2782,37 @@ def list_devices(limit: int = 0, status: Optional[str] = None,
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_all_devices() -> str:
-    """Get ALL devices without any limit
-    
+def get_all_devices(limit: int = 100) -> str:
+    """Get devices with optional limit (default: 100 for safety)
+
+    [WARNING] SAFETY: Default limit is 100 devices to prevent memory issues.
+    For large deployments, use list_devices() with filters instead.
+
+    Args:
+        limit: Maximum number of devices to return (default: 100)
+               Set to a higher value if needed, but be cautious with large deployments
+
     Returns:
-        JSON string of all devices with complete statistics
+        JSON string of devices with complete statistics
     """
-    logger.info("Getting ALL devices (no limit)")
-    
+    logger.info(f"Getting devices with limit={limit}")
+
     try:
         # 使用多種方法嘗試獲取所有設備
         all_devices = []
-        
+
         # 方法 1: 使用改進的分頁
         try:
-            devices_paginated = _paginate_request("devices", max_items=None)
+            devices_paginated = _paginate_request("devices", max_items=limit)
             all_devices.extend(devices_paginated)
             logger.info(f"Method 1 (pagination): Got {len(devices_paginated)} devices")
         except Exception as e:
             logger.warning(f"Pagination method failed: {e}")
         
-        # 方法 2: 如果分頁沒有結果，嘗試單次大量請求
+        # 方法 2: 如果分頁沒有結果，嘗試單次請求（使用指定的 limit）
         if not all_devices:
             try:
-                large_request = _api_request("GET", "devices", params={"limit": 10000})
+                large_request = _api_request("GET", "devices", params={"limit": limit})
                 devices_large = _extract_data_from_response(large_request)
                 all_devices.extend(devices_large)
                 logger.info(f"Method 2 (large request): Got {len(devices_large)} devices")
@@ -2727,7 +2888,7 @@ def get_all_devices() -> str:
             },
             "query_info": {
                 "method": "get_all_devices",
-                "no_limits_applied": True,
+                "limit_applied": limit,
                 "deduplication_applied": True,
                 "unique_device_ids": len(seen_ids),
                 "timestamp": datetime.now().isoformat()
@@ -2884,6 +3045,671 @@ def batch_device_info(device_ids: str, include_services: bool = True,
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
         logger.error(f"Error in batch_device_info: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+def _normalize_port_status(status_value) -> str:
+    """Normalize port operational status to lowercase string
+
+    LibreNMS API may return ifOperStatus as:
+    - String: 'up', 'down', 'adminDown', etc.
+    - Integer: 1 (up), 2 (down), 3 (testing), etc.
+    - None or missing
+
+    Args:
+        status_value: Raw ifOperStatus value from API
+
+    Returns:
+        Normalized lowercase status string ('up', 'down', 'admindown', 'unknown', etc.)
+    """
+    if status_value is None:
+        return 'unknown'
+
+    # If it's already a string, normalize it
+    if isinstance(status_value, str):
+        return status_value.lower().strip()
+
+    # If it's an integer, map SNMP ifOperStatus values
+    # Per RFC 2863: 1=up, 2=down, 3=testing, 4=unknown, 5=dormant, 6=notPresent, 7=lowerLayerDown
+    if isinstance(status_value, int):
+        status_map = {
+            1: 'up',
+            2: 'down',
+            3: 'testing',
+            4: 'unknown',
+            5: 'dormant',
+            6: 'notpresent',
+            7: 'lowerlayerdown'
+        }
+        return status_map.get(status_value, 'unknown')
+
+    # Fallback: convert to string
+    return str(status_value).lower().strip()
+
+
+# ═══════════════════════════════════════════════════════════════
+# DEVICE TYPE-AWARE LOGIC (v3.10.0)
+# ═══════════════════════════════════════════════════════════════
+
+def _get_port_filter_strategy(device_os: str) -> dict:
+    """Get device-type-aware port filtering strategy
+
+    Different device types have different SNMP capabilities:
+    - Virtual devices (Proxmox, KVM): Often lack ifOperStatus
+    - Network devices (Cisco, Juniper): Full SNMP support
+    - Linux servers: May have limited ifOperStatus
+
+    Args:
+        device_os: Device OS type (e.g., 'proxmox', 'ios', 'linux')
+
+    Returns:
+        Dictionary with filtering strategy and recommendations
+    """
+    device_os_lower = (device_os or "unknown").lower()
+
+    # Strategy database
+    strategies = {
+        "proxmox": {
+            "name": "Proxmox VE (Virtualization)",
+            "default_filter": None,  # Don't filter by default
+            "primary_status_field": "ifAdminStatus",  # Use admin status if available
+            "fallback_filter": "enabled",  # Filter by enabled/disabled
+            "confidence": "low",
+            "recommendations": [
+                "Proxmox devices often lack ifOperStatus data",
+                "Use port_status=None to get all ports",
+                "Consider filtering by ifAdminStatus or port name patterns"
+            ],
+            "typical_issues": [
+                "ifOperStatus is usually null",
+                "Virtual interfaces may not report status correctly",
+                "Bridge interfaces (vmbr*) may appear down even when functional"
+            ]
+        },
+        "kvm": {
+            "name": "KVM (Kernel-based Virtual Machine)",
+            "default_filter": None,
+            "primary_status_field": "ifAdminStatus",
+            "fallback_filter": "enabled",
+            "confidence": "low",
+            "recommendations": [
+                "KVM hypervisors have similar limitations to Proxmox",
+                "Virtual interfaces may not provide reliable status",
+                "Focus on ifName patterns for meaningful ports"
+            ]
+        },
+        "linux": {
+            "name": "Linux Server",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "fallback_filter": "ifAdminStatus",
+            "confidence": "medium",
+            "recommendations": [
+                "Most Linux servers provide basic ifOperStatus",
+                "Status reliability depends on kernel version and drivers",
+                "Physical interfaces usually more reliable than virtual ones"
+            ],
+            "typical_issues": [
+                "Virtual interfaces (docker*, veth*) may have inconsistent status",
+                "Some network card drivers don't report status correctly"
+            ]
+        },
+        "ios": {
+            "name": "Cisco IOS",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "fallback_filter": "ifAdminStatus",
+            "confidence": "high",
+            "recommendations": [
+                "Cisco IOS provides full SNMP support",
+                "ifOperStatus is highly reliable",
+                "Both layer 2 and layer 3 status are accurate"
+            ],
+            "typical_issues": []
+        },
+        "iosxe": {
+            "name": "Cisco IOS XE",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "fallback_filter": "ifAdminStatus",
+            "confidence": "high",
+            "recommendations": [
+                "IOS XE has excellent SNMP support",
+                "All interface types report accurate status"
+            ]
+        },
+        "nxos": {
+            "name": "Cisco NX-OS",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "confidence": "high",
+            "recommendations": [
+                "NX-OS provides comprehensive interface monitoring",
+                "Datacenter-grade status reporting"
+            ]
+        },
+        "junos": {
+            "name": "Juniper Junos",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "confidence": "high",
+            "recommendations": [
+                "Junos has excellent SNMP implementation",
+                "Logical interfaces (*.unit) also report accurately"
+            ]
+        },
+        "routeros": {
+            "name": "MikroTik RouterOS",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "confidence": "high",
+            "recommendations": [
+                "RouterOS SNMP is reliable for physical ports",
+                "Virtual interfaces (VLAN, bridge) may need careful filtering"
+            ]
+        },
+        "vyos": {
+            "name": "VyOS",
+            "default_filter": "up",
+            "primary_status_field": "ifOperStatus",
+            "confidence": "medium",
+            "recommendations": [
+                "VyOS based on Linux kernel",
+                "Physical ports reliable, virtual ports may vary"
+            ]
+        },
+        "pfsense": {
+            "name": "pfSense",
+            "default_filter": None,
+            "primary_status_field": "ifAdminStatus",
+            "confidence": "medium",
+            "recommendations": [
+                "FreeBSD-based, status reporting varies",
+                "Virtual VLANs may not report status correctly"
+            ]
+        },
+        "opnsense": {
+            "name": "OPNsense",
+            "default_filter": None,
+            "primary_status_field": "ifAdminStatus",
+            "confidence": "medium",
+            "recommendations": [
+                "Similar to pfSense, FreeBSD-based",
+                "Physical interfaces more reliable than VLANs"
+            ]
+        }
+    }
+
+    # Match device OS to strategy
+    for os_key, strategy in strategies.items():
+        if os_key in device_os_lower:
+            return {
+                "matched": True,
+                "os_key": os_key,
+                **strategy
+            }
+
+    # Default strategy for unknown devices
+    return {
+        "matched": False,
+        "os_key": "unknown",
+        "name": f"Unknown ({device_os or 'N/A'})",
+        "default_filter": "up",
+        "primary_status_field": "ifOperStatus",
+        "fallback_filter": "ifAdminStatus",
+        "confidence": "medium",
+        "recommendations": [
+            f"No specific strategy for '{device_os}'",
+            "Using standard SNMP ifOperStatus filtering",
+            "If results are unexpected, try port_status=None"
+        ],
+        "typical_issues": [
+            "Unknown device type - results may vary"
+        ]
+    }
+
+def _evaluate_port_data_quality(ports: list, device_os: str = None) -> dict:
+    """Evaluate the quality of port data and provide suggestions
+
+    Args:
+        ports: List of port dictionaries
+        device_os: Device OS type (e.g., 'proxmox', 'ios')
+
+    Returns:
+        Dictionary with quality metrics and suggestions
+    """
+    if not ports:
+        return {
+            "confidence": "none",
+            "has_ifOperStatus": False,
+            "has_ifAdminStatus": False,
+            "complete_ports": 0,
+            "incomplete_ports": 0,
+            "suggestions": ["No ports data available"]
+        }
+
+    total_ports = len(ports)
+    has_oper_status = 0
+    has_admin_status = 0
+    has_ifname = 0
+
+    for port in ports:
+        if port.get('ifOperStatus') is not None:
+            has_oper_status += 1
+        if port.get('ifAdminStatus') is not None:
+            has_admin_status += 1
+        if port.get('ifName'):
+            has_ifname += 1
+
+    # Calculate confidence
+    if has_oper_status == total_ports:
+        confidence = "high"
+    elif has_oper_status > total_ports * 0.5:
+        confidence = "medium"
+    elif has_admin_status > total_ports * 0.5:
+        confidence = "medium"
+    elif has_ifname > total_ports * 0.8:
+        confidence = "low"
+    else:
+        confidence = "very_low"
+
+    # Generate suggestions
+    suggestions = []
+    if has_oper_status == 0:
+        suggestions.append(f"[WARNING]  設備類型 '{device_os or 'unknown'}' 沒有 ifOperStatus 數據")
+        if has_admin_status > 0:
+            suggestions.append("[NOTE] 建議使用 ifAdminStatus 判斷 port 狀態")
+        else:
+            suggestions.append("[NOTE] 建議使用 port_status=None 獲取所有 port，手動篩選")
+            suggestions.append("[NOTE] 或使用 debug_port_fields() 查看原始數據")
+
+    if has_oper_status < total_ports and has_oper_status > 0:
+        suggestions.append(f"[WARNING]  只有 {has_oper_status}/{total_ports} 個 port 有 ifOperStatus")
+
+    return {
+        "confidence": confidence,
+        "has_ifOperStatus": has_oper_status > 0,
+        "has_ifAdminStatus": has_admin_status > 0,
+        "complete_ports": has_oper_status,
+        "incomplete_ports": total_ports - has_oper_status,
+        "total_ports": total_ports,
+        "suggestions": suggestions if suggestions else ["數據質量良好"]
+    }
+
+
+# ───────────────────────── Port Management ─────────────────────────
+
+@mcp.tool()
+def debug_port_fields(device_id: int, limit: int = 3) -> str:
+    """DEBUG TOOL: Show raw port data structure from LibreNMS API
+
+    Use this to diagnose port filtering issues by showing the actual field names
+    and values returned by LibreNMS for a specific device.
+
+    Args:
+        device_id: Device ID to inspect
+        limit: Number of ports to show (default: 3)
+
+    Returns:
+        JSON with raw port data showing all available fields
+    """
+    logger.info(f"DEBUG: Inspecting raw port data for device {device_id}")
+
+    try:
+        # Get device info
+        device_result = _api_request("GET", f"devices/{device_id}")
+        device_info = device_result.get("devices", [{}])[0] if "devices" in device_result else {}
+
+        # Get ports
+        ports_result = _api_request("GET", f"devices/{device_id}/ports")
+        all_ports = _extract_data_from_response(ports_result, ['ports'])
+
+        # Show only first N ports with ALL fields
+        sample_ports = all_ports[:limit]
+
+        # Analyze available status fields
+        status_fields = {}
+        for port in all_ports:
+            for field in port.keys():
+                if 'status' in field.lower() or 'state' in field.lower() or 'oper' in field.lower():
+                    if field not in status_fields:
+                        status_fields[field] = []
+                    value = port.get(field)
+                    if value not in status_fields[field]:
+                        status_fields[field].append(value)
+
+        result = {
+            "device_info": {
+                "device_id": device_id,
+                "hostname": device_info.get("hostname"),
+                "sysName": device_info.get("sysName"),
+                "os": device_info.get("os")
+            },
+            "total_ports": len(all_ports),
+            "sample_ports_full_data": sample_ports,
+            "status_related_fields_analysis": status_fields,
+            "recommendations": [
+                "Check 'status_related_fields_analysis' to find the correct status field",
+                "If ifOperStatus is null, try ifAdminStatus or other status fields",
+                "Some devices (like Proxmox VMs) may not provide SNMP ifOperStatus"
+            ],
+            "timestamp": datetime.now().isoformat()
+        }
+
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in debug_port_fields: {e}")
+        return json.dumps({"error": str(e), "device_id": device_id}, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_device_ports(device_id: int, status_filter: Optional[str] = None) -> str:
+    """Get all network ports/interfaces for a specific device
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Show me all ports for device 123"
+       - "Which ports are up on this device?"
+       - "List the network interfaces"
+       - "給我看這台設備的所有 port"
+
+    [NO] DO NOT use when user asks:
+       - "Show ports for ALL proxmox devices" → use get_devices_with_ports()
+       - "Which devices have down ports?" → use get_devices_with_ports()
+
+    [INFO] DATA QUALITY NOTE:
+    - For standard network devices (Cisco, Juniper): ifOperStatus is reliable
+    - For virtual devices (Proxmox, KVM): ifOperStatus may be null
+    - When ifOperStatus is null, filtering by status may return incomplete results
+    - Recommendation: Use status_filter=None for devices with poor SNMP support
+
+    Args:
+        device_id: Device ID to get ports for
+        status_filter: Filter by port status - 'up', 'down', 'admin_down' (optional)
+                      Set to None to get all ports regardless of status
+
+    Returns:
+        JSON with:
+        - ports: List of port objects
+        - statistics: Count by status
+        - metadata: Data quality information and suggestions
+        - device_info: Device hostname and sysName
+    """
+    logger.info(f"Getting ports for device {device_id}, status_filter={status_filter}")
+
+    try:
+        # Get device info first
+        device_result = _api_request("GET", f"devices/{device_id}")
+        device_info = None
+        device_os = None
+        if "devices" in device_result and device_result["devices"]:
+            device_info = device_result["devices"][0]
+            device_os = device_info.get("os")
+
+        # Get ALL ports from API
+        ports_result = _api_request("GET", f"devices/{device_id}/ports")
+        all_ports = _extract_data_from_response(ports_result, ['ports'])
+
+        # Evaluate data quality BEFORE filtering
+        data_quality = _evaluate_port_data_quality(all_ports, device_os)
+
+        # Simple, honest filtering
+        if status_filter and data_quality["has_ifOperStatus"]:
+            # Only filter if we have reliable ifOperStatus data
+            status_filter_lower = status_filter.lower()
+            filtered_ports = []
+            for port in all_ports:
+                port_status = _normalize_port_status(port.get('ifOperStatus'))
+
+                # Simple exact matching
+                if status_filter_lower == 'up' and port_status == 'up':
+                    filtered_ports.append(port)
+                elif status_filter_lower == 'down' and port_status == 'down':
+                    filtered_ports.append(port)
+                elif status_filter_lower == 'admin_down' and port_status == 'admindown':
+                    filtered_ports.append(port)
+
+            ports_data = filtered_ports
+        elif status_filter and not data_quality["has_ifOperStatus"]:
+            # No reliable status data - return all non-disabled ports with warning
+            logger.warning(f"Device {device_id} has no ifOperStatus, returning all non-disabled ports")
+            ports_data = [p for p in all_ports if not p.get('disabled', 0) and not p.get('deleted', 0)]
+        else:
+            # No filter requested - return all ports
+            ports_data = all_ports
+
+        # Calculate statistics
+        stats = {'up': 0, 'down': 0, 'admin_down': 0, 'unknown': 0}
+        for port in ports_data:
+            status = _normalize_port_status(port.get('ifOperStatus'))
+            stats[status] = stats.get(status, 0) + 1
+
+        result = {
+            "device_id": device_id,
+            "device_info": {
+                "hostname": device_info.get("hostname") if device_info else "Unknown",
+                "sysName": device_info.get("sysName") if device_info else "Unknown",
+                "os": device_os,
+                "ip": device_info.get("ip") if device_info else "Unknown"
+            } if device_info else None,
+            "ports": ports_data,
+            "statistics": stats,
+            "total_ports": len(ports_data),
+            "filter_applied": status_filter,
+            "metadata": {
+                "data_quality": data_quality,
+                "filtering_note": "Filtering skipped - no ifOperStatus data" if (status_filter and not data_quality["has_ifOperStatus"]) else None
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error getting device ports: {e}")
+        return json.dumps({"error": str(e), "device_id": device_id}, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_devices_with_ports(os_filter: Optional[str] = None,
+                          device_status: Optional[str] = None,
+                          port_status: Optional[str] = None,
+                          limit: int = 10) -> str:
+    """Get devices and their network ports - ONE-STOP batch query function
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Get proxmox devices with status up, then for each device get ports where ifOperStatus is up"
+       - "Query devices with os=proxmox and status=up, then get their ports"
+       - "Show me all proxmox devices and their ports"
+       - "List devices with their network interfaces"
+       - "Which Linux servers have ports?"
+       - "給我看 proxmox 的裝置和它們的 port"
+       - "用表格呈現裝置的 port 資訊"
+       - "I need devices filtered by OS and status, with their ports"
+       - "Batch query: devices + ports in one call"
+
+    [NO] DO NOT use when user asks:
+       - "Show ports for device 123" → use get_device_ports()
+       - "What's the port status for one device?" → use get_device_ports()
+
+    [NOTE] WHY USE THIS FUNCTION:
+       This is a ONE-STOP function designed to avoid multiple API calls.
+       Instead of calling get_devices() then get_device_ports() for each device,
+       this function does it all in ONE call with proper filtering and data quality checks.
+
+    [INFO] DATA QUALITY WARNING:
+    - For Proxmox/KVM devices: ifOperStatus is often null
+    - Recommendation: Use port_status=None for virtual devices
+    - The function will automatically handle missing data and provide suggestions
+
+    [INFO] PARAMETERS GUIDE:
+       - os_filter: "proxmox", "linux", "ios", etc.
+       - device_status: "up", "down" (filters which devices to include)
+       - port_status: "up", "down", None (filters which ports to show)
+         [WARNING] Use port_status=None for Proxmox/virtual devices!
+       - limit: how many devices to return
+
+    Args:
+        os_filter: Filter devices by OS (e.g., "proxmox", "linux", "ios") (optional)
+        device_status: Filter devices by status - 'up', 'down' (optional, default: all)
+        port_status: Filter ports by status - 'up', 'down', 'admin_down', or None for all ports
+                    [WARNING]  Changed default from 'up' to None for better compatibility
+        limit: Maximum number of devices to return (default: 10)
+
+    Returns:
+        JSON with:
+        - devices: List of devices with ports
+        - metadata: Data quality per device
+        - summary: Statistics
+        - optimized_for_table: true
+    """
+    logger.info(f"Getting devices with ports: os={os_filter}, device_status={device_status}, port_status={port_status}")
+
+    try:
+        # Get devices with filtering
+        params = {}
+        if device_status:
+            status_map = {"up": "1", "down": "0"}
+            params["status"] = status_map.get(device_status.lower(), device_status)
+
+        # Get all devices first, then filter by OS in code
+        devices_result = _api_request("GET", "devices", params={**params, "limit": limit * 2})  # Get more to filter by OS
+        devices_data = _extract_data_from_response(devices_result, ['devices'])
+
+        # Filter by OS if specified
+        if os_filter:
+            devices_data = [d for d in devices_data if os_filter.lower() in d.get('os', '').lower()]
+
+        # Limit after OS filtering
+        devices_data = devices_data[:limit]
+
+        # For each device, get ports
+        result_devices = []
+        total_ports = 0
+        port_stats = {'up': 0, 'down': 0, 'admin_down': 0, 'unknown': 0}
+        overall_data_quality = []
+
+        for device in devices_data:
+            device_id = device.get('device_id')
+            device_os = device.get('os')
+            if not device_id:
+                continue
+
+            try:
+                # Get ALL ports for this device
+                ports_result = _api_request("GET", f"devices/{device_id}/ports")
+                all_ports = _extract_data_from_response(ports_result, ['ports'])
+
+                # Evaluate data quality
+                data_quality = _evaluate_port_data_quality(all_ports, device_os)
+                overall_data_quality.append(data_quality)
+
+                # Simple, honest filtering
+                if port_status and data_quality["has_ifOperStatus"]:
+                    # Only filter if we have reliable data
+                    status_lower = port_status.lower()
+                    filtered_ports = []
+                    for port in all_ports:
+                        port_op_status = _normalize_port_status(port.get('ifOperStatus'))
+                        if status_lower == 'up' and port_op_status == 'up':
+                            filtered_ports.append(port)
+                        elif status_lower == 'down' and port_op_status == 'down':
+                            filtered_ports.append(port)
+                        elif status_lower == 'admin_down' and port_op_status == 'admindown':
+                            filtered_ports.append(port)
+                    ports_data = filtered_ports
+                elif port_status and not data_quality["has_ifOperStatus"]:
+                    # No reliable data - return all non-disabled ports
+                    logger.warning(f"Device {device_id} ({device_os}) has no ifOperStatus, returning all non-disabled ports")
+                    ports_data = [p for p in all_ports if not p.get('disabled', 0) and not p.get('deleted', 0)]
+                else:
+                    # No filter - return all ports
+                    ports_data = all_ports
+
+                # Update statistics
+                for port in ports_data:
+                    total_ports += 1
+                    status = _normalize_port_status(port.get('ifOperStatus'))
+                    port_stats[status] = port_stats.get(status, 0) + 1
+
+                # Simplify port data for table display
+                simple_ports = []
+                for port in ports_data:
+                    simple_ports.append({
+                        'port_id': port.get('port_id'),
+                        'ifName': port.get('ifName'),
+                        'ifDescr': port.get('ifDescr'),
+                        'ifAlias': port.get('ifAlias'),
+                        'ifOperStatus': port.get('ifOperStatus'),
+                        'ifSpeed': port.get('ifSpeed'),
+                        'ifType': port.get('ifType')
+                    })
+
+                result_devices.append({
+                    'device_id': device_id,
+                    'hostname': device.get('hostname'),
+                    'sysName': device.get('sysName'),
+                    'os': device_os,
+                    'status': 'up' if device.get('status') == 1 or device.get('status') == '1' else 'down',
+                    'ip': device.get('ip'),
+                    'ports': simple_ports,
+                    'port_count': len(simple_ports),
+                    'data_quality': data_quality
+                })
+
+            except Exception as e:
+                logger.warning(f"Failed to get ports for device {device_id}: {e}")
+                result_devices.append({
+                    'device_id': device_id,
+                    'hostname': device.get('hostname'),
+                    'sysName': device.get('sysName'),
+                    'os': device_os,
+                    'error': str(e),
+                    'ports': [],
+                    'port_count': 0
+                })
+
+        # Calculate overall data quality
+        devices_with_good_data = sum(1 for q in overall_data_quality if q["confidence"] in ["high", "medium"])
+        devices_with_poor_data = len(overall_data_quality) - devices_with_good_data
+
+        # Generate suggestions
+        suggestions = []
+        if devices_with_poor_data > 0:
+            suggestions.append(f"[WARNING]  {devices_with_poor_data}/{len(overall_data_quality)} 個設備缺少 ifOperStatus 數據")
+            if os_filter and os_filter.lower() in ['proxmox', 'kvm', 'qemu']:
+                suggestions.append("[NOTE] 虛擬化設備通常沒有完整的 SNMP 數據，這是正常的")
+            suggestions.append("[NOTE] 建議使用 debug_port_fields() 檢查原始數據")
+
+        if devices_with_good_data == len(overall_data_quality):
+            suggestions.append("[YES] 所有設備的數據質量良好")
+
+        result = {
+            "devices": result_devices,
+            "summary": {
+                "total_devices": len(result_devices),
+                "total_ports": total_ports,
+                "port_statistics": port_stats,
+                "filters_applied": {
+                    "os": os_filter,
+                    "device_status": device_status,
+                    "port_status": port_status
+                }
+            },
+            "metadata": {
+                "overall_data_quality": {
+                    "devices_with_good_data": devices_with_good_data,
+                    "devices_with_poor_data": devices_with_poor_data
+                },
+                "suggestions": suggestions
+            },
+            "optimized_for_table": True,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+    except Exception as e:
+        logger.error(f"Error getting devices with ports: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 # ───────────────────────── Enhanced Service Management ─────────────────────────
@@ -3052,17 +3878,38 @@ def get_services_summary() -> str:
 # ───────────────────────── Enhanced Alert Management ─────────────────────────
 
 @mcp.tool()
-def get_comprehensive_alert_history(days: int = 30, limit: int = 1000, 
-                                  include_resolved: bool = True, 
+def get_comprehensive_alert_history(days: int = 30, limit: int = 100,
+                                  include_resolved: bool = True,
                                   severity: Optional[str] = None) -> str:
     """Get comprehensive alert history with multiple data sources
-    
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Show alert history from last week"
+       - "過去一個月的告警記錄"
+       - "給我看已解決的告警"
+       - "Alert history" or "告警歷史"
+       - "How many alerts happened in the past 7 days?"
+       - "Show both active and resolved alerts"
+
+    [NO] DO NOT use when user asks:
+       - "What alerts are firing NOW?" → use get_recent_alerts()
+       - "現在有哪些告警？" → use get_recent_alerts()
+       - "Current active alerts" → use get_recent_alerts()
+
+    [NOTE] KEY DIFFERENCE:
+       - get_recent_alerts(): ACTIVE alerts only (what's happening now)
+       - get_comprehensive_alert_history(): HISTORICAL alerts (what happened in past X days)
+
+    [WARNING] SAFETY: Default limit reduced to 100 for better performance.
+    Increase limit parameter if you need more alerts.
+
     Args:
         days: Number of days to look back (default: 30)
-        limit: Maximum number of alerts to return (default: 1000)
+        limit: Maximum number of alerts to return (default: 100, was 1000 in v3.6)
         include_resolved: Include resolved/closed alerts (default: True)
         severity: Filter by severity (critical, warning, etc.) (optional)
-        
+
     Returns:
         JSON string of comprehensive alert history
     """
@@ -3238,19 +4085,68 @@ def get_comprehensive_alert_history(days: int = 30, limit: int = 1000,
 
 @mcp.tool()
 def get_recent_alerts(limit: int = 10, severity: Optional[str] = None, days: int = 7) -> str:
-    """Get recent active alerts"""
+    """Get current ACTIVE alerts with device information
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "What alerts are firing now?"
+       - "Show me current active alerts"
+       - "現在有哪些告警？"
+       - "目前活躍的 alerts"
+       - "當前的警報"
+
+    [NO] DO NOT use when user asks:
+       - "Show alerts from last week" → use get_comprehensive_alert_history()
+       - "已解決的告警" → use get_comprehensive_alert_history()
+       - "Alert history" → use get_comprehensive_alert_history()
+
+    [INFO] CONFIDENCE: High - Returns only currently active alerts
+    """
     logger.info(f"Getting recent alerts: limit={limit}, severity={severity}")
-    
+
     try:
         params = {"limit": limit}
         if severity:
             params["severity"] = severity
-            
+
         result = _api_request("GET", "alerts", params=params)
-        
+
         # Ensure we have the right structure
         alerts_data = _extract_data_from_response(result, ['alerts'])
-        
+
+        # Enrich alerts with device information
+        device_ids = set()
+        for alert in alerts_data:
+            device_id = alert.get('device_id')
+            if device_id:
+                device_ids.add(device_id)
+
+        # Batch fetch device information
+        device_info_cache = {}
+        if device_ids:
+            logger.info(f"Fetching device info for {len(device_ids)} devices")
+            for device_id in device_ids:
+                try:
+                    device_result = _api_request("GET", f"devices/{device_id}")
+                    if "devices" in device_result and device_result["devices"]:
+                        device_info_cache[device_id] = device_result["devices"][0]
+                except Exception as e:
+                    logger.warning(f"Failed to fetch device {device_id}: {e}")
+
+        # Add device info to each alert
+        for alert in alerts_data:
+            device_id = alert.get('device_id')
+            if device_id and device_id in device_info_cache:
+                device_info = device_info_cache[device_id]
+                alert['device_info'] = {
+                    'hostname': device_info.get('hostname'),
+                    'sysName': device_info.get('sysName'),
+                    'display': device_info.get('display') or device_info.get('sysName') or device_info.get('hostname'),
+                    'ip': device_info.get('ip'),
+                    'type': device_info.get('type'),
+                    'location': device_info.get('location')
+                }
+
         formatted_result = {
             "alerts": alerts_data,
             "count": len(alerts_data),
@@ -3258,15 +4154,1181 @@ def get_recent_alerts(limit: int = 10, severity: Optional[str] = None, days: int
                 "period_days": days,
                 "severity_filter": severity,
                 "limit": limit,
-                "note": "Shows only current active/open alerts"
+                "note": "Shows only current active/open alerts with device information"
             },
             "timestamp": datetime.now().isoformat()
         }
-        
+
         return json.dumps(formatted_result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
         logger.error(f"Error in get_recent_alerts: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# ═══════════════════════════════════════════════════════════════
+# HIGH-LEVEL QUERY FUNCTIONS (v3.9.0)
+# ═══════════════════════════════════════════════════════════════
+
+@mcp.tool()
+def troubleshoot_ip(ip_address: str) -> str:
+    """ Comprehensive IP troubleshooting - One-stop network investigation
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "這個 IP 在哪台交換機？"
+       - "Find everything about IP 192.168.1.100"
+       - "Where is this IP connected?"
+       - "幫我找出這個 IP 的完整資訊"
+       - "Trace IP to switch port"
+       - "IP 在哪個 port？"
+
+    [NO] DO NOT use when user asks:
+       - "Just find MAC for this IP" → use search_ip_to_mac()
+       - "Just find switch for this MAC" → use search_fdb_by_mac()
+
+    [NOTE] WHAT THIS DOES:
+       This is a ONE-STOP investigation that automatically:
+       1. Searches ARP table → Finds MAC address
+       2. Searches FDB table → Finds switch/port location
+       3. Retrieves VLAN information
+       4. Gets device details (hostname, sysName, location)
+       5. Provides connection path and troubleshooting insights
+
+    [INFO] TYPICAL OUTPUT:
+       - IP address and MAC address
+       - Connected to: switch hostname, port name
+       - VLAN: tag and name
+       - Device details: type, location, status
+       - Troubleshooting suggestions
+
+    Args:
+        ip_address: IP address to investigate (e.g., "192.168.1.100")
+
+    Returns:
+        JSON string with comprehensive IP investigation results
+    """
+    logger.info(f" Starting comprehensive IP troubleshooting for: {ip_address}")
+
+    try:
+        investigation = {
+            "ip_address": ip_address,
+            "timestamp": datetime.now().isoformat(),
+            "investigation_steps": []
+        }
+
+        # Step 1: Find MAC address from ARP table
+        logger.info("Step 1: Searching ARP table for MAC address...")
+        investigation["investigation_steps"].append("Step 1: Searching ARP table")
+
+        arp_result = search_ip_to_mac(ip_address, detailed=True, prefer_arp_vlan=True)
+        arp_data = json.loads(arp_result)
+
+        if "error" in arp_data:
+            investigation["status"] = "failed"
+            investigation["failure_point"] = "arp_lookup"
+            investigation["error"] = arp_data["error"]
+            investigation["suggestions"] = [
+                "[NO] IP address not found in ARP table",
+                "[NOTE] Possible reasons:",
+                "   - Device is offline or not responding",
+                "   - IP address is incorrect",
+                "   - Device is outside monitored network",
+                "   - ARP entry has expired (typical TTL: 5-20 minutes)"
+            ]
+            return json.dumps(investigation, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Extract MAC address
+        arp_entries = arp_data.get("arp_entries", [])
+        if not arp_entries:
+            investigation["status"] = "not_found"
+            investigation["failure_point"] = "arp_lookup"
+            investigation["suggestions"] = [
+                "[NO] No ARP entry found for this IP",
+                "[NOTE] Try:",
+                "   - Ping the IP first to populate ARP table",
+                "   - Verify IP is in the correct subnet",
+                "   - Check if device is online"
+            ]
+            return json.dumps(investigation, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Use first ARP entry
+        arp_entry = arp_entries[0]
+        mac_address = arp_entry.get("mac_address")
+
+        investigation["mac_address"] = mac_address
+        investigation["arp_info"] = {
+            "mac_address": mac_address,
+            "context_device_id": arp_entry.get("device_id"),
+            "context_port_id": arp_entry.get("port_id"),
+            "vlan_info": arp_entry.get("vlan_info", {})
+        }
+        investigation["investigation_steps"].append(f"[YES] Found MAC: {mac_address}")
+
+        # Step 2: Find switch/port location from FDB table
+        logger.info(f"Step 2: Searching FDB table for MAC {mac_address}...")
+        investigation["investigation_steps"].append("Step 2: Searching FDB table for device location")
+
+        fdb_result = search_fdb_by_mac(mac_address, detailed=True)
+        fdb_data = json.loads(fdb_result)
+
+        if "error" in fdb_data:
+            investigation["status"] = "partial"
+            investigation["mac_found"] = True
+            investigation["switch_found"] = False
+            investigation["fdb_error"] = fdb_data["error"]
+            investigation["suggestions"] = [
+                f"[YES] Found MAC address: {mac_address}",
+                "[WARNING] Could not locate switch port in FDB table",
+                "[NOTE] Possible reasons:",
+                "   - Device is directly connected to a router (not a switch)",
+                "   - FDB table hasn't learned this MAC yet",
+                "   - Device is on a different network segment"
+            ]
+            return json.dumps(investigation, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        fdb_entries = fdb_data.get("fdb_entries", [])
+        if not fdb_entries:
+            investigation["status"] = "partial"
+            investigation["mac_found"] = True
+            investigation["switch_found"] = False
+            investigation["suggestions"] = [
+                f"[YES] Found MAC address: {mac_address}",
+                "[WARNING] MAC not found in any switch FDB table",
+                "[NOTE] This typically means:",
+                "   - Device is connected to a router, not a switch",
+                "   - Device is on a virtual/overlay network"
+            ]
+            return json.dumps(investigation, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Use first FDB entry (most relevant)
+        fdb_entry = fdb_entries[0]
+
+        investigation["location"] = {
+            "switch_device_id": fdb_entry.get("device_id"),
+            "switch_hostname": fdb_entry.get("device_hostname"),
+            "switch_sysName": fdb_entry.get("device_sysName"),
+            "switch_ip": fdb_entry.get("device_ip"),
+            "port_id": fdb_entry.get("port_id"),
+            "port_name": fdb_entry.get("ifName"),
+            "port_description": fdb_entry.get("ifDescr"),
+            "vlan_info": fdb_entry.get("vlan_info", {})
+        }
+        investigation["investigation_steps"].append(
+            f"[YES] Found location: {fdb_entry.get('device_hostname')} port {fdb_entry.get('ifName')}"
+        )
+
+        # Step 3: Get detailed device information
+        device_id = fdb_entry.get("device_id")
+        if device_id:
+            logger.info(f"Step 3: Getting device details for device {device_id}...")
+            investigation["investigation_steps"].append("Step 3: Retrieving device details")
+
+            try:
+                device_result = _api_request("GET", f"devices/{device_id}")
+                if "devices" in device_result and device_result["devices"]:
+                    device_info = device_result["devices"][0]
+                    investigation["switch_details"] = {
+                        "hostname": device_info.get("hostname"),
+                        "sysName": device_info.get("sysName"),
+                        "ip": device_info.get("ip"),
+                        "type": device_info.get("type"),
+                        "os": device_info.get("os"),
+                        "version": device_info.get("version"),
+                        "hardware": device_info.get("hardware"),
+                        "location": device_info.get("location"),
+                        "status": "up" if device_info.get("status") == 1 else "down",
+                        "uptime": device_info.get("uptime")
+                    }
+                    investigation["investigation_steps"].append("[YES] Retrieved switch details")
+            except Exception as e:
+                logger.warning(f"Could not get device details: {e}")
+                investigation["investigation_steps"].append("[WARNING] Could not retrieve full device details")
+
+        # Build final summary
+        investigation["status"] = "success"
+        investigation["summary"] = {
+            "ip_address": ip_address,
+            "mac_address": mac_address,
+            "connected_to": f"{fdb_entry.get('device_hostname')} ({fdb_entry.get('device_ip')})",
+            "port": f"{fdb_entry.get('ifName')} - {fdb_entry.get('ifDescr', 'N/A')}",
+            "vlan": fdb_entry.get("vlan_info", {}).get("vlan_tag", "unknown"),
+            "vlan_name": fdb_entry.get("vlan_info", {}).get("vlan_name", "N/A")
+        }
+
+        investigation["troubleshooting_insights"] = []
+
+        # Add insights based on data
+        if fdb_entry.get("vlan_info", {}).get("vlan_tag") == "unknown":
+            investigation["troubleshooting_insights"].append(
+                "[WARNING] VLAN information unavailable - may need manual verification"
+            )
+
+        if len(fdb_entries) > 1:
+            investigation["troubleshooting_insights"].append(
+                f"ℹ️ MAC found on {len(fdb_entries)} ports (possible port mirroring or MAC flapping)"
+            )
+            investigation["all_locations"] = [
+                {
+                    "device": entry.get("device_hostname"),
+                    "port": entry.get("ifName")
+                } for entry in fdb_entries
+            ]
+
+        investigation["troubleshooting_insights"].append(
+            "[YES] Investigation complete - Device location identified"
+        )
+
+        return json.dumps(investigation, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in troubleshoot_ip: {e}")
+        return json.dumps({
+            "status": "error",
+            "ip_address": ip_address,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def network_health_overview(location: Optional[str] = None, device_type: Optional[str] = None) -> str:
+    """ Network health overview - Quick network status dashboard
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "網路狀況如何？"
+       - "Show me network health"
+       - "What's the overall network status?"
+       - "給我一個總覽"
+       - "Are there any problems?"
+       - "Network dashboard"
+       - "有哪些問題設備？"
+
+    [NO] DO NOT use when user asks:
+       - "Show specific device details" → use get_device_info()
+       - "List all devices" → use list_devices()
+       - "Show current alerts" → use get_recent_alerts()
+
+    [NOTE] WHAT THIS DOES:
+       Provides a comprehensive network health dashboard with:
+       1. Device statistics (up/down/disabled counts)
+       2. Alert summary (critical/warning counts)
+       3. Service health statistics
+       4. Problem devices list with reasons
+       5. Health score and recommendations
+
+    [INFO] TYPICAL OUTPUT:
+       - Overall health score (0-100)
+       - Device status breakdown
+       - Alert severity breakdown
+       - Top problem devices
+       - Actionable recommendations
+
+    Args:
+        location: Filter by location (optional)
+        device_type: Filter by device type/OS (optional)
+
+    Returns:
+        JSON string with comprehensive network health overview
+    """
+    logger.info(f" Generating network health overview (location={location}, type={device_type})")
+
+    try:
+        health_report = {
+            "timestamp": datetime.now().isoformat(),
+            "filters": {
+                "location": location,
+                "device_type": device_type
+            },
+            "health_score": 0,
+            "status": "analyzing"
+        }
+
+        # Step 1: Get device statistics
+        logger.info("Step 1: Gathering device statistics...")
+        devices_result = list_devices(limit=0, location=location, type_filter=device_type)
+        devices_data = json.loads(devices_result)
+
+        if "error" in devices_data:
+            health_report["status"] = "error"
+            health_report["error"] = devices_data["error"]
+            return json.dumps(health_report, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        devices = devices_data.get("devices", [])
+        total_devices = len(devices)
+
+        # Calculate device statistics
+        device_stats = {
+            "total": total_devices,
+            "up": 0,
+            "down": 0,
+            "disabled": 0,
+            "unknown": 0
+        }
+
+        devices_by_type = {}
+        problem_devices = []
+
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+
+            # Device status
+            status_val = device.get("status")
+            if status_val == 1 or status_val == "1":
+                device_stats["up"] += 1
+            elif status_val == 0 or status_val == "0":
+                device_stats["down"] += 1
+                problem_devices.append({
+                    "device_id": device.get("device_id"),
+                    "hostname": device.get("hostname"),
+                    "ip": device.get("ip"),
+                    "reason": "Device is DOWN",
+                    "severity": "critical"
+                })
+            elif status_val == 2 or status_val == "2":
+                device_stats["disabled"] += 1
+            else:
+                device_stats["unknown"] += 1
+
+            # Device type distribution
+            device_os = device.get("os", "unknown")
+            devices_by_type[device_os] = devices_by_type.get(device_os, 0) + 1
+
+        health_report["device_statistics"] = device_stats
+        health_report["device_type_distribution"] = dict(sorted(
+            devices_by_type.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10])  # Top 10 device types
+
+        # Step 2: Get active alerts
+        logger.info("Step 2: Gathering active alerts...")
+        alerts_result = get_recent_alerts(limit=100)
+        alerts_data = json.loads(alerts_result)
+
+        alert_stats = {
+            "total_active": 0,
+            "critical": 0,
+            "warning": 0,
+            "info": 0,
+            "unknown": 0
+        }
+
+        devices_with_alerts = set()
+
+        if "alerts" in alerts_data:
+            alerts = alerts_data["alerts"]
+            alert_stats["total_active"] = len(alerts)
+
+            for alert in alerts:
+                if not isinstance(alert, dict):
+                    continue
+
+                severity = str(alert.get("severity", "")).lower()
+                device_id = alert.get("device_id")
+
+                if device_id:
+                    devices_with_alerts.add(device_id)
+
+                # Count by severity
+                if "crit" in severity or severity == "5":
+                    alert_stats["critical"] += 1
+                elif "warn" in severity or severity == "4":
+                    alert_stats["warning"] += 1
+                elif "info" in severity:
+                    alert_stats["info"] += 1
+                else:
+                    alert_stats["unknown"] += 1
+
+        health_report["alert_statistics"] = alert_stats
+        health_report["devices_with_active_alerts"] = len(devices_with_alerts)
+
+        # Step 3: Calculate health score
+        # Health score based on:
+        # - 60% device uptime (up vs total)
+        # - 40% alert severity (less critical alerts = better)
+
+        if total_devices > 0:
+            device_health = (device_stats["up"] / total_devices) * 60
+        else:
+            device_health = 0
+
+        # Alert health: penalize critical alerts more
+        if total_devices > 0:
+            alert_penalty = (
+                (alert_stats["critical"] * 5) +
+                (alert_stats["warning"] * 2) +
+                (alert_stats["info"] * 0.5)
+            ) / total_devices
+            alert_health = max(0, 40 - alert_penalty)
+        else:
+            alert_health = 40
+
+        health_score = round(device_health + alert_health, 1)
+        health_report["health_score"] = health_score
+
+        # Determine overall status
+        if health_score >= 90:
+            health_report["status"] = "excellent"
+            health_report["status_emoji"] = "[YES]"
+        elif health_score >= 75:
+            health_report["status"] = "good"
+            health_report["status_emoji"] = "👍"
+        elif health_score >= 50:
+            health_report["status"] = "fair"
+            health_report["status_emoji"] = "[WARNING]"
+        else:
+            health_report["status"] = "poor"
+            health_report["status_emoji"] = "🔴"
+
+        # Step 4: Build problem devices list
+        # Add devices with critical alerts
+        for alert in alerts_data.get("alerts", []):
+            if not isinstance(alert, dict):
+                continue
+
+            severity = str(alert.get("severity", "")).lower()
+            if "crit" in severity or severity == "5":
+                device_info = alert.get("device_info", {})
+                device_id = alert.get("device_id")
+
+                # Avoid duplicates
+                if not any(d.get("device_id") == device_id for d in problem_devices):
+                    problem_devices.append({
+                        "device_id": device_id,
+                        "hostname": device_info.get("hostname", alert.get("hostname")),
+                        "ip": device_info.get("ip"),
+                        "reason": f"Critical alert: {alert.get('rule', alert.get('name', 'Unknown'))}",
+                        "severity": "critical"
+                    })
+
+        # Sort by severity
+        problem_devices.sort(key=lambda x: 0 if x["severity"] == "critical" else 1)
+
+        health_report["problem_devices"] = problem_devices[:10]  # Top 10 problems
+        health_report["total_problem_devices"] = len(problem_devices)
+
+        # Step 5: Generate recommendations
+        recommendations = []
+
+        if device_stats["down"] > 0:
+            recommendations.append(
+                f"🔴 URGENT: {device_stats['down']} device(s) are DOWN - investigate immediately"
+            )
+
+        if alert_stats["critical"] > 0:
+            recommendations.append(
+                f"[WARNING] HIGH PRIORITY: {alert_stats['critical']} critical alert(s) require attention"
+            )
+
+        if alert_stats["warning"] > 5:
+            recommendations.append(
+                f"[WARNING] MEDIUM PRIORITY: {alert_stats['warning']} warning alert(s) detected"
+            )
+
+        if device_stats["up"] > 0 and total_devices > 0:
+            uptime_pct = round((device_stats["up"] / total_devices) * 100, 1)
+            recommendations.append(
+                f"[YES] Network uptime: {uptime_pct}% ({device_stats['up']}/{total_devices} devices up)"
+            )
+
+        if health_score >= 90:
+            recommendations.append("🎉 Network health is excellent - no major issues detected")
+        elif health_score >= 75:
+            recommendations.append("👍 Network health is good - minor issues present")
+        elif health_score >= 50:
+            recommendations.append("[WARNING] Network health is fair - several issues need attention")
+        else:
+            recommendations.append("🔴 Network health is poor - immediate action required")
+
+        health_report["recommendations"] = recommendations
+
+        # Summary for quick viewing
+        health_report["summary"] = {
+            "health_score": health_score,
+            "status": health_report["status"],
+            "total_devices": total_devices,
+            "devices_up": device_stats["up"],
+            "devices_down": device_stats["down"],
+            "active_alerts": alert_stats["total_active"],
+            "critical_alerts": alert_stats["critical"],
+            "problem_devices_count": len(problem_devices)
+        }
+
+        return json.dumps(health_report, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in network_health_overview: {e}")
+        return json.dumps({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def find_device_by_criteria(
+    hostname: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    mac_address: Optional[str] = None,
+    location: Optional[str] = None,
+    device_type: Optional[str] = None,
+    fuzzy_search: bool = True
+) -> str:
+    """ Smart device finder - Search devices by multiple criteria
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Find device by hostname/IP/MAC"
+       - "尋找設備 xyz"
+       - "Search for device with IP 192.168.1.x"
+       - "哪台設備的 hostname 包含 'router'？"
+       - "Find all devices in datacenter1"
+       - "Show me proxmox servers"
+
+    [NO] DO NOT use when user asks:
+       - "List ALL devices" → use list_devices()
+       - "Show device details for device_id 123" → use get_device_info()
+       - "Where is IP X.X.X.X?" → use troubleshoot_ip()
+
+    [NOTE] WHAT THIS DOES:
+       Smart multi-criteria device search with:
+       1. Multiple search criteria (hostname, IP, MAC, location, type)
+       2. Fuzzy matching for partial searches
+       3. Automatic search across different LibreNMS tables
+       4. Ranked results based on match quality
+       5. Enriched device information
+
+    [INFO] SEARCH STRATEGIES:
+       - hostname: Partial match in hostname/sysName
+       - ip_address: Exact or subnet match
+       - mac_address: Search via ARP/FDB tables
+       - location: Partial match in location field
+       - device_type: Match OS/type field
+       - fuzzy_search: Enable partial/contains matching
+
+    Args:
+        hostname: Device hostname or sysName (partial match)
+        ip_address: Device IP address
+        mac_address: MAC address (searches ARP/FDB)
+        location: Device location
+        device_type: Device type/OS
+        fuzzy_search: Enable fuzzy/partial matching (default: True)
+
+    Returns:
+        JSON string with matching devices and search metadata
+    """
+    logger.info(f" Smart device search: hostname={hostname}, ip={ip_address}, mac={mac_address}, location={location}, type={device_type}")
+
+    try:
+        search_criteria = {
+            "hostname": hostname,
+            "ip_address": ip_address,
+            "mac_address": mac_address,
+            "location": location,
+            "device_type": device_type,
+            "fuzzy_search": fuzzy_search
+        }
+
+        # Remove None values
+        active_criteria = {k: v for k, v in search_criteria.items() if v is not None and k != "fuzzy_search"}
+
+        if not active_criteria:
+            return json.dumps({
+                "status": "error",
+                "error": "No search criteria provided",
+                "hint": "Provide at least one search criterion: hostname, ip_address, mac_address, location, or device_type",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2, ensure_ascii=False)
+
+        results = {
+            "search_criteria": search_criteria,
+            "matches": [],
+            "search_methods_used": [],
+            "timestamp": datetime.now().isoformat()
+        }
+
+        candidate_devices = []
+
+        # Strategy 1: Search by MAC address (if provided)
+        if mac_address:
+            logger.info(f"Strategy 1: Searching by MAC address: {mac_address}")
+            results["search_methods_used"].append("mac_address_lookup")
+
+            # Try ARP table first
+            try:
+                arp_result = search_mac_to_ip(mac_address, detailed=True)
+                arp_data = json.loads(arp_result)
+
+                if "arp_entries" in arp_data and arp_data["arp_entries"]:
+                    for arp_entry in arp_data["arp_entries"]:
+                        device_id = arp_entry.get("device_id")
+                        if device_id:
+                            candidate_devices.append({
+                                "device_id": device_id,
+                                "match_method": "arp_table",
+                                "confidence": "high",
+                                "ip_from_arp": arp_entry.get("ipv4_address")
+                            })
+            except Exception as e:
+                logger.warning(f"ARP search failed: {e}")
+
+            # Try FDB table
+            try:
+                fdb_result = search_fdb_by_mac(mac_address, detailed=True)
+                fdb_data = json.loads(fdb_result)
+
+                if "fdb_entries" in fdb_data and fdb_data["fdb_entries"]:
+                    for fdb_entry in fdb_data["fdb_entries"]:
+                        device_id = fdb_entry.get("device_id")
+                        if device_id:
+                            candidate_devices.append({
+                                "device_id": device_id,
+                                "match_method": "fdb_table",
+                                "confidence": "medium",
+                                "port_name": fdb_entry.get("ifName")
+                            })
+            except Exception as e:
+                logger.warning(f"FDB search failed: {e}")
+
+        # Strategy 2: Get all devices and filter
+        logger.info("Strategy 2: Fetching devices with filters...")
+        results["search_methods_used"].append("device_list_filter")
+
+        try:
+            devices_result = list_devices(
+                limit=0,
+                location=location if not fuzzy_search else None,
+                type_filter=device_type if not fuzzy_search else None
+            )
+            devices_data = json.loads(devices_result)
+
+            if "devices" in devices_data:
+                all_devices = devices_data["devices"]
+
+                for device in all_devices:
+                    if not isinstance(device, dict):
+                        continue
+
+                    device_id = device.get("device_id")
+                    device_hostname = str(device.get("hostname", "")).lower()
+                    device_sysname = str(device.get("sysName", "")).lower()
+                    device_ip = device.get("ip", "")
+                    device_location = str(device.get("location", "")).lower()
+                    device_os = str(device.get("os", "")).lower()
+
+                    match_score = 0
+                    match_reasons = []
+
+                    # Hostname matching
+                    if hostname:
+                        search_hostname = hostname.lower()
+                        if fuzzy_search:
+                            if search_hostname in device_hostname or search_hostname in device_sysname:
+                                match_score += 10
+                                match_reasons.append(f"hostname_contains_{hostname}")
+                        else:
+                            if device_hostname == search_hostname or device_sysname == search_hostname:
+                                match_score += 15
+                                match_reasons.append(f"hostname_exact_{hostname}")
+
+                    # IP matching
+                    if ip_address:
+                        if fuzzy_search:
+                            if ip_address in device_ip:
+                                match_score += 10
+                                match_reasons.append(f"ip_contains_{ip_address}")
+                        else:
+                            if device_ip == ip_address:
+                                match_score += 15
+                                match_reasons.append(f"ip_exact_{ip_address}")
+
+                    # Location matching
+                    if location and not location in search_criteria.get("location", ""):
+                        search_location = location.lower()
+                        if fuzzy_search:
+                            if search_location in device_location:
+                                match_score += 5
+                                match_reasons.append(f"location_contains_{location}")
+                        else:
+                            if device_location == search_location:
+                                match_score += 10
+                                match_reasons.append(f"location_exact_{location}")
+
+                    # Device type matching
+                    if device_type and not device_type in search_criteria.get("device_type", ""):
+                        search_type = device_type.lower()
+                        if fuzzy_search:
+                            if search_type in device_os:
+                                match_score += 5
+                                match_reasons.append(f"type_contains_{device_type}")
+                        else:
+                            if device_os == search_type:
+                                match_score += 10
+                                match_reasons.append(f"type_exact_{device_type}")
+
+                    # If device matches any criteria, add to candidates
+                    if match_score > 0:
+                        candidate_devices.append({
+                            "device_id": device_id,
+                            "match_method": "device_list",
+                            "confidence": "high" if match_score >= 15 else "medium" if match_score >= 10 else "low",
+                            "match_score": match_score,
+                            "match_reasons": match_reasons
+                        })
+
+        except Exception as e:
+            logger.error(f"Device list search failed: {e}")
+
+        # Remove duplicates and enrich device information
+        seen_device_ids = set()
+        enriched_matches = []
+
+        # Sort candidates by match score (if available)
+        candidate_devices.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+
+        for candidate in candidate_devices:
+            device_id = candidate.get("device_id")
+
+            if device_id in seen_device_ids:
+                continue
+
+            seen_device_ids.add(device_id)
+
+            # Get full device information
+            try:
+                device_result = _api_request("GET", f"devices/{device_id}")
+                if "devices" in device_result and device_result["devices"]:
+                    device_info = device_result["devices"][0]
+
+                    enriched_match = {
+                        "device_id": device_id,
+                        "hostname": device_info.get("hostname"),
+                        "sysName": device_info.get("sysName"),
+                        "ip": device_info.get("ip"),
+                        "type": device_info.get("type"),
+                        "os": device_info.get("os"),
+                        "version": device_info.get("version"),
+                        "hardware": device_info.get("hardware"),
+                        "location": device_info.get("location"),
+                        "status": "up" if device_info.get("status") == 1 else "down" if device_info.get("status") == 0 else "unknown",
+                        "uptime": device_info.get("uptime"),
+                        "match_metadata": {
+                            "method": candidate.get("match_method"),
+                            "confidence": candidate.get("confidence"),
+                            "score": candidate.get("match_score", 0),
+                            "reasons": candidate.get("match_reasons", [])
+                        }
+                    }
+
+                    enriched_matches.append(enriched_match)
+
+            except Exception as e:
+                logger.warning(f"Could not enrich device {device_id}: {e}")
+
+        results["matches"] = enriched_matches
+        results["total_matches"] = len(enriched_matches)
+
+        # Add search insights
+        if len(enriched_matches) == 0:
+            results["status"] = "no_matches"
+            results["suggestions"] = [
+                "[NO] No devices found matching the criteria",
+                "[NOTE] Try:",
+                "   - Enable fuzzy_search for partial matching",
+                "   - Use broader search criteria",
+                "   - Check if search values are correct"
+            ]
+        elif len(enriched_matches) == 1:
+            results["status"] = "exact_match"
+            results["suggestions"] = [
+                "[YES] Found exactly 1 matching device"
+            ]
+        else:
+            results["status"] = "multiple_matches"
+            results["suggestions"] = [
+                f"[YES] Found {len(enriched_matches)} matching devices",
+                "[NOTE] Results are sorted by match quality (highest first)"
+            ]
+
+        return json.dumps(results, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in find_device_by_criteria: {e}")
+        return json.dumps({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_device_type_info(device_os: str) -> str:
+    """ Get device type-specific filtering strategy and recommendations
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "How should I query Proxmox devices?"
+       - "What's the best way to get ports from Cisco devices?"
+       - "為什麼 Proxmox 的 port 查詢結果是空的？"
+       - "Show me device type strategy for linux"
+
+    [NO] DO NOT use when user asks:
+       - "Get ports for device 123" → use get_device_ports()
+       - "List all devices" → use list_devices()
+
+    [NOTE] WHAT THIS DOES:
+       Provides device-type-specific information including:
+       1. Recommended default port filter strategy
+       2. Primary and fallback status fields to use
+       3. Known issues and limitations
+       4. Confidence level for SNMP data
+       5. Best practices for this device type
+
+    [INFO] SUPPORTED DEVICE TYPES:
+       - proxmox, kvm (Virtual platforms)
+       - linux (Linux servers)
+       - ios, iosxe, nxos (Cisco)
+       - junos (Juniper)
+       - routeros (MikroTik)
+       - vyos, pfsense, opnsense (Open source routers/firewalls)
+
+    Args:
+        device_os: Device OS type (e.g., "proxmox", "ios", "linux")
+
+    Returns:
+        JSON string with device type strategy information
+    """
+    logger.info(f" Looking up device type strategy for: {device_os}")
+
+    try:
+        strategy = _get_port_filter_strategy(device_os)
+
+        result = {
+            "device_os": device_os,
+            "strategy": strategy,
+            "usage_examples": {},
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Add specific usage examples based on device type
+        if strategy["default_filter"] is None:
+            result["usage_examples"] = {
+                "recommended": f"get_devices_with_ports(os_filter='{device_os}', port_status=None)",
+                "explanation": "Use port_status=None because this device type often lacks ifOperStatus",
+                "alternatives": [
+                    f"get_device_ports(device_id=123, status_filter=None)",
+                    "Filter results manually based on ifName patterns"
+                ]
+            }
+        else:
+            result["usage_examples"] = {
+                "recommended": f"get_devices_with_ports(os_filter='{device_os}', port_status='up')",
+                "explanation": f"This device type has reliable {strategy['primary_status_field']}",
+                "alternatives": [
+                    f"get_device_ports(device_id=123, status_filter='up')",
+                    f"Use status_filter=None to get all ports"
+                ]
+            }
+
+        # Add summary
+        result["summary"] = {
+            "device_type": strategy["name"],
+            "matched_strategy": strategy["matched"],
+            "confidence_level": strategy["confidence"],
+            "recommended_filter": strategy["default_filter"] or "None (get all ports)",
+            "primary_field": strategy["primary_status_field"],
+            "known_issues_count": len(strategy.get("typical_issues", []))
+        }
+
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in get_device_type_info: {e}")
+        return json.dumps({
+            "status": "error",
+            "device_os": device_os,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def diagnose_device(device_id: int, include_ports: bool = True, include_alerts: bool = True) -> str:
+    """ Comprehensive device diagnostics - One-stop device health check
+
+    [INTENT] USER INTENT MATCHING:
+    [YES] Use this when user asks:
+       - "Diagnose device 123"
+       - "Check health of this device"
+       - "這台設備有什麼問題？"
+       - "為什麼設備 X 不正常？"
+       - "Run full diagnostics on device"
+
+    [NO] DO NOT use when user asks:
+       - "Just show device info" → use get_device_info()
+       - "List all devices" → use list_devices()
+       - "Network overview" → use network_health_overview()
+
+    [NOTE] WHAT THIS DOES:
+       Comprehensive device diagnostic report including:
+       1. Basic device information (hostname, IP, type, status)
+       2. Device type-specific strategy and recommendations
+       3. Port analysis with data quality assessment
+       4. Active alerts and their severity
+       5. Health score (0-100)
+       6. Actionable recommendations
+
+    [INFO] HEALTH SCORE:
+       - 90-100: Excellent [YES]
+       - 75-89: Good [YES]
+       - 50-74: Fair [WARNING]
+       - 0-49: Poor [NO]
+
+    Args:
+        device_id: Device ID to diagnose
+        include_ports: Include port analysis (default: True)
+        include_alerts: Include alert analysis (default: True)
+
+    Returns:
+        JSON string with comprehensive diagnostic report
+    """
+    logger.info(f" Running comprehensive diagnostics for device {device_id}")
+
+    try:
+        diagnostic = {
+            "device_id": device_id,
+            "timestamp": datetime.now().isoformat(),
+            "diagnostic_steps": [],
+            "health_score": 0,
+            "status": "analyzing"
+        }
+
+        # Step 1: Get device basic information
+        logger.info("Step 1: Fetching device information...")
+        diagnostic["diagnostic_steps"].append("Step 1: Fetching basic device information")
+
+        try:
+            device_result = _api_request("GET", f"devices/{device_id}")
+            if "devices" not in device_result or not device_result["devices"]:
+                return json.dumps({
+                    "status": "error",
+                    "device_id": device_id,
+                    "error": "Device not found",
+                    "timestamp": datetime.now().isoformat()
+                }, indent=2, ensure_ascii=False)
+
+            device_info = device_result["devices"][0]
+            diagnostic["device_info"] = {
+                "hostname": device_info.get("hostname"),
+                "sysName": device_info.get("sysName"),
+                "ip": device_info.get("ip"),
+                "type": device_info.get("type"),
+                "os": device_info.get("os"),
+                "version": device_info.get("version"),
+                "hardware": device_info.get("hardware"),
+                "location": device_info.get("location"),
+                "status": "up" if device_info.get("status") == 1 else "down" if device_info.get("status") == 0 else "unknown",
+                "status_raw": device_info.get("status"),
+                "uptime": device_info.get("uptime"),
+                "uptime_short": device_info.get("uptime_short")
+            }
+            diagnostic["diagnostic_steps"].append("[YES] Device information retrieved")
+        except Exception as e:
+            diagnostic["status"] = "error"
+            diagnostic["error"] = f"Failed to get device info: {str(e)}"
+            return json.dumps(diagnostic, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Step 2: Get device type strategy
+        device_os = device_info.get("os", "unknown")
+        logger.info(f"Step 2: Analyzing device type strategy for '{device_os}'...")
+        diagnostic["diagnostic_steps"].append(f"Step 2: Analyzing device type ({device_os})")
+
+        strategy = _get_port_filter_strategy(device_os)
+        diagnostic["device_type_strategy"] = {
+            "os": device_os,
+            "strategy_matched": strategy["matched"],
+            "device_type_name": strategy["name"],
+            "confidence": strategy["confidence"],
+            "recommendations": strategy["recommendations"],
+            "typical_issues": strategy.get("typical_issues", [])
+        }
+        diagnostic["diagnostic_steps"].append(f"[YES] Device type: {strategy['name']}")
+
+        # Step 3: Port analysis (if requested)
+        port_health_score = 50  # Default neutral score
+        if include_ports:
+            logger.info("Step 3: Analyzing ports...")
+            diagnostic["diagnostic_steps"].append("Step 3: Analyzing ports")
+
+            try:
+                ports_result = _api_request("GET", f"devices/{device_id}/ports")
+                all_ports = _extract_data_from_response(ports_result, ['ports'])
+
+                # Filter out ignored/disabled ports
+                active_ports = [p for p in all_ports if not p.get('ignore') and not p.get('disabled')]
+
+                # Evaluate port data quality
+                quality = _evaluate_port_data_quality(active_ports, device_os)
+
+                # Count port statuses
+                port_status_counts = {"up": 0, "down": 0, "unknown": 0, "other": 0}
+                for port in active_ports:
+                    status = _normalize_port_status(port.get('ifOperStatus'))
+                    if status == 'up':
+                        port_status_counts["up"] += 1
+                    elif status == 'down':
+                        port_status_counts["down"] += 1
+                    elif status == 'unknown':
+                        port_status_counts["unknown"] += 1
+                    else:
+                        port_status_counts["other"] += 1
+
+                diagnostic["port_analysis"] = {
+                    "total_ports": len(all_ports),
+                    "active_ports": len(active_ports),
+                    "ignored_disabled_ports": len(all_ports) - len(active_ports),
+                    "port_status_counts": port_status_counts,
+                    "data_quality": quality
+                }
+
+                # Calculate port health score
+                if len(active_ports) > 0:
+                    up_ratio = port_status_counts["up"] / len(active_ports)
+                    port_health_score = round(up_ratio * 100, 1)
+                else:
+                    port_health_score = 100  # No ports = no problems
+
+                diagnostic["diagnostic_steps"].append(f"[YES] Port analysis complete: {len(active_ports)} active ports")
+            except Exception as e:
+                diagnostic["port_analysis"] = {"error": str(e)}
+                diagnostic["diagnostic_steps"].append(f"[WARNING] Port analysis failed: {str(e)}")
+                port_health_score = 50  # Neutral score if port analysis fails
+
+        # Step 4: Alert analysis (if requested)
+        alert_health_score = 100  # Default perfect score
+        if include_alerts:
+            logger.info("Step 4: Analyzing alerts...")
+            diagnostic["diagnostic_steps"].append("Step 4: Analyzing active alerts")
+
+            try:
+                alerts_result = _api_request("GET", "alerts", params={"device_id": device_id})
+                alerts = _extract_data_from_response(alerts_result, ['alerts'])
+
+                # Count by severity
+                alert_severity_counts = {"critical": 0, "warning": 0, "info": 0, "other": 0}
+                for alert in alerts:
+                    severity = str(alert.get("severity", "")).lower()
+                    if "crit" in severity or severity == "5":
+                        alert_severity_counts["critical"] += 1
+                    elif "warn" in severity or severity == "4":
+                        alert_severity_counts["warning"] += 1
+                    elif "info" in severity:
+                        alert_severity_counts["info"] += 1
+                    else:
+                        alert_severity_counts["other"] += 1
+
+                diagnostic["alert_analysis"] = {
+                    "total_active_alerts": len(alerts),
+                    "severity_counts": alert_severity_counts,
+                    "recent_alerts": alerts[:5]  # Top 5 recent alerts
+                }
+
+                # Calculate alert health score (penalize critical more)
+                alert_penalty = (
+                    (alert_severity_counts["critical"] * 30) +
+                    (alert_severity_counts["warning"] * 10) +
+                    (alert_severity_counts["info"] * 2)
+                )
+                alert_health_score = max(0, 100 - alert_penalty)
+
+                diagnostic["diagnostic_steps"].append(f"[YES] Alert analysis complete: {len(alerts)} active alerts")
+            except Exception as e:
+                diagnostic["alert_analysis"] = {"error": str(e)}
+                diagnostic["diagnostic_steps"].append(f"[WARNING] Alert analysis failed: {str(e)}")
+                alert_health_score = 100  # Assume no alerts if analysis fails
+
+        # Step 5: Calculate overall health score
+        device_status_score = 100 if diagnostic["device_info"]["status"] == "up" else 0
+
+        # Weighted average: Device status (40%), Ports (30%), Alerts (30%)
+        overall_health = round(
+            (device_status_score * 0.4) +
+            (port_health_score * 0.3) +
+            (alert_health_score * 0.3),
+            1
+        )
+
+        diagnostic["health_score"] = overall_health
+
+        # Determine overall status
+        if overall_health >= 90:
+            diagnostic["status"] = "excellent"
+            diagnostic["status_emoji"] = "[YES]"
+        elif overall_health >= 75:
+            diagnostic["status"] = "good"
+            diagnostic["status_emoji"] = "👍"
+        elif overall_health >= 50:
+            diagnostic["status"] = "fair"
+            diagnostic["status_emoji"] = "[WARNING]"
+        else:
+            diagnostic["status"] = "poor"
+            diagnostic["status_emoji"] = "🔴"
+
+        # Step 6: Generate recommendations
+        recommendations = []
+
+        if diagnostic["device_info"]["status"] == "down":
+            recommendations.append("🔴 CRITICAL: Device is DOWN - check physical connectivity and power")
+
+        if include_alerts and diagnostic.get("alert_analysis", {}).get("severity_counts", {}).get("critical", 0) > 0:
+            critical_count = diagnostic["alert_analysis"]["severity_counts"]["critical"]
+            recommendations.append(f"[WARNING] HIGH PRIORITY: {critical_count} critical alert(s) on this device")
+
+        if include_ports:
+            port_analysis = diagnostic.get("port_analysis", {})
+            if port_analysis.get("port_status_counts", {}).get("down", 0) > 0:
+                down_count = port_analysis["port_status_counts"]["down"]
+                recommendations.append(f"[WARNING] ATTENTION: {down_count} port(s) are DOWN")
+
+            data_quality = port_analysis.get("data_quality", {})
+            if data_quality.get("confidence") in ["low", "very_low"]:
+                recommendations.append(f"[NOTE] Data quality is {data_quality['confidence']} - see device_type_strategy for guidance")
+
+        # Add device-type-specific recommendations
+        if not strategy["matched"]:
+            recommendations.append(f"ℹ️ Unknown device type '{device_os}' - using default strategy")
+
+        if overall_health >= 90:
+            recommendations.append("[YES] Device health is excellent - no issues detected")
+        elif overall_health >= 75:
+            recommendations.append("👍 Device health is good - minor issues present")
+        elif overall_health >= 50:
+            recommendations.append("[WARNING] Device health is fair - several issues need attention")
+        else:
+            recommendations.append("🔴 Device health is poor - immediate action required")
+
+        diagnostic["recommendations"] = recommendations
+
+        # Summary
+        diagnostic["summary"] = {
+            "device_id": device_id,
+            "hostname": diagnostic["device_info"]["hostname"],
+            "health_score": overall_health,
+            "status": diagnostic["status"],
+            "device_up": diagnostic["device_info"]["status"] == "up",
+            "active_alerts": diagnostic.get("alert_analysis", {}).get("total_active_alerts", 0) if include_alerts else "not_analyzed",
+            "active_ports": diagnostic.get("port_analysis", {}).get("active_ports", 0) if include_ports else "not_analyzed"
+        }
+
+        diagnostic["diagnostic_steps"].append("[YES] Diagnostic complete")
+
+        return json.dumps(diagnostic, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error in diagnose_device: {e}")
+        return json.dumps({
+            "status": "error",
+            "device_id": device_id,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, indent=2, ensure_ascii=False)
 
 # ───────────────────────── Cache Management ─────────────────────────
 
@@ -3307,9 +5369,74 @@ def cache_stats() -> str:
 
 # ───────────────────────── Main Entry Point ─────────────────────────
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="LibreNMS FastMCP Server v3.10.2 - Emoji-Free Docstrings",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Using command line arguments:
+  uvx --with mcp python3 mcp_librenms.py --url "http://192.168.1.68" --token "your_api_token"
+
+  # Using environment variables:
+  LIBRENMS_URL="http://192.168.1.68" LIBRENMS_TOKEN="your_token" python3 mcp_librenms.py
+
+  # Mixed (command line takes priority):
+  LIBRENMS_URL="http://192.168.1.68" python3 mcp_librenms.py --token "your_token" --cache-ttl 600
+
+Configuration Priority: Command Line Args > Environment Variables > Defaults
+        """
+    )
+
+    # Connection settings
+    parser.add_argument('--url', '--host',
+                        dest='url',
+                        help='LibreNMS base URL (e.g., http://192.168.1.68 or https://librenms.example.com)')
+    parser.add_argument('--token', '--api-token',
+                        dest='token',
+                        help='LibreNMS API token')
+
+    # SSL/TLS settings
+    parser.add_argument('--verify-ssl',
+                        type=lambda x: x.lower() in ('true', '1', 'yes'),
+                        default=None,
+                        help='Verify SSL certificates (true/false, default: true)')
+
+    # Performance settings
+    parser.add_argument('--cache-ttl',
+                        type=int,
+                        default=None,
+                        help='Cache TTL in seconds (default: 300)')
+    parser.add_argument('--timeout',
+                        type=int,
+                        default=None,
+                        help='API request timeout in seconds (default: 30)')
+    parser.add_argument('--max-retries',
+                        type=int,
+                        default=None,
+                        help='Maximum number of retries for failed requests (default: 3)')
+    parser.add_argument('--batch-size',
+                        type=int,
+                        default=None,
+                        help='Batch size for paginated requests (default: 200)')
+
+    return parser.parse_args()
+
 if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_arguments()
+
+    # Initialize configuration with command line args
+    config = Config(args)
+
+    # Initialize cache and session with config values
+    cache = SimpleCache(config.CACHE_TTL)
+    initialize_session()
+
+    # Display startup information
     logger.info("=" * 80)
-    logger.info("LibreNMS FastMCP Server v3.5 - Enhanced with ARP Table and IP-to-MAC Support")
+    logger.info("LibreNMS FastMCP Server v3.10.2 - Emoji-Free Docstrings")
     logger.info("=" * 80)
     logger.info("Core Features:")
     logger.info("  ✓ Comprehensive alert history with multiple data sources")
@@ -3322,6 +5449,7 @@ if __name__ == "__main__":
     logger.info("  ✓ MAC address tracking and location discovery (FIXED)")
     logger.info("  ✓ ARP table queries and IP-to-MAC resolution (NEW)")
     logger.info("  ✓ Network layer 2/3 correlation and analysis (NEW)")
+    logger.info("  ✓ Command line argument support (NEW)")
     logger.info("=" * 80)
     logger.info("Available Tools:")
     logger.info("  • librenms_api() - Raw API calls")
@@ -3347,6 +5475,7 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     logger.info(f"Configuration: Cache TTL={config.CACHE_TTL}s, Timeout={config.TIMEOUT}s")
     logger.info(f"Enhanced Batch Size={config.BATCH_SIZE}, Max Retries={config.MAX_RETRIES}")
+    logger.info(f"SSL Verification: {config.VERIFY_SSL}")
     logger.info("=" * 80)
-    
+
     mcp.run()
