@@ -3968,7 +3968,7 @@ async def main():
                 read_stream,
                 write_stream,
                 InitializationOptions(
-                    server_name="graylog-mcp-complete-source-fixed",
+                    server_name="Graylog",
                     server_version=__version__,
                     capabilities=server.get_capabilities(
                         notification_options=NotificationOptions(),
