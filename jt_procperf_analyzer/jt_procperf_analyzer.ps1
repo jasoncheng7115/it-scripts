@@ -71,7 +71,7 @@
     輸出格式：CSV、JSON 或 TSV，預設 CSV
 
 .PARAMETER OutputPath
-    輸出目錄路徑，預設為腳本所在目錄
+    輸出目錄路徑，預設為腳本所在目錄（若無法取得則使用當前工作目錄）
 
 .PARAMETER OutputFileName
     自訂輸出檔名（不含副檔名），預設自動產生時間戳記檔名
@@ -163,8 +163,7 @@ param(
 
     [Parameter(HelpMessage = "輸出目錄路徑")]
     [Alias("Path", "O")]
-    [ValidateNotNullOrEmpty()]
-    [string]$OutputPath = $PSScriptRoot,
+    [string]$OutputPath = "",
 
     [Parameter(HelpMessage = "自訂檔名（不含副檔名）")]
     [Alias("File", "Name")]
@@ -250,6 +249,19 @@ $Script:VERSION = "2.10.14"
 $Script:VERSION_NOTE = "修復 PID 類型不匹配導致 I/O 為 0"
 $Script:VERSION_DATE = "2025-12-20"
 $Script:AUTHOR = "Jason Cheng (Jason Tools)"
+#endregion
+
+#region 路徑設定
+# 如果使用者沒有指定輸出路徑，則使用腳本所在目錄
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    if ($PSScriptRoot) {
+        $OutputPath = $PSScriptRoot
+    }
+    else {
+        # 當 $PSScriptRoot 為空時（某些執行環境），使用當前工作目錄
+        $OutputPath = (Get-Location).Path
+    }
+}
 #endregion
 
 #region Help 說明
@@ -1475,7 +1487,7 @@ function Start-PerformanceCollection {
                 MinimumMemoryMB  = $MinimumMemoryMB
             }
         }
-        ("# METADATA: " + ($Metadata | ConvertTo-Json -Compress)) | Set-Content -Path $OutputFilePath -Encoding UTF8
+        ("# METADATA: " + ($Metadata | ConvertTo-Json -Compress -Depth 10)) | Set-Content -Path $OutputFilePath -Encoding UTF8
     }
 
     # 主收集迴圈
@@ -1723,14 +1735,15 @@ function Start-PerformanceCollection {
                         }
 
                         "TSV" {
+                            if ($IsFirstWrite) {
+                                # 第一次寫入：包含標頭
+                                $Headers = ($CurrentIntervalMetrics[0].PSObject.Properties | ForEach-Object { $_.Name }) -join "`t"
+                                $Headers | Set-Content -Path $OutputFilePath -Encoding UTF8
+                                $IsFirstWrite = $false
+                            }
+
+                            # 寫入資料列
                             foreach ($Metric in $CurrentIntervalMetrics) {
-                                if ($IsFirstWrite) {
-                                    # 寫入標頭
-                                    $Headers = ($Metric.PSObject.Properties | ForEach-Object { $_.Name }) -join "`t"
-                                    $Headers | Set-Content -Path $OutputFilePath -Encoding UTF8
-                                    $IsFirstWrite = $false
-                                }
-                                # 寫入資料
                                 $Values = ($Metric.PSObject.Properties | ForEach-Object { $_.Value }) -join "`t"
                                 $Values | Add-Content -Path $OutputFilePath -Encoding UTF8
                             }
@@ -1738,7 +1751,7 @@ function Start-PerformanceCollection {
 
                         "JSON" {
                             # JSONL 格式：每行一個 JSON 物件
-                            $JsonLines = $CurrentIntervalMetrics | ForEach-Object { $_ | ConvertTo-Json -Compress }
+                            $JsonLines = $CurrentIntervalMetrics | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 }
                             $JsonLines | Add-Content -Path $OutputFilePath -Encoding UTF8
                         }
                     }
