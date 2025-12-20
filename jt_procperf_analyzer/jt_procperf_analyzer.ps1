@@ -71,7 +71,7 @@
     輸出格式：CSV、JSON 或 TSV，預設 CSV
 
 .PARAMETER OutputPath
-    輸出目錄路徑，預設為使用者的 Documents 資料夾
+    輸出目錄路徑，預設為腳本所在目錄
 
 .PARAMETER OutputFileName
     自訂輸出檔名（不含副檔名），預設自動產生時間戳記檔名
@@ -164,7 +164,7 @@ param(
     [Parameter(HelpMessage = "輸出目錄路徑")]
     [Alias("Path", "O")]
     [ValidateNotNullOrEmpty()]
-    [string]$OutputPath = [Environment]::GetFolderPath('MyDocuments'),
+    [string]$OutputPath = $PSScriptRoot,
 
     [Parameter(HelpMessage = "自訂檔名（不含副檔名）")]
     [Alias("File", "Name")]
@@ -270,7 +270,7 @@ if ($Help) {
   -D, -Duration <分鐘>         監控時長（預設：60）
   -I, -Interval <秒>           取樣間隔（預設：60）
   -F, -Format <格式>           輸出格式：CSV、JSON、TSV（預設：CSV）
-  -O, -Path <路徑>             輸出目錄（預設：我的文件）
+  -O, -Path <路徑>             輸出目錄（預設：腳本所在目錄）
   -Inc, -Include <陣列>        包含的 Process（包含名單）
   -Exc, -Exclude <陣列>        排除的 Process（排除名單）
   -CPU, -MinCPU <百分比>       只收集 CPU > N% 的 Process（預設：0.1）
