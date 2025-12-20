@@ -137,13 +137,6 @@
     建議: 以管理員權限執行以取得完整指標
 #>
 
-#region 版本資訊 (統一管理，只需修改此處)
-$Script:VERSION = "2.10.14"
-$Script:VERSION_NOTE = "修復 PID 類型不匹配導致 I/O 為 0"
-$Script:VERSION_DATE = "2025-12-20"
-$Script:AUTHOR = "Jason Cheng (Jason Tools)"
-#endregion
-
 [CmdletBinding()]
 param(
     # Help 參數
@@ -251,6 +244,13 @@ param(
     [ValidateRange(100, 102400)]
     [int]$MinimumFreeSpaceMB = 500
 )
+
+#region 版本資訊 (統一管理，只需修改此處)
+$Script:VERSION = "2.10.14"
+$Script:VERSION_NOTE = "修復 PID 類型不匹配導致 I/O 為 0"
+$Script:VERSION_DATE = "2025-12-20"
+$Script:AUTHOR = "Jason Cheng (Jason Tools)"
+#endregion
 
 #region Help 說明
 if ($Help) {
