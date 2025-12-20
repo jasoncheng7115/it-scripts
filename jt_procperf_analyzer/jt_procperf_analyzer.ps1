@@ -245,8 +245,8 @@ param(
 )
 
 #region 版本資訊 (統一管理，只需修改此處)
-$Script:VERSION = "2.10.14"
-$Script:VERSION_NOTE = "修復 PID 類型不匹配導致 I/O 為 0"
+$Script:VERSION = "2.10.15"
+$Script:VERSION_NOTE = "修復 PID 重用導致 CPU 負值問題"
 $Script:VERSION_DATE = "2025-12-20"
 $Script:AUTHOR = "Jason Cheng (Jason Tools)"
 #endregion
@@ -632,7 +632,17 @@ function Get-ProcessCPUPercent {
 
             if ($TimeDiff -gt 0) {
                 $CPUDiff = $CurrentCPUTime - $LastMeasure.CPUTime
-                $CPUPercent = [Math]::Round(($CPUDiff / $TimeDiff) * 100 / $env:NUMBER_OF_PROCESSORS, 2)
+
+                # 檢查 CPUDiff 是否為負值（Process 重啟/PID 重用）
+                if ($CPUDiff -lt 0) {
+                    # Process 重啟，重置測量值
+                    $CPUPercent = 0
+                    # 清除舊的測量記錄（下一次迭代會重新建立基準）
+                    $Script:LastCPUMeasurements.Remove($ProcessID)
+                }
+                else {
+                    $CPUPercent = [Math]::Round(($CPUDiff / $TimeDiff) * 100 / $env:NUMBER_OF_PROCESSORS, 2)
+                }
             }
             else {
                 $CPUPercent = 0
@@ -686,12 +696,21 @@ function Get-ProcessIOMetrics {
             $TimeDiff = ($CurrentTime - $LastMeasure.Time).TotalSeconds
 
             if ($TimeDiff -gt 0) {
-                $TimeDiffKB = $TimeDiff * 1KB
                 $ReadDiff = $ReadBytes - $LastMeasure.ReadBytes
                 $WriteDiff = $WriteBytes - $LastMeasure.WriteBytes
 
-                if ($ReadDiff -gt 0) { $ReadBytesSec = [Math]::Round($ReadDiff / $TimeDiffKB, 1) }
-                if ($WriteDiff -gt 0) { $WriteBytesSec = [Math]::Round($WriteDiff / $TimeDiffKB, 1) }
+                # 檢查是否為 Process 重啟（PID 重用）
+                if ($ReadDiff -lt 0 -or $WriteDiff -lt 0) {
+                    # Process 重啟，重置測量值
+                    $Script:LastIOMeasurements.Remove($ProcessID)
+                    $ReadBytesSec = 0
+                    $WriteBytesSec = 0
+                }
+                else {
+                    $TimeDiffKB = $TimeDiff * 1KB
+                    if ($ReadDiff -gt 0) { $ReadBytesSec = [Math]::Round($ReadDiff / $TimeDiffKB, 1) }
+                    if ($WriteDiff -gt 0) { $WriteBytesSec = [Math]::Round($WriteDiff / $TimeDiffKB, 1) }
+                }
             }
         }
 
@@ -783,12 +802,19 @@ function Get-MemoryLeakIndicators {
                 $PrivateMemoryDelta = $CurrentPrivateMemoryMB - $LastMeasure.PrivateMemoryMB
                 $HandleDelta = $CurrentHandleCount - $LastMeasure.HandleCount
 
-                $LeakIndicators.MemoryGrowthMBPerMin = [Math]::Round($WorkingSetDelta / $TimeDiff, 2)
-                $LeakIndicators.HandleGrowthPerMin = [Math]::Round($HandleDelta / $TimeDiff, 2)
+                # 檢查是否為 Process 重啟（記憶體大幅下降表示可能是 PID 重用）
+                if ($WorkingSetDelta -lt -100) {
+                    # Process 重啟，重置測量值
+                    $Script:LastMemoryMeasurements.Remove($ProcessID)
+                }
+                else {
+                    $LeakIndicators.MemoryGrowthMBPerMin = [Math]::Round($WorkingSetDelta / $TimeDiff, 2)
+                    $LeakIndicators.HandleGrowthPerMin = [Math]::Round($HandleDelta / $TimeDiff, 2)
 
-                # 簡單的洩漏偵測邏輯：持續增長
-                if ($LeakIndicators.MemoryGrowthMBPerMin -gt 5 -or $LeakIndicators.HandleGrowthPerMin -gt 10) {
-                    $LeakIndicators.PossibleLeak = $true
+                    # 簡單的洩漏偵測邏輯：持續增長
+                    if ($LeakIndicators.MemoryGrowthMBPerMin -gt 5 -or $LeakIndicators.HandleGrowthPerMin -gt 10) {
+                        $LeakIndicators.PossibleLeak = $true
+                    }
                 }
             }
         }
