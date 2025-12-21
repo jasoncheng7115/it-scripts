@@ -1,12 +1,12 @@
 ﻿<#
 ================================================================================
-  JT Process Performance Analyzer v2.10.14 (修復 PID 類型不匹配導致 I/O 為 0)
+  JT Process Performance Analyzer v2.11.0 (加入 IOPS 監控)
   Windows Process 效能監控與分析工具
 ================================================================================
 
   作者：   Jason Cheng (Jason Tools)
-  版本：   2.10.14 (修復 PID 類型不匹配導致 I/O 為 0)
-  日期：   2025-12-20
+  版本：   2.11.0 (加入 IOPS 監控 - IOReadOpsSec/IOWriteOpsSec)
+  日期：   2025-12-21
   授權：   MIT License
 
   Copyright (c) 2025 Jason Cheng (Jason Tools)
@@ -131,8 +131,8 @@
 
 .NOTES
     作者: Jason Cheng (Jason Tools)
-    版本: 2.10.14
-    發布日期: 2025-12-20
+    版本: 2.11.0
+    發布日期: 2025-12-21
     需求: PowerShell 5.1+, Windows 7/Server 2008 R2+
     建議: 以管理員權限執行以取得完整指標
 #>
@@ -188,7 +188,7 @@ param(
     [Alias("System", "Sys")]
     [switch]$IncludeSystemMetrics,
 
-    [Parameter(HelpMessage = "包含 CommandLine 資訊（預設不包含，可提升 30% 效能）")]
+    [Parameter(HelpMessage = "強制個別查詢 CommandLine（批次查詢模式下會自動包含，無需此參數）")]
     [Alias("Cmd", "CommandLine")]
     [switch]$IncludeCommandLine,
 
@@ -245,9 +245,9 @@ param(
 )
 
 #region 版本資訊 (統一管理，只需修改此處)
-$Script:VERSION = "2.10.15"
-$Script:VERSION_NOTE = "修復 PID 重用導致 CPU 負值問題"
-$Script:VERSION_DATE = "2025-12-20"
+$Script:VERSION = "2.11.0"
+$Script:VERSION_NOTE = "加入 IOPS 監控 (IOReadOpsSec/IOWriteOpsSec)"
+$Script:VERSION_DATE = "2025-12-21"
 $Script:AUTHOR = "Jason Cheng (Jason Tools)"
 #endregion
 
@@ -677,19 +677,25 @@ function Get-ProcessIOMetrics {
     try {
         $ProcessID = $Process.Id
 
-        # 只讀取 Read/Write，完全跳過 Other（節省 33% 操作）
+        # 讀取 Read/Write 的位元組數和操作次數
         $ReadBytes = 0
         $WriteBytes = 0
+        $ReadOps = 0
+        $WriteOps = 0
 
         # 從 WMI 取得 I/O 資訊（優先使用批次查詢的資料）
         if ($null -ne $WMIProcessData) {
             $ReadBytes = 0 + $WMIProcessData.ReadTransferCount
             $WriteBytes = 0 + $WMIProcessData.WriteTransferCount
+            $ReadOps = 0 + $WMIProcessData.ReadOperationCount
+            $WriteOps = 0 + $WMIProcessData.WriteOperationCount
         }
 
         # 計算速率（與上次測量比較）
         $ReadBytesSec = 0
         $WriteBytesSec = 0
+        $ReadOpsSec = 0
+        $WriteOpsSec = 0
 
         if ($Script:LastIOMeasurements.ContainsKey($ProcessID)) {
             $LastMeasure = $Script:LastIOMeasurements[$ProcessID]
@@ -698,6 +704,8 @@ function Get-ProcessIOMetrics {
             if ($TimeDiff -gt 0) {
                 $ReadDiff = $ReadBytes - $LastMeasure.ReadBytes
                 $WriteDiff = $WriteBytes - $LastMeasure.WriteBytes
+                $ReadOpsDiff = $ReadOps - $LastMeasure.ReadOps
+                $WriteOpsDiff = $WriteOps - $LastMeasure.WriteOps
 
                 # 檢查是否為 Process 重啟（PID 重用）
                 if ($ReadDiff -lt 0 -or $WriteDiff -lt 0) {
@@ -705,36 +713,44 @@ function Get-ProcessIOMetrics {
                     $Script:LastIOMeasurements.Remove($ProcessID)
                     $ReadBytesSec = 0
                     $WriteBytesSec = 0
+                    $ReadOpsSec = 0
+                    $WriteOpsSec = 0
                 }
                 else {
                     $TimeDiffKB = $TimeDiff * 1KB
                     if ($ReadDiff -gt 0) { $ReadBytesSec = [Math]::Round($ReadDiff / $TimeDiffKB, 1) }
                     if ($WriteDiff -gt 0) { $WriteBytesSec = [Math]::Round($WriteDiff / $TimeDiffKB, 1) }
+                    if ($ReadOpsDiff -gt 0) { $ReadOpsSec = [Math]::Round($ReadOpsDiff / $TimeDiff, 1) }
+                    if ($WriteOpsDiff -gt 0) { $WriteOpsSec = [Math]::Round($WriteOpsDiff / $TimeDiff, 1) }
                 }
             }
         }
 
-        # 更新測量值（只儲存 Read/Write，節省記憶體和時間）
+        # 更新測量值（儲存位元組數和操作次數）
         if (-not $Script:LastIOMeasurements.ContainsKey($ProcessID)) {
             $Script:LastIOMeasurements[$ProcessID] = @{
                 Time       = $CurrentTime
                 ReadBytes  = $ReadBytes
                 WriteBytes = $WriteBytes
+                ReadOps    = $ReadOps
+                WriteOps   = $WriteOps
             }
         } else {
             $Measure = $Script:LastIOMeasurements[$ProcessID]
             $Measure.Time = $CurrentTime
             $Measure.ReadBytes = $ReadBytes
             $Measure.WriteBytes = $WriteBytes
+            $Measure.ReadOps = $ReadOps
+            $Measure.WriteOps = $WriteOps
         }
 
-        # 只返回 Read/Write 速率
+        # 返回 Read/Write 速率（KB/sec 和 IOPS）
         return @{
             ReadBytesSec  = $ReadBytesSec
             WriteBytesSec = $WriteBytesSec
             OtherBytesSec = 0
-            ReadOpsSec    = 0
-            WriteOpsSec   = 0
+            ReadOpsSec    = $ReadOpsSec
+            WriteOpsSec   = $WriteOpsSec
             OtherOpsSec   = 0
         }
     }
@@ -940,22 +956,20 @@ function Get-ProcessMetrics {
             catch { }
         }
 
-        # CommandLine 資訊（預設不收集，可選擇包含）
-        if ($IncludeCommandLine) {
-            try {
-                if ($null -ne $WMIProcessData) {
-                    $Metrics.CommandLine = $WMIProcessData.CommandLine
-                }
-                else {
-                    # 如果沒有傳入 WMI 資料，則個別查詢（向後相容）
-                    $WMIProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction SilentlyContinue
-                    if ($WMIProcess) {
-                        $Metrics.CommandLine = $WMIProcess.CommandLine
-                    }
+        # CommandLine 資訊（從批次查詢的 WMI 資料取得，無額外查詢成本）
+        try {
+            if ($null -ne $WMIProcessData) {
+                $Metrics.CommandLine = $WMIProcessData.CommandLine
+            }
+            elseif ($IncludeCommandLine) {
+                # 僅在明確要求時才個別查詢（向後相容）
+                $WMIProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction SilentlyContinue
+                if ($WMIProcess) {
+                    $Metrics.CommandLine = $WMIProcess.CommandLine
                 }
             }
-            catch { }
         }
+        catch { }
 
         # Owner 查詢（預設不查詢，因為每個 Process 都需要調用 WMI 方法，會增加 CPU 負載）
         if ($IncludeOwnerInfo) {
@@ -1038,12 +1052,16 @@ function Get-ProcessMetrics {
         if (-not $SkipIOMetrics) {
             $IOStart = Get-Date
 
-            # 從 WMI 讀取 I/O 數據（只讀 Read/Write，跳過 Other）
+            # 從 WMI 讀取 I/O 數據（位元組數和操作次數）
             $ReadBytes = 0
             $WriteBytes = 0
+            $ReadOps = 0
+            $WriteOps = 0
             if ($null -ne $WMIProcessData) {
                 $ReadBytes = 0 + $WMIProcessData.ReadTransferCount
                 $WriteBytes = 0 + $WMIProcessData.WriteTransferCount
+                $ReadOps = 0 + $WMIProcessData.ReadOperationCount
+                $WriteOps = 0 + $WMIProcessData.WriteOperationCount
             }
 
             # 計算速率（與上次測量比較）
@@ -1056,9 +1074,13 @@ function Get-ProcessMetrics {
                     $TimeDiffKB = $TimeDiff * 1KB
                     $ReadDiff = $ReadBytes - $LastMeasure.ReadBytes
                     $WriteDiff = $WriteBytes - $LastMeasure.WriteBytes
+                    $ReadOpsDiff = $ReadOps - $LastMeasure.ReadOps
+                    $WriteOpsDiff = $WriteOps - $LastMeasure.WriteOps
 
                     if ($ReadDiff -gt 0) { $Metrics.IOReadKBSec = [Math]::Round($ReadDiff / $TimeDiffKB, 1) }
                     if ($WriteDiff -gt 0) { $Metrics.IOWriteKBSec = [Math]::Round($WriteDiff / $TimeDiffKB, 1) }
+                    if ($ReadOpsDiff -gt 0) { $Metrics.IOReadOpsSec = [Math]::Round($ReadOpsDiff / $TimeDiff, 1) }
+                    if ($WriteOpsDiff -gt 0) { $Metrics.IOWriteOpsSec = [Math]::Round($WriteOpsDiff / $TimeDiff, 1) }
                 }
             }
 
@@ -1068,12 +1090,16 @@ function Get-ProcessMetrics {
                     Time = $FunctionStart
                     ReadBytes = $ReadBytes
                     WriteBytes = $WriteBytes
+                    ReadOps = $ReadOps
+                    WriteOps = $WriteOps
                 }
             } else {
                 $Measure = $Script:LastIOMeasurements[$ProcessID]
                 $Measure.Time = $FunctionStart
                 $Measure.ReadBytes = $ReadBytes
                 $Measure.WriteBytes = $WriteBytes
+                $Measure.ReadOps = $ReadOps
+                $Measure.WriteOps = $WriteOps
             }
 
             $Metrics.IODataKBSec = $Metrics.IOReadKBSec + $Metrics.IOWriteKBSec
