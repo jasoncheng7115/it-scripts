@@ -5,7 +5,7 @@
 ################################################################################
 #
 # Name:     JT Process Performance Analyzer (Linux Version)
-# Version:  1.0.15
+# Version:  1.0.16
 # Author:   Jason Cheng (Jason Tools)
 # Date:     2025-12-21
 # Purpose:  Linux Process performance monitoring and analysis tool
@@ -27,8 +27,8 @@
 ################################################################################
 
 # Version information
-readonly VERSION="1.0.15"
-readonly VERSION_NOTE="CRITICAL FIX: Remove command substitution for calculate_io_rates and calculate_memory_leak_indicators"
+readonly VERSION="1.0.16"
+readonly VERSION_NOTE="Remove bc dependency - use only POSIX standard tools"
 readonly VERSION_DATE="2025-12-21"
 readonly AUTHOR="Jason Cheng (Jason Tools)"
 
@@ -225,8 +225,8 @@ check_environment() {
         exit 1
     fi
 
-    # Check required tools
-    local required_tools=("bc" "awk" "date")
+    # Check required tools (only POSIX standard tools)
+    local required_tools=("awk" "date")
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
             print_message "error" "Missing required tool: $tool"
@@ -1056,9 +1056,9 @@ main_collection_loop() {
             fi
         done
 
-        # Calculate elapsed time for this interval
+        # Calculate elapsed time for this interval (using awk instead of bc)
         local interval_end=$(date +%s.%N)
-        local elapsed=$(echo "$interval_end - $interval_start" | bc)
+        local elapsed=$(awk "BEGIN {printf \"%.2f\", $interval_end - $interval_start}")
         local elapsed_int=$(printf "%.0f" "$elapsed")
 
         # Show progress
@@ -1068,13 +1068,13 @@ main_collection_loop() {
             print_message "info" "[$timestamp] Progress: $i/$TOTAL_ITERATIONS ($progress%) - Collected $collected_count processes (${elapsed_int}s)"
         fi
 
-        # Wait for next interval with dynamic sleep adjustment
+        # Wait for next interval with dynamic sleep adjustment (using awk for float operations)
         if [[ $i -lt $TOTAL_ITERATIONS ]]; then
-            local sleep_time=$(echo "$INTERVAL_SECONDS - $elapsed" | bc)
+            local sleep_time=$(awk "BEGIN {printf \"%.2f\", $INTERVAL_SECONDS - $elapsed}")
 
-            if [[ $(echo "$sleep_time > 0.1" | bc) -eq 1 ]]; then
+            if [[ $(awk "BEGIN {print ($sleep_time > 0.1)}") -eq 1 ]]; then
                 sleep "$sleep_time"
-            elif [[ $(echo "$elapsed > $INTERVAL_SECONDS" | bc) -eq 1 ]]; then
+            elif [[ $(awk "BEGIN {print ($elapsed > $INTERVAL_SECONDS)}") -eq 1 ]]; then
                 print_message "warning" "Collection took ${elapsed_int}s (exceeds ${INTERVAL_SECONDS}s interval)"
                 # No sleep, continue immediately to next iteration
             fi
