@@ -1,7 +1,5 @@
 # JT Process Performance Analyzer
 
-> 🐧 **Linux 使用者看這裡！** 現已推出 Linux 版本 → [README_LINUX.md](./README_LINUX.md) | [快速開始](./QUICKSTART_LINUX.md)
-
 ## 🎉 最新版本
 
 ### Windows v2.11.0 (2025-12-21)
