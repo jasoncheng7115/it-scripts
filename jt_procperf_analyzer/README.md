@@ -1,15 +1,47 @@
 # JT Process Performance Analyzer
 
+> 🐧 **Linux 使用者看這裡！** 現已推出 Linux 版本 → [README_LINUX.md](./README_LINUX.md) | [快速開始](./QUICKSTART_LINUX.md)
+
+## 🎉 最新版本
+
+### Windows v2.11.0 (2025-12-21)
+- 🆕 **新增 IOPS 監控**：IOReadOpsSec / IOWriteOpsSec
+- ✅ 從 WMI 讀取 ReadOperationCount 和 WriteOperationCount
+- ✅ 與 Linux 版本欄位完全同步
+- 📊 [CHANGELOG](./CHANGELOG.md) | [README](./README.md)
+
+### Linux v1.0.16 (2025-12-21)
+- 🆕 **移除 bc 依賴**：只使用 POSIX 標準工具
+- ✅ 改用 awk 處理所有浮點數運算
+- ✅ 適用於所有 Linux 發行版、容器、嵌入式系統
+- 📊 [CHANGELOG](./CHANGELOG_LINUX.md) | [README](./README_LINUX.md)
+
+---
+
 ## 📖 簡介
 
-**JT Process Performance Analyzer** 是一款全方位的 Windows Process 效能監控與分析工具，能夠深入收集 CPU、記憶體、I/O、Thread、Handle 等多種效能指標，並提供記憶體洩漏偵測功能。
+**JT Process Performance Analyzer** 是一款全方位的 Process 效能監控與分析工具，支援 **Windows** 和 **Linux** 平台，能夠深入收集 CPU、記憶體、I/O、Thread、Handle/FD 等多種效能指標，並提供記憶體洩漏偵測功能。
+
+### 🖥️ 跨平台支援
+
+| 平台 | 腳本檔案 | 文件 | 狀態 | 最新更新 |
+|-----|---------|------|------|---------|
+| **Windows** | `jt_procperf_analyzer.ps1` | [README](./README.md) \| [快速開始](./QUICKSTART.md) | ✅ v2.11.0 | 🆕 IOPS 監控 |
+| **Linux** | `jt_procperf_analyzer.sh` | [README](./README_LINUX.md) \| [快速開始](./QUICKSTART_LINUX.md) | ✅ v1.0.16 | 🆕 移除 bc 依賴 |
+| **欄位對照** | - | [欄位映射表](./FIELD_MAPPING.md) | ✅ 完整文件 | 37+7 混合欄位 |
+
+---
+
+## 📖 簡介（Windows 版本）
+
+**JT Process Performance Analyzer (Windows)** 是一款全方位的 Windows Process 效能監控與分析工具，能夠深入收集 CPU、記憶體、I/O、Thread、Handle 等多種效能指標，並提供記憶體洩漏偵測功能。
 
 ### ✨ 主要特色
 
 - ✅ **完整的效能指標收集**
   - CPU 使用率、CPU Time、User/Kernel Time、Priority
   - 記憶體（Working Set、Private、Virtual、Paged/Non-Paged）
-  - I/O 速率（Read/Write KB/s、IOPS）
+  - I/O 速率（Read/Write KB/s）、🆕 **IOPS**（Read/Write Ops/sec）
   - Thread 與 Handle 計數
   - Process 狀態、Owner、版本資訊
 
@@ -196,7 +228,7 @@
 .\jt_procperf_analyzer.ps1 -DurationMinutes 60
 
 # 執行中可以開啟檔案查看（檔案會立即產生）
-# 位置：C:\Users\YourName\Documents\process_metrics_*.csv
+# 位置：腳本所在目錄\process_metrics_*.csv
 ```
 
 ### 執行期間的提示訊息
@@ -237,7 +269,7 @@
 # 或手動測試
 .\jt_procperf_analyzer.ps1 -DurationMinutes 1 -IntervalSeconds 5
 
-# 執行期間立即開啟 Documents 資料夾
+# 執行期間立即開啟腳本所在目錄
 # 您會看到檔案即時產生並持續增大
 ```
 
@@ -562,8 +594,9 @@ Restart-Service -Name "Winmgmt" -Force
 
 - **授權**: MIT License
 - **作者**: Jason Cheng (Jason Tools)
-- **版本**: 2.10.14
-- **更新日期**: 2025-12-20
+- **版本**:
+  - Windows: v2.11.0 (2025-12-21) - 新增 IOPS 監控
+  - Linux: v1.0.16 (2025-12-21) - 移除 bc 依賴
 
 ### 意見回饋與問題回報
 
