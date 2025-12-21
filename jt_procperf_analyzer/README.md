@@ -6,13 +6,11 @@
 - 🆕 **新增 IOPS 監控**：IOReadOpsSec / IOWriteOpsSec
 - ✅ 從 WMI 讀取 ReadOperationCount 和 WriteOperationCount
 - ✅ 與 Linux 版本欄位完全同步
-- 📊 [CHANGELOG](./CHANGELOG.md) | [README](./README.md)
 
 ### Linux v1.0.16 (2025-12-21)
 - 🆕 **移除 bc 依賴**：只使用 POSIX 標準工具
 - ✅ 改用 awk 處理所有浮點數運算
 - ✅ 適用於所有 Linux 發行版、容器、嵌入式系統
-- 📊 [CHANGELOG](./CHANGELOG_LINUX.md) | [README](./README_LINUX.md)
 
 ---
 
@@ -22,11 +20,11 @@
 
 ### 🖥️ 跨平台支援
 
-| 平台 | 腳本檔案 | 文件 | 狀態 | 最新更新 |
-|-----|---------|------|------|---------|
-| **Windows** | `jt_procperf_analyzer.ps1` | [README](./README.md) \| [快速開始](./QUICKSTART.md) | ✅ v2.11.0 | 🆕 IOPS 監控 |
-| **Linux** | `jt_procperf_analyzer.sh` | [README](./README_LINUX.md) \| [快速開始](./QUICKSTART_LINUX.md) | ✅ v1.0.16 | 🆕 移除 bc 依賴 |
-| **欄位對照** | - | [欄位映射表](./FIELD_MAPPING.md) | ✅ 完整文件 | 37+7 混合欄位 |
+| 平台 | 腳本檔案 | 狀態 | 最新更新 |
+|-----|---------|------|---------|
+| **Windows** | `jt_procperf_analyzer.ps1` | ✅ v2.11.0 | 🆕 IOPS 監控 |
+| **Linux** | `jt_procperf_analyzer.sh` | ✅ v1.0.16 | 🆕 移除 bc 依賴 |
+| **欄位對照** | [欄位對照表](./FIELD_MAPPING.md) | ✅ 完整 | 37+7 混合欄位 |
 
 ---
 
@@ -100,10 +98,10 @@
 .\jt_procperf_analyzer.ps1
 
 # 自訂監控時長與間隔
-.\jt_procperf_analyzer.ps1 -DurationMinutes 30 -IntervalSeconds 5
+.\jt_procperf_analyzer.ps1 -D 30 -I 5
 
 # 輸出為 CSV 格式
-.\jt_procperf_analyzer.ps1 -OutputFormat CSV -OutputPath "C:\PerfLogs"
+.\jt_procperf_analyzer.ps1 -F CSV -O "C:\PerfLogs"
 ```
 
 ---
@@ -154,10 +152,10 @@
 ```powershell
 # 長時間監控（6 小時）以偵測記憶體洩漏
 .\jt_procperf_analyzer.ps1 `
-    -DurationMinutes 360 `
-    -IntervalSeconds 60 `
-    -OutputFormat JSON `
-    -EnableLogging
+    -D 360 `
+    -I 60 `
+    -F JSON `
+    -L
 
 # 分析輸出檔案，找出可疑的記憶體洩漏
 # 查看 PossibleMemoryLeak = true 的 Process
@@ -176,7 +174,7 @@
 
 ```powershell
 # 5 分鐘高頻監控（每秒取樣）
-.\jt_procperf_analyzer.ps1 -DurationMinutes 5 -IntervalSeconds 1 -NoProgress
+.\jt_procperf_analyzer.ps1 -D 5 -I 1 -NP
 ```
 
 ### 範例 7: 跳過特定指標（節省效能）
@@ -193,13 +191,13 @@
 
 ```powershell
 # 靜默模式（最小化輸出）
-.\jt_procperf_analyzer.ps1 -QuietMode
+.\jt_procperf_analyzer.ps1 -Q
 
 # 啟用詳細日誌
-.\jt_procperf_analyzer.ps1 -EnableLogging
+.\jt_procperf_analyzer.ps1 -L
 
 # 結合靜默模式與日誌（適合排程任務）
-.\jt_procperf_analyzer.ps1 -QuietMode -EnableLogging
+.\jt_procperf_analyzer.ps1 -Q -L
 ```
 
 ---
@@ -223,7 +221,7 @@
 
 ```powershell
 # 正常執行即可，資料會自動即時寫入
-.\jt_procperf_analyzer.ps1 -DurationMinutes 60
+.\jt_procperf_analyzer.ps1 -D 60
 
 # 執行中可以開啟檔案查看（檔案會立即產生）
 # 位置：腳本所在目錄\process_metrics_*.csv
@@ -232,7 +230,7 @@
 ### 執行期間的提示訊息
 
 ```
-[INFO] 開始收集效能數據（即時寫入模式：每個取樣間隔寫入一次）...
+[INFO] 開始收集效能資料（即時寫入模式：每個取樣間隔寫入一次）...
 [INFO] 輸出檔案：C:\Users\...\process_metrics_20251213_143000.json
 [INFO] 提示：資料正在即時寫入，您可以隨時開啟檔案查看或按 Ctrl+C 中斷
 
@@ -261,11 +259,11 @@
 快速測試（1 分鐘）：
 
 ```powershell
-# 執行測試腳本
-.\Test-RealTimeWrite.ps1
+# Windows
+.\jt_procperf_analyzer.ps1 -D 1 -I 5
 
-# 或手動測試
-.\jt_procperf_analyzer.ps1 -DurationMinutes 1 -IntervalSeconds 5
+# Linux
+bash jt_procperf_analyzer.sh -d 1 -i 5
 
 # 執行期間立即開啟腳本所在目錄
 # 您會看到檔案即時產生並持續增大
@@ -459,7 +457,7 @@ $TopIO | Sort-Object -Property TotalIOKBSec -Descending | Select-Object -First 1
 
 ```powershell
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -File C:\Scripts\jt_procperf_analyzer.ps1 -DurationMinutes 60 -QuietMode -EnableLogging"
+    -Argument "-ExecutionPolicy Bypass -File C:\Scripts\jt_procperf_analyzer.ps1 -D 60 -Q -L"
 
 $Trigger = New-ScheduledTaskTrigger -Daily -At "02:00AM"
 
@@ -511,7 +509,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ### Q5: 監控時系統變慢
 
 **A:** 監控本身會消耗資源，建議：
-1. 增加取樣間隔（-IntervalSeconds 30 或更長）
+1. 增加取樣間隔（-I 30 或更長）
 2. 使用篩選條件減少監控的 Process 數量
 3. 跳過不需要的指標（-SkipIOMetrics）
 
@@ -599,6 +597,29 @@ Restart-Service -Name "Winmgmt" -Force
 ### 意見回饋與問題回報
 
 如有任何問題、建議或錯誤回報，請聯繫開發團隊或建立 Issue。
+
+---
+
+## 📊 資料分析工具
+
+收集完效能資料後，可使用以下線上工具進行深入分析：
+
+### 🔗 JT Process Performance Analyzer - 線上分析工具
+
+**網址**：https://it.jason.tools/?tool=process-perf
+
+**功能特色**：
+- ✅ **圖表視覺化**：CPU、記憶體、I/O 趨勢圖
+- ✅ **自動分析**：記憶體洩漏、CPU 異常、I/O 瓶頸偵測
+- ✅ **互動式篩選**：依 Process、時間範圍篩選資料
+- ✅ **效能報告**：自動產生分析報告
+- ✅ **支援格式**：CSV、JSON、TSV
+
+**使用方式**：
+1. 開啟線上工具網址
+2. 上傳收集的 CSV 或 JSON 檔案
+3. 工具自動分析並產生視覺化圖表
+4. 匯出分析報告
 
 ---
 
