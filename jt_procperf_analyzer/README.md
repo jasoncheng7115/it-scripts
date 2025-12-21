@@ -94,14 +94,14 @@
 ### 基本使用
 
 ```powershell
-# 使用預設設定（監控 60 分鐘，每 10 秒取樣，輸出 JSON）
+# 使用預設設定（監控 60 分鐘，每 60 秒取樣，輸出 CSV）
 .\jt_procperf_analyzer.ps1
 
 # 自訂監控時長與間隔
-.\jt_procperf_analyzer.ps1 -D 30 -I 5
+.\jt_procperf_analyzer.ps1 -D 30 -I 15
 
-# 輸出為 CSV 格式
-.\jt_procperf_analyzer.ps1 -F CSV -O "C:\PerfLogs"
+# 輸出為 JSON 格式並指定路徑
+.\jt_procperf_analyzer.ps1 -F JSON -O "C:\PerfLogs"
 ```
 
 ---
