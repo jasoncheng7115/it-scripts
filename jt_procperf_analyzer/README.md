@@ -77,31 +77,57 @@
 
 ## 🚀 快速開始
 
-### 系統需求
+### Windows 版本
 
-- **作業系統**: Windows 7 / Windows Server 2008 R2 或更新版本
+**系統需求**
+- **作業系統**: Windows 7 / Server 2008 R2 或更新版本
 - **PowerShell**: 5.1 或更新版本（建議 7.x）
-- **權限**: 一般使用者權限即可（部分進階指標需要管理員權限）
+- **權限**: 一般使用者（部分進階指標需管理員權限）
 
-### 安裝
-
-1. 下載 `jt_procperf_analyzer.ps1`
-2. （可選）解除封鎖檔案：
-   ```powershell
-   Unblock-File -Path .\jt_procperf_analyzer.ps1
-   ```
-
-### 基本使用
-
+**安裝**
 ```powershell
-# 使用預設設定（監控 60 分鐘，每 60 秒取樣，輸出 CSV）
+# 1. 下載 jt_procperf_analyzer.ps1
+# 2. 解除封鎖（可選）
+Unblock-File -Path .\jt_procperf_analyzer.ps1
+```
+
+**基本使用**
+```powershell
+# 使用預設設定（60 分鐘，每 60 秒，CSV 格式）
 .\jt_procperf_analyzer.ps1
 
 # 自訂監控時長與間隔
 .\jt_procperf_analyzer.ps1 -D 30 -I 15
 
-# 輸出為 JSON 格式並指定路徑
+# 輸出 JSON 格式
 .\jt_procperf_analyzer.ps1 -F JSON -O "C:\PerfLogs"
+```
+
+### Linux 版本
+
+**系統需求**
+- **作業系統**: 任何 Linux 發行版（需支援 `/proc` 檔案系統）
+- **Shell**: Bash 4.0 或更新版本
+- **工具**: `awk`、`date`（POSIX 標準工具，預載）
+- **權限**: 一般使用者（建議用 root 取得完整資訊）
+
+**安裝**
+```bash
+# 1. 下載 jt_procperf_analyzer.sh
+# 2. 賦予執行權限
+chmod +x jt_procperf_analyzer.sh
+```
+
+**基本使用**
+```bash
+# 使用預設設定（60 分鐘，每 60 秒，CSV 格式）
+bash jt_procperf_analyzer.sh
+
+# 自訂監控時長與間隔
+bash jt_procperf_analyzer.sh -d 30 -i 15
+
+# 輸出 JSON 格式
+bash jt_procperf_analyzer.sh -f json -o "/var/log/perf"
 ```
 
 ---
@@ -110,94 +136,94 @@
 
 ### 範例 1: 監控特定 Process
 
+**Windows:**
 ```powershell
 # 只監控 Chrome 瀏覽器
 .\jt_procperf_analyzer.ps1 -IncludeProcesses "chrome" -MatchMode Wildcard
 
-# 監控多個 Process（Chrome、Firefox、Edge）
+# 監控多個 Process
 .\jt_procperf_analyzer.ps1 -IncludeProcesses "chrome","firefox","msedge"
-
-# 使用正規表示式監控（所有包含 "sql" 的 Process）
-.\jt_procperf_analyzer.ps1 -IncludeProcesses ".*sql.*" -MatchMode Regex
 ```
 
-### 範例 2: 排除系統 Process
+**Linux:**
+```bash
+# 只監控 nginx
+bash jt_procperf_analyzer.sh --include "nginx" --match-mode wildcard
 
-```powershell
-# 排除常見系統 Process
-.\jt_procperf_analyzer.ps1 -ExcludeProcesses "svchost","System","Idle","csrss","smss"
-
-# 結合 Include 與 Exclude
-.\jt_procperf_analyzer.ps1 `
-    -IncludeProcesses "*sql*" `
-    -ExcludeProcesses "sqlwriter" `
-    -MatchMode Wildcard
+# 監控多個 Process
+bash jt_procperf_analyzer.sh --include "nginx,mysql,redis"
 ```
 
-### 範例 3: 效能門檻篩選
+### 範例 2: 效能門檻篩選
 
+**Windows:**
 ```powershell
 # 只收集 CPU > 5% 的 Process
 .\jt_procperf_analyzer.ps1 -MinimumCPU 5
-
-# 只收集記憶體使用 > 100MB 的 Process
-.\jt_procperf_analyzer.ps1 -MinimumMemoryMB 100
 
 # 結合 CPU 與記憶體門檻
 .\jt_procperf_analyzer.ps1 -MinimumCPU 10 -MinimumMemoryMB 50
 ```
 
-### 範例 4: 記憶體洩漏偵測
+**Linux:**
+```bash
+# 只收集 CPU > 5% 的 Process
+bash jt_procperf_analyzer.sh --min-cpu 5
 
+# 結合 CPU 與記憶體門檻
+bash jt_procperf_analyzer.sh --min-cpu 10 --min-memory 50
+```
+
+### 範例 3: 記憶體洩漏偵測
+
+**Windows:**
 ```powershell
 # 長時間監控（6 小時）以偵測記憶體洩漏
-.\jt_procperf_analyzer.ps1 `
-    -D 360 `
-    -I 60 `
-    -F JSON `
-    -L
+.\jt_procperf_analyzer.ps1 -D 360 -I 60 -F JSON -L
 
-# 分析輸出檔案，找出可疑的記憶體洩漏
-# 查看 PossibleMemoryLeak = true 的 Process
+# 查看輸出檔案，找出 PossibleMemoryLeak = true 的 Process
 ```
 
-### 範例 5: 系統整體效能監控
+**Linux:**
+```bash
+# 長時間監控（6 小時）以偵測記憶體洩漏
+bash jt_procperf_analyzer.sh -d 360 -i 60 -f json
 
-```powershell
-# 包含系統整體指標（總 CPU、可用記憶體等）
-.\jt_procperf_analyzer.ps1 -IncludeSystemMetrics
-
-# 系統指標會輸出到獨立的檔案 system_metrics_*.json
+# 查看輸出檔案，找出 PossibleMemoryLeak = true 的 Process
 ```
 
-### 範例 6: 高頻率短時間監控
+### 範例 4: 高頻率短時間監控
 
+**Windows:**
 ```powershell
 # 5 分鐘高頻監控（每秒取樣）
 .\jt_procperf_analyzer.ps1 -D 5 -I 1 -NP
 ```
 
-### 範例 7: 跳過特定指標（節省效能）
-
-```powershell
-# 跳過 I/O 指標（減少 WMI 呼叫次數）
-.\jt_procperf_analyzer.ps1 -SkipIOMetrics
-
-# 跳過 GUI 指標
-.\jt_procperf_analyzer.ps1 -SkipGUIMetrics
+**Linux:**
+```bash
+# 5 分鐘高頻監控（每 5 秒取樣）
+bash jt_procperf_analyzer.sh -d 5 -i 5 --quiet
 ```
 
-### 範例 8: 靜默模式與日誌
+### 範例 5: 靜默模式（適合排程任務）
 
+**Windows:**
 ```powershell
 # 靜默模式（最小化輸出）
 .\jt_procperf_analyzer.ps1 -Q
 
-# 啟用詳細日誌
-.\jt_procperf_analyzer.ps1 -L
-
-# 結合靜默模式與日誌（適合排程任務）
+# 結合靜默模式與日誌
 .\jt_procperf_analyzer.ps1 -Q -L
+```
+
+**Linux:**
+```bash
+# 靜默模式
+bash jt_procperf_analyzer.sh --quiet
+
+# 搭配 cron 排程使用
+# 0 */6 * * * /path/to/jt_procperf_analyzer.sh -d 60 -i 60 --quiet
 ```
 
 ---
