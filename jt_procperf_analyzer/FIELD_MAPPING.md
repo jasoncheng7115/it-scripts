@@ -1,6 +1,6 @@
 # Windows vs Linux 欄位對照表
 
-此文件詳細說明 Windows 版本（PowerShell）與 Linux 版本（Bash）之間的欄位映射關係。
+此文件詳細說明 Windows 版本（PowerShell）與 Linux 版本（Bash）之間的欄位對照關係。
 
 ## 📊 完整欄位對照表（44 欄位）
 
@@ -287,7 +287,9 @@ Timestamp,ProcessName,ProcessID,...,Owner,CompanyName,ProductVersion,ServiceName
 
 ## 🔗 相關文件
 
-- [Windows 版本 README](./README.md)
-- [Linux 版本 README](./README_LINUX.md)
-- [Windows 快速開始](./QUICKSTART.md)
-- [Linux 快速開始](./QUICKSTART_LINUX.md)
+- [返回主文件](./README.md)
+- [快速開始（Windows + Linux）](./README.md#-快速開始)
+- [使用範例](./README.md#-使用範例)
+- [收集的效能指標清單](./README.md#-收集的效能指標清單)
+- [效能分析關鍵指標參考](./README.md#-效能分析關鍵指標參考)
+- [線上資料分析工具](./README.md#-資料分析工具)
