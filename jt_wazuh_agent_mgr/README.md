@@ -4,7 +4,7 @@
 
 A powerful web-based management tool for Wazuh agents in cluster environments.
 
-![Version](https://img.shields.io/badge/version-1.3.33-blue)
+![Version](https://img.shields.io/badge/version-1.3.34-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -56,7 +56,9 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 
 ```bash
 # Clone to recommended directory
-git clone https://github.com/your-repo/jt_wazuh_agent_mgr.git /opt/jt_wazuh_agent_mgr
+git clone https://github.com/jasoncheng7115/it-scripts.git /tmp/it-scripts
+cp -r /tmp/it-scripts/jt_wazuh_agent_mgr /opt/
+rm -rf /tmp/it-scripts
 cd /opt/jt_wazuh_agent_mgr
 
 # Install dependencies
