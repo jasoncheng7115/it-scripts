@@ -1,6 +1,9 @@
+
 pve storage netapp plugin
 
-fc san / iscsi
-vm create/resize/remove disk, snapshot/rollback, thinthinprovision
+by Jason Cheng
 
-ok!
+給 fc san / iscsi
+支援 pve 完整 vm create/resize/remove disk, snapshot/rollback, thinthinprovision
+
+pve 9.0 9.1 測試ok!
