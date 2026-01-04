@@ -277,7 +277,3 @@ MIT License
 ## Author
 
 Jason Cheng
-
----
-
-**Note**: This tool must be installed on the Wazuh **Master node** and requires appropriate permissions to execute Wazuh CLI commands.
