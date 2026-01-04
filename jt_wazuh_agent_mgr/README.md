@@ -133,7 +133,7 @@ pip install -r requirements.txt
 ./wazuh_agent_mgr.py --web --ssl-auto
 ```
 
-That's it! Open **https://localhost:5000** in your browser and login with your Wazuh API credentials.
+That's it! Open **https://YOUR_WAZUH_MANAGER_IP:5000** in your browser and login with your Wazuh API credentials.
 
 > **Note**: Use `wazuh` or `wazuh-wui` account. Password can be found in `/var/ossec/etc/wazuh-passwords.txt`
 

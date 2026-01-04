@@ -158,7 +158,7 @@ pip install -r requirements.txt
 ./wazuh_agent_mgr.py --web --ssl-auto
 ```
 
-完成！開啟瀏覽器前往 **https://localhost:5000**，使用 Wazuh API 帳號登入即可。
+完成！開啟瀏覽器前往 **https://YOUR_WAZUH_MANAGER_IP:5000**，使用 Wazuh API 帳號登入即可。
 
 > **提示**：使用 `wazuh` 或 `wazuh-wui` 帳號，密碼請查看 `/var/ossec/etc/wazuh-passwords.txt`
 
