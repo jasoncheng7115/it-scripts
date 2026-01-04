@@ -127,23 +127,25 @@ cd /opt/jt_wazuh_agent_mgr
 pip install -r requirements.txt
 ```
 
-### Run Web UI
+### Quick Run (Recommended)
 
 ```bash
-# Start with auto-generated SSL certificate (recommended)
 ./wazuh_agent_mgr.py --web --ssl-auto
-
-# Or specify custom port
-./wazuh_agent_mgr.py --web --port 8443 --ssl-auto
 ```
 
-Then open `https://localhost:5000` in your browser.
+That's it! Open **https://localhost:5000** in your browser and login with your Wazuh API credentials.
 
-### Login
+> **Note**: Use `wazuh` or `wazuh-wui` account. Password can be found in `/var/ossec/etc/wazuh-passwords.txt`
 
-Use your **Wazuh API credentials** (not Dashboard credentials):
-- Default API user: `wazuh` or `wazuh-wui`, or any account with `administrator` role
-- API password: Check `/var/ossec/etc/wazuh-passwords.txt`
+### Other Options
+
+```bash
+# Custom port
+./wazuh_agent_mgr.py --web --port 8443 --ssl-auto
+
+# Custom SSL certificate
+./wazuh_agent_mgr.py --web --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+```
 
 ## CLI Usage
 

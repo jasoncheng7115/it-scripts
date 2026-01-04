@@ -18,7 +18,7 @@
 - 視覺化顯示所有 agent 狀態
 - 進階篩選功能（狀態、群組、節點、OS、版本、IP、名稱、同步狀態）
 - **方便的多選操作**：輕鬆選取多個 agent 進行批次處理
-- **分布條**：視覺化顯示 agent 分布統計（狀態、OS、版本、群組、節點、同步狀態）
+- **分布圖**：視覺化顯示 agent 分布統計（狀態、OS、版本、群組、節點、同步狀態）
   - 點擊色塊可快速篩選
   - 切換類型時有動畫效果
 - **統計區自動更新**：頂部統計數字每 10 秒自動更新，數值變化時有滑入動畫
@@ -116,7 +116,7 @@
 ```
 jt_wazuh_agent_mgr/
 ├── wazuh_agent_mgr.py      # 主程式入口
-├── create_api_user.py      # 建立 Wazuh API 用戶工具
+├── create_api_user.py      # 建立 Wazuh API 使用者工具
 ├── config.yaml             # 設定檔
 ├── requirements.txt        # 相依套件
 ├── README.md
@@ -133,6 +133,12 @@ jt_wazuh_agent_mgr/
     └── web_ui.py           # Web 介面
 ```
 
+## 系統需求
+
+- Python 3.8+
+- Wazuh Manager 4.x
+- **必須安裝在 Master 節點上**
+
 ## 安裝
 
 ```bash
@@ -144,9 +150,26 @@ cd /opt/jt_wazuh_agent_mgr
 
 # 安裝相依套件
 pip install -r requirements.txt
+```
 
-# 或手動安裝
-pip install tabulate rich PyYAML requests flask
+## 快速啟動（推薦）
+
+```bash
+./wazuh_agent_mgr.py --web --ssl-auto
+```
+
+完成！開啟瀏覽器前往 **https://localhost:5000**，使用 Wazuh API 帳號登入即可。
+
+> **提示**：使用 `wazuh` 或 `wazuh-wui` 帳號，密碼請查看 `/var/ossec/etc/wazuh-passwords.txt`
+
+### 其他啟動選項
+
+```bash
+# 自訂連接埠
+./wazuh_agent_mgr.py --web --port 8443 --ssl-auto
+
+# 使用自訂 SSL 憑證
+./wazuh_agent_mgr.py --web --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
 ```
 
 ## 設定
@@ -381,9 +404,9 @@ Web 介面啟動後會顯示登入頁面，需要輸入 **Wazuh API 帳號** (�
 
 登入成功後，系統會自動取得 API Token 並用於後續所有操作。Token 過期時會自動重新取得。
 
-### 建立 Wazuh API 用戶
+### 建立 Wazuh API 使用者
 
-如果需要建立新的 API 用戶，可使用內建工具：
+如果需要建立新的 API 使用者，可使用內建工具：
 
 ```bash
 # 互動式建立 (會提示輸入密碼)
@@ -395,7 +418,7 @@ Web 介面啟動後會顯示登入頁面，需要輸入 **Wazuh API 帳號** (�
   --admin-user wazuh \
   --admin-pass 現有管理員密碼 \
   --new-user api_admin \
-  --new-pass 新用戶密碼 \
+  --new-pass 新使用者密碼 \
   --role administrator
 ```
 
@@ -494,14 +517,14 @@ ssh:
 ## 更新日誌
 
 ### v1.3.103 (2026-01-04)
-- **修正分布條動畫**：切換頁籤時不再重複播放動畫
+- **修正分布圖動畫**：切換頁籤時不再重複播放動畫
 - **修正統計區歸零問題**：API 回傳無效資料時保留原有數值
 
 ### v1.3.102 (2026-01-04)
-- **分布條動畫**：切換類型時從左往右展開動畫
+- **分布圖動畫**：切換類型時從左往右展開動畫
 
 ### v1.3.101 (2026-01-04)
-- **分布條動畫效果**：下拉選單切換時有動畫
+- **分布圖動畫效果**：下拉選單切換時有動畫
 
 ### v1.3.100 (2026-01-04)
 - **統計區滑入動畫**：數字更新時有從上而下滑入效果
@@ -515,14 +538,14 @@ ssh:
   - 所有按鈕統一寬度
 
 ### v1.3.97 (2026-01-04)
-- **分布條配色調整**：使用深色系確保白色文字可讀性
+- **分布圖配色調整**：使用深色系確保白色文字可讀性
 
 ### v1.3.95 (2026-01-04)
-- **分布條對齊**：與表格左右對齊
+- **分布圖對齊**：與表格左右對齊
 - **小區塊文字截斷**：空間不足時只顯示開頭文字
 
 ### v1.3.90 (2026-01-04)
-- **新增分布條**：Agent 列表上方新增視覺化分布統計條
+- **新增分布圖**：Agent 列表上方新增視覺化分布統計條
   - 支援狀態、OS、版本、群組、節點、同步狀態
   - 點擊色塊快速篩選
 
