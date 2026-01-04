@@ -1,0 +1,39 @@
+# Wazuh Agent Manager Configuration
+
+# Wazuh installation path
+wazuh_path: /var/ossec
+
+# API settings
+# ------------------------------------------------------------------------------
+# Web UI mode: username/password NOT required here
+#   - Users authenticate via browser login page
+#   - Credentials are stored in session
+#
+# CLI mode: username/password REQUIRED here
+#   - Used for commands like: ./wazuh_agent_mgr.py agent list
+#   - Password can be found in: /var/ossec/etc/wazuh-passwords.txt
+# ------------------------------------------------------------------------------
+api:
+  enabled: false
+  host: localhost
+  port: 55000
+  username: wazuh          # or wazuh-wui (only for CLI mode)
+  password: ""             # only for CLI mode
+  verify_ssl: false
+
+# Default output format: table, json, csv (CLI mode only)
+output_format: table
+
+# Interactive mode settings (CLI mode only)
+interactive:
+  page_size: 20
+
+# SSH settings (optional, for remote worker node management)
+# ssh:
+#   enabled: true
+#   key_file: /root/.ssh/wazuh_cluster_key
+#   nodes:
+#     worker01:
+#       host: 192.168.1.100
+#       port: 22
+#       user: root

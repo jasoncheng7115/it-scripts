@@ -4,7 +4,11 @@
 
 A powerful web-based management tool for Wazuh agents in cluster environments.
 
-![Version](https://img.shields.io/badge/version-1.3.34-blue)
+> **Purpose**: This tool is designed to supplement the Wazuh Dashboard by providing missing or inconvenient management features. It is **NOT** intended to replace the Wazuh Dashboard, but to complement it.
+
+> **Recommended**: Use the Web UI as the primary interface - it's the main feature of this tool with full functionality.
+
+![Version](https://img.shields.io/badge/version-1.3.103-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -12,15 +16,35 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 
 ### Agent Management
 - View all agents with real-time status
-- Advanced filtering (status, group, node, OS, version, IP, name)
-- Batch operations: restart, reconnect, delete, add/remove from groups
+- Advanced filtering (status, group, node, OS, version, IP, name, sync)
+- **Convenient multi-select** for batch operations
+- **Distribution bar**: Visual statistics bar showing agent distribution by status, OS, version, group, node, or sync status
+  - Click on segments to filter agents
+  - Animated transitions when switching views
+- **Auto-refresh stats**: Top statistics refresh every 10 seconds with slide animation
+- **Group operations**:
+  - Add to group / Remove from group
+  - Merge into another group
+  - Keep in specific group only (remove from all other groups)
+  - Rename group
+  - **Import from CSV** with preview before import
+  - **Export to CSV**: Export group members
+- Batch operations: restart, reconnect, delete, upgrade
+- **Move to Node** (planned): Migrate agents to specific node via HAProxy integration (under development)
 - Health check and duplicate detection
+- **Queue DB size check**: Monitor agent queue database usage
 - Agent upgrade with progress tracking
 
 ### Cluster Support
 - Full master/worker cluster support
 - Node service status monitoring
-- Sync status checking between master and workers
+- **Edit ossec.conf**: Edit configuration files for master and worker nodes
+- **Restart services**: Restart Wazuh services on any node
+- **Download cluster.key**: Download cluster key from master node
+- **WPK file management**: Upload and delete WPK upgrade files
+- **Sync status checking**: Monitor file synchronization between master and workers
+  - Rules, Decoders, Groups, Keys, Lists, SCA
+  - View files that differ between nodes
 - SSH remote management for worker nodes
 
 ### Statistics & Reports
@@ -28,29 +52,67 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 - Sortable columns in all statistics tables
 - Export to JSON/CSV
 
+### Rules Viewer
+- **Rule hierarchy visualization**: View rule parent-child relationships as collapsible tree
+- Search by Rule ID
+- Display rule level, description, and source file
+- Click to expand and view full rule XML content
+- Support for both built-in and custom rules
+
 ### Security
 - Input validation for all parameters
 - Command injection protection
 - Path traversal prevention
 - Secure file upload handling
+- **Complete logging & audit**: View all operation logs and audit events
+- **API user management**: Create, modify, and manage Wazuh API users and roles
 
 ## Screenshots
 
+### Login
+![Login](screenshots/1_login.png)
+
 ### Agent List
-![Agent List](images/screenshot-agents.png)
+![Agents](screenshots/2_agents.png)
 
-### Node Management
-![Nodes](images/screenshot-nodes.png)
+### Agent Actions & Queue DB
+![Agent Actions](screenshots/3_selected_action_queuedb.png)
 
-### Statistics
-![Statistics](images/screenshot-stats.png)
+### Agent Detail
+![Agent Detail](screenshots/14_agent_detail.png)
+
+### Agent Upgrade
+![Upgrade Step 1](screenshots/11_upgrade_agent_1.png)
+![Upgrade Step 2](screenshots/12_upgrade_agent_2.png)
+![Upgrade Step 3](screenshots/13_upgrade_agent_3.png)
+
+### Groups
+![Groups](screenshots/4_groups.png)
+
+### Nodes
+![Nodes](screenshots/5_nodes.png)
+
+### WPK Files Management
+![WPK Files](screenshots/6_nodes_wpkfiles.png)
+
+### Edit ossec.conf
+![Edit Config](screenshots/10_node_editconfig.png)
+
+### Rules Viewer
+![Rules](screenshots/7_rule.png)
+
+### API Users
+![API Users](screenshots/8_apiusers.png)
+
+### Logs Viewer
+![Logs](screenshots/9_logs.png)
 
 ## Quick Start
 
 ### Requirements
 - Python 3.8+
 - Wazuh Manager 4.x
-- Run on Wazuh Manager server
+- **Must be installed on the Master node**
 
 ### Installation
 
@@ -80,7 +142,7 @@ Then open `https://localhost:5000` in your browser.
 ### Login
 
 Use your **Wazuh API credentials** (not Dashboard credentials):
-- Default API user: `wazuh` or `wazuh-wui`
+- Default API user: `wazuh` or `wazuh-wui`, or any account with `administrator` role
 - API password: Check `/var/ossec/etc/wazuh-passwords.txt`
 
 ## CLI Usage
@@ -134,12 +196,15 @@ Create `config.yaml`:
 ```yaml
 wazuh_path: /var/ossec
 
+# API settings
+# Web UI mode: username/password NOT required (users login via browser)
+# CLI mode: username/password REQUIRED for commands like ./wazuh_agent_mgr.py agent list
 api:
-  enabled: true
+  enabled: false           # set to true for CLI mode
   host: localhost
   port: 55000
-  username: wazuh
-  password: "your-api-password"
+  username: wazuh          # only for CLI mode
+  password: "your-password"  # only for CLI mode, see /var/ossec/etc/wazuh-passwords.txt
   verify_ssl: false
 
 # Optional: SSH for remote worker node management
@@ -152,6 +217,15 @@ ssh:
       port: 22
       user: root
 ```
+
+### Web UI vs CLI Configuration
+
+| Setting | Web UI | CLI |
+|---------|--------|-----|
+| `api.enabled` | Not required | `true` |
+| `api.username` | Not required (login via browser) | Required |
+| `api.password` | Not required (login via browser) | Required |
+| `ssh.*` | Optional (for remote node management) | Optional |
 
 ## Key Features Explained
 
@@ -190,6 +264,15 @@ See [README_zh-TW.md](README_zh-TW.md) for full changelog (Chinese).
 - Favicon support
 - HAProxy LB integration preparation
 
+## Disclaimer
+
+This software is provided "as is" without warranty of any kind, express or implied. The author is not responsible for any damages or losses arising from the use of this software. Use at your own risk.
+
+Before performing any operations (especially delete, restart, or upgrade), it is strongly recommended to:
+- Use `--dry-run` mode to preview actions
+- Back up important configurations
+- Test in a non-production environment first
+
 ## License
 
 MIT License
@@ -200,4 +283,4 @@ Jason Cheng
 
 ---
 
-**Note**: This tool is designed to run on the Wazuh Manager server and requires appropriate permissions to execute Wazuh CLI commands.
+**Note**: This tool must be installed on the Wazuh **Master node** and requires appropriate permissions to execute Wazuh CLI commands.
