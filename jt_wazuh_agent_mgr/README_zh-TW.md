@@ -63,7 +63,7 @@
 - 命令注入防護
 - 路徑遍歷防護
 - 安全的檔案上傳處理
-- **完整日誌與稽核**：可查看所有操作日誌與稽核事件
+- **完整記錄與稽核**：可查看所有操作記錄與稽核事件
 - **API 帳號管理**：新增、修改、管理 Wazuh API 使用者與角色
 
 ### 其他功能
@@ -82,14 +82,6 @@
 ### Agent 操作與 Queue DB
 ![Agent Actions](screenshots/3_selected_action_queuedb.png)
 
-### Agent 詳細資訊
-![Agent Detail](screenshots/14_agent_detail.png)
-
-### Agent 升級
-![Upgrade Step 1](screenshots/11_upgrade_agent_1.png)
-![Upgrade Step 2](screenshots/12_upgrade_agent_2.png)
-![Upgrade Step 3](screenshots/13_upgrade_agent_3.png)
-
 ### 群組管理
 ![Groups](screenshots/4_groups.png)
 
@@ -99,17 +91,25 @@
 ### WPK 檔案管理
 ![WPK Files](screenshots/6_nodes_wpkfiles.png)
 
-### 編輯 ossec.conf
-![Edit Config](screenshots/10_node_editconfig.png)
-
 ### 規則檢視器
 ![Rules](screenshots/7_rule.png)
 
 ### API 使用者
 ![API Users](screenshots/8_apiusers.png)
 
-### 日誌檢視器
+### 記錄檢視器
 ![Logs](screenshots/9_logs.png)
+
+### 編輯 ossec.conf
+![Edit Config](screenshots/10_node_editconfig.png)
+
+### Agent 升級
+![Upgrade Step 1](screenshots/11_upgrade_agent_1.png)
+![Upgrade Step 2](screenshots/12_upgrade_agent_2.png)
+![Upgrade Step 3](screenshots/13_upgrade_agent_3.png)
+
+### Agent 詳細資訊
+![Agent Detail](screenshots/14_agent_detail.png)
 
 ## 專案結構
 
@@ -514,7 +514,7 @@ ssh:
 4. 建議先使用 `--dry-run` 預覽操作再實際執行
 5. 修改 `config.yaml` 後需要重新啟動程式
 
-## 更新日誌
+## 更新記錄
 
 ### v1.3.103 (2026-01-04)
 - **修正分布圖動畫**：切換頁籤時不再重複播放動畫
@@ -603,7 +603,7 @@ ssh:
   - 新增輸入驗證函數：`validate_node_name`, `validate_agent_id`, `validate_group_name`, `validate_username`
   - 新增路徑白名單驗證：`validate_path`, `ALLOWED_PATHS`
   - 新增 Shell 參數跳脫：`safe_shell_arg` (使用 shlex.quote)
-  - 新增日誌消毒：`sanitize_for_log`
+  - 新增記錄清理：`sanitize_for_log`
   - Sync-detail 端點使用白名單 `ALLOWED_SYNC_ITEMS` 防止路徑遍歷
   - 所有 URL 參數端點加入輸入驗證
   - 檔案上傳使用 `werkzeug.utils.secure_filename()`

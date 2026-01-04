@@ -78,14 +78,6 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 ### Agent Actions & Queue DB
 ![Agent Actions](screenshots/3_selected_action_queuedb.png)
 
-### Agent Detail
-![Agent Detail](screenshots/14_agent_detail.png)
-
-### Agent Upgrade
-![Upgrade Step 1](screenshots/11_upgrade_agent_1.png)
-![Upgrade Step 2](screenshots/12_upgrade_agent_2.png)
-![Upgrade Step 3](screenshots/13_upgrade_agent_3.png)
-
 ### Groups
 ![Groups](screenshots/4_groups.png)
 
@@ -95,9 +87,6 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 ### WPK Files Management
 ![WPK Files](screenshots/6_nodes_wpkfiles.png)
 
-### Edit ossec.conf
-![Edit Config](screenshots/10_node_editconfig.png)
-
 ### Rules Viewer
 ![Rules](screenshots/7_rule.png)
 
@@ -106,6 +95,17 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 
 ### Logs Viewer
 ![Logs](screenshots/9_logs.png)
+
+### Edit ossec.conf
+![Edit Config](screenshots/10_node_editconfig.png)
+
+### Agent Upgrade
+![Upgrade Step 1](screenshots/11_upgrade_agent_1.png)
+![Upgrade Step 2](screenshots/12_upgrade_agent_2.png)
+![Upgrade Step 3](screenshots/13_upgrade_agent_3.png)
+
+### Agent Detail
+![Agent Detail](screenshots/14_agent_detail.png)
 
 ## Quick Start
 
