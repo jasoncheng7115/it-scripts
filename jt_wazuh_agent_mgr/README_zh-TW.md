@@ -137,20 +137,15 @@ jt_wazuh_agent_mgr/
 
 - Python 3.8+
 - Wazuh Manager 4.x
-- **必須安裝在 Master 節點上**
+- **必須安裝在 Wazuh Manager 上**（叢集模式請安裝在 Master 節點）
 
 ## 安裝
 
 ```bash
-# 複製到建議目錄
-git clone https://github.com/jasoncheng7115/it-scripts.git /tmp/it-scripts
-cp -r /tmp/it-scripts/jt_wazuh_agent_mgr /opt/
-rm -rf /tmp/it-scripts
-cd /opt/jt_wazuh_agent_mgr
-
-# 安裝相依套件
-pip install -r requirements.txt
+curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_wazuh_agent_mgr/install.sh | bash
 ```
+
+> **提示**：需以 root 執行。重複執行相同指令可更新版本（config.yaml 設定檔會保留）。
 
 ## 快速啟動（推薦）
 

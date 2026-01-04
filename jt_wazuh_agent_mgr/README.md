@@ -112,20 +112,15 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 ### Requirements
 - Python 3.8+
 - Wazuh Manager 4.x
-- **Must be installed on the Master node**
+- **Must be installed on the Wazuh Manager** (for cluster mode, install on Master node)
 
 ### Installation
 
 ```bash
-# Clone to recommended directory
-git clone https://github.com/jasoncheng7115/it-scripts.git /tmp/it-scripts
-cp -r /tmp/it-scripts/jt_wazuh_agent_mgr /opt/
-rm -rf /tmp/it-scripts
-cd /opt/jt_wazuh_agent_mgr
-
-# Install dependencies
-pip install -r requirements.txt
+curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_wazuh_agent_mgr/install.sh | bash
 ```
+
+> **Note**: Run as root. Re-run the same command to update (your config.yaml will be preserved).
 
 ### Quick Run (Recommended)
 
