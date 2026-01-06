@@ -155,7 +155,7 @@ curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_w
 
 完成！開啟瀏覽器前往 **https://YOUR_WAZUH_MANAGER_IP:5000**，使用 Wazuh API 帳號登入即可。
 
-> **提示**：使用 `wazuh` 或 `wazuh-wui` 帳號，密碼請查看 `/var/ossec/etc/wazuh-passwords.txt`
+> **提示**：使用 `wazuh` 或 `wazuh-wui` 帳號，密碼請查看安裝時產生的 `wazuh-install-files.tar` 或安裝記錄。
 
 ### 其他啟動選項
 
@@ -183,7 +183,7 @@ api:
   host: localhost
   port: 55000
   username: wazuh          # 僅 CLI 模式需要
-  password: "your-password"  # 僅 CLI 模式需要，密碼請查看 /var/ossec/etc/wazuh-passwords.txt
+  password: "your-password"  # 僅 CLI 模式需要，密碼請查看 wazuh-install-files.tar
   verify_ssl: false
 
 # 預設輸出格式: table, json, csv（僅 CLI 模式）
@@ -429,11 +429,9 @@ Web 介面啟動後會顯示登入頁面，需要輸入 **Wazuh API 帳號** (�
 **查看現有 API 密碼：**
 
 ```bash
-# 方法 1: 查看安裝時產生的密碼檔
-cat /var/ossec/etc/wazuh-passwords.txt
-
-# 方法 2: 使用 wazuh-passwords 工具
-/var/ossec/bin/wazuh-passwords -a
+# 解壓縮安裝時產生的密碼檔（通常在執行安裝的目錄下）
+tar -xvf wazuh-install-files.tar
+cat wazuh-install-files/wazuh-passwords.txt
 ```
 
 ### Web 介面功能

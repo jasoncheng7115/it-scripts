@@ -130,7 +130,7 @@ curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_w
 
 That's it! Open **https://YOUR_WAZUH_MANAGER_IP:5000** in your browser and login with your Wazuh API credentials.
 
-> **Note**: Use `wazuh` or `wazuh-wui` account. Password can be found in `/var/ossec/etc/wazuh-passwords.txt`
+> **Note**: Use `wazuh` or `wazuh-wui` account. Password can be found in `wazuh-install-files.tar` (created during installation) or check your installation records.
 
 ### Other Options
 
@@ -201,7 +201,7 @@ api:
   host: localhost
   port: 55000
   username: wazuh          # only for CLI mode
-  password: "your-password"  # only for CLI mode, see /var/ossec/etc/wazuh-passwords.txt
+  password: "your-password"  # only for CLI mode, see wazuh-install-files.tar
   verify_ssl: false
 
 # Optional: SSH for remote worker node management
