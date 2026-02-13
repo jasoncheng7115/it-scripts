@@ -1,16 +1,24 @@
 #!/bin/bash
-
-# check_ext_ip V1.2
+# check_ext_ip V1.5
 #
 # ----------------------
 #
-# This is a modified version of Jason Cheng (jason@jason.tools) to support LibreNMS.
-# from https://exchange.nagios.org/directory/Plugins/Network-and-Systems-Management/Check_External_IP/details
+# Nagios/LibreNMS plugin to check external (WAN) IP address.
+# Supports multiple IP lookup providers with automatic failover.
+#
+# Original by Justin Reherman (Copyright 2012, GPLv3+)
+# Modified by Jason Cheng (jason@jason.tools) for LibreNMS support.
+#
+# V1.2 add -H switch
+# V1.3 change to ifconfig.me
+# V1.4 multi-provider support with automatic failover (Jason Cheng, 2026)
+#      - 11 built-in free IP lookup services
+#      - auto-select 3 random providers if none specified
+#      - -S to specify providers, -t timeout, -l list, -v verbose
+# V1.5 fix perfdata to use numeric value (match=1/0) (Jason Cheng, 2026)
 #
 # ----------------------
 #
-# This script checks to ensure that your real-world IP address hasn't changed, and if it does, notify you of the new address.
-# Copyright 2012 Justin Reherman.
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -23,35 +31,198 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+# ----------------------
 
-# Preliminary checks
-if [ -z $2 ]
-then
-        echo "Expected IP address not provided!"
-        echo "Usage: -H check_ext_ip <expexted.external.ip.address>"
-        exit 2
+VERSION="1.5"
+TIMEOUT=5          # per-provider timeout in seconds
+VERBOSE=0
+
+# ---------------------------------------------------------------------------
+# Available providers (name -> URL mapping)
+#   All return plain-text IPv4 address, free, no API key, no privacy concern.
+# ---------------------------------------------------------------------------
+declare -A PROVIDER_URL
+PROVIDER_URL=(
+    [icanhazip]="https://icanhazip.com"
+    [ipify]="https://api.ipify.org"
+    [ipecho]="https://ipecho.net/plain"
+    [ifconfigme]="https://ifconfig.me/ip"
+    [ident]="https://ident.me"
+    [amazonaws]="https://checkip.amazonaws.com"
+    [ipinfo]="https://ipinfo.io/ip"
+    [ifconfigco]="https://ifconfig.co"
+    [wtfismyip]="https://wtfismyip.com/text"
+    [ipme]="https://ip.me"
+    [ipsimple]="https://api.ipsimple.org/ipv4"
+)
+
+# Number of providers to auto-select when none specified
+AUTO_PICK_COUNT=3
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+
+print_version() {
+    echo "check_ext_ip v${VERSION}"
+}
+
+print_usage() {
+    cat <<EOF
+Usage: check_ext_ip -H <expected_ip> [-S <providers>] [-t <timeout>] [-l] [-v] [-V]
+
+Options:
+  -H <ip>          Expected external IP address (REQUIRED)
+  -S <providers>   Comma-separated list of providers to use (with failover)
+                   Default: auto-select ${AUTO_PICK_COUNT} random providers
+  -t <seconds>     Timeout per provider in seconds (default: ${TIMEOUT})
+  -l               List all available providers
+  -v               Verbose output (show which provider was used)
+  -V               Show version
+  -h               Show this help
+
+Available providers:
+$(for p in $(echo "${!PROVIDER_URL[@]}" | tr ' ' '\n' | sort); do
+    printf "  %-14s %s\n" "$p" "${PROVIDER_URL[$p]}"
+done)
+
+Examples:
+  check_ext_ip -H 1.2.3.4                                # auto-pick 3 random providers
+  check_ext_ip -H 1.2.3.4 -S ipify,icanhazip,amazonaws   # use specified providers
+  check_ext_ip -H 1.2.3.4 -S ipify -t 10 -v              # single provider, verbose
+  check_ext_ip -l                                          # list all providers
+EOF
+}
+
+list_providers() {
+    echo "Available IP lookup providers:"
+    echo "---------------------------------------------"
+    printf "  %-14s %s\n" "NAME" "URL"
+    echo "---------------------------------------------"
+    for p in $(echo "${!PROVIDER_URL[@]}" | tr ' ' '\n' | sort); do
+        printf "  %-14s %s\n" "$p" "${PROVIDER_URL[$p]}"
+    done
+    echo "---------------------------------------------"
+    echo "Default: auto-select ${AUTO_PICK_COUNT} random providers"
+}
+
+# Validate an IP address looks like IPv4
+is_valid_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
+}
+
+# Query a single provider; returns 0 on success, 1 on failure
+# Sets global ACTUAL on success
+query_provider() {
+    local name="$1"
+    local url="${PROVIDER_URL[$name]}"
+    local result
+
+    if [[ -z "$url" ]]; then
+        [[ $VERBOSE -eq 1 ]] && echo "VERBOSE: Unknown provider '${name}', skipping." >&2
+        return 1
+    fi
+
+    # Prefer curl; fall back to wget
+    if command -v curl &>/dev/null; then
+        result=$(curl -4 -s --max-time "${TIMEOUT}" --fail "$url" 2>/dev/null)
+    elif command -v wget &>/dev/null; then
+        result=$(wget -4 -q -O - --timeout="${TIMEOUT}" "$url" 2>/dev/null)
+    else
+        echo "UNKNOWN - Neither curl nor wget found."
+        exit 3
+    fi
+
+    # Trim whitespace / newlines
+    result=$(echo "$result" | tr -d '[:space:]')
+
+    if is_valid_ipv4 "$result"; then
+        ACTUAL="$result"
+        USED_PROVIDER="$name"
+        return 0
+    else
+        [[ $VERBOSE -eq 1 ]] && echo "VERBOSE: Provider '${name}' failed or returned invalid data." >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+EXPECTED=""
+PROVIDERS=""
+ACTUAL=""
+USED_PROVIDER=""
+
+while getopts "H:S:t:lvVh" opt; do
+    case $opt in
+        H) EXPECTED="$OPTARG" ;;
+        S) PROVIDERS="$OPTARG" ;;
+        t) TIMEOUT="$OPTARG" ;;
+        l) list_providers; exit 0 ;;
+        v) VERBOSE=1 ;;
+        V) print_version; exit 0 ;;
+        h) print_usage; exit 0 ;;
+        *) print_usage; exit 3 ;;
+    esac
+done
+
+# Validate required arguments
+if [[ -z "$EXPECTED" ]]; then
+    echo "UNKNOWN - Expected IP address not provided!"
+    echo ""
+    print_usage
+    exit 3
 fi
 
-
-if [ -z $1 ]
-then
-        echo "Expected IP address not provided!"
-        echo "Usage: -H check_ext_ip <expexted.external.ip.address>"
-        exit 2
+if ! is_valid_ipv4 "$EXPECTED"; then
+    echo "UNKNOWN - '${EXPECTED}' is not a valid IPv4 address."
+    exit 3
 fi
 
-#Find out what the external IP address is. 
-ACTUAL=$(wget -q -O - checkip.dyndns.org|sed -e 's/.*Current IP Address: //' -e 's/<.*$//')
+# Auto-select random providers if none specified
+if [[ -z "$PROVIDERS" ]]; then
+    ALL_NAMES=( "${!PROVIDER_URL[@]}" )
+    SHUFFLED=( $(printf '%s\n' "${ALL_NAMES[@]}" | shuf) )
+    PICKED=( "${SHUFFLED[@]:0:${AUTO_PICK_COUNT}}" )
+    PROVIDERS=$(IFS=','; echo "${PICKED[*]}")
+    [[ $VERBOSE -eq 1 ]] && echo "VERBOSE: Auto-selected providers: ${PROVIDERS}" >&2
+fi
 
-#What do we expect the external IP address to be?
-EXPECTED="$2"
+# ---------------------------------------------------------------------------
+# Query providers with failover
+# ---------------------------------------------------------------------------
+IFS=',' read -ra PROVIDER_LIST <<< "$PROVIDERS"
+TRIED=()
 
-if [ $ACTUAL == $EXPECTED ]
-then
-        echo "OK - External IP address hasn't changed."
-        exit 0
+for provider in "${PROVIDER_LIST[@]}"; do
+    provider=$(echo "$provider" | tr -d '[:space:]')   # trim
+    TRIED+=("$provider")
+    [[ $VERBOSE -eq 1 ]] && echo "VERBOSE: Trying provider '${provider}' (${PROVIDER_URL[$provider]:-unknown})..." >&2
+
+    if query_provider "$provider"; then
+        [[ $VERBOSE -eq 1 ]] && echo "VERBOSE: Got IP '${ACTUAL}' from '${provider}'." >&2
+        break
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Evaluate result
+# ---------------------------------------------------------------------------
+if [[ -z "$ACTUAL" ]]; then
+    echo "UNKNOWN - All providers failed (tried: ${TRIED[*]}). Could not determine external IP."
+    exit 3
+fi
+
+PROVIDER_INFO=""
+[[ $VERBOSE -eq 1 ]] && PROVIDER_INFO=" (via ${USED_PROVIDER})"
+
+if [[ "$ACTUAL" == "$EXPECTED" ]]; then
+    echo "OK - External IP address hasn't changed.${PROVIDER_INFO} | match=1"
+    exit 0
 else
-        echo "CRITICAL - External IP address has changed to $ACTUAL"
-        exit 2
+    echo "CRITICAL - External IP address has changed to ${ACTUAL}${PROVIDER_INFO} | match=0"
+    exit 2
 fi
-exit 0
