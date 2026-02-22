@@ -1,2 +1,2 @@
 # Wazuh Agent Manager Library
-__version__ = "1.3.121"
+__version__ = "1.3.131"

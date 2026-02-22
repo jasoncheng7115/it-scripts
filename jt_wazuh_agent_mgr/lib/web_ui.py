@@ -449,7 +449,7 @@ HTML_TEMPLATE = '''
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 8px; text-align: left; border-bottom: 1px solid #0f3460; vertical-align: middle; }
         tbody tr { height: 50px; }
-        th { background: #0f3460; color: #4fc3f7; position: sticky; top: 0; }
+        th { background: #0f3460; color: #4fc3f7; position: sticky; top: 0; z-index: 2; }
         th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
         th.sortable:hover { background: #1a3a70; }
         th.sortable .sort-icon { width: 12px; height: 12px; margin-left: 4px; opacity: 0.3; vertical-align: middle; }
@@ -572,6 +572,8 @@ HTML_TEMPLATE = '''
         .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #0f3460; }
         .badge-master { background: #9c27b0; color: #fff; }
         .badge-worker { background: #0288d1; color: #fff; }
+        .badge-disconnected { background: #e94560; color: #fff; }
+        .badge-not-in-cluster { background: #ff9800; color: #fff; }
 
         /* Service status indicators */
         .service-status { display: flex; flex-wrap: wrap; gap: 4px; max-width: 500px; }
@@ -824,6 +826,7 @@ HTML_TEMPLATE = '''
                     <button class="btn btn-warning" id="btnRestart" onclick="restartSelected()"><svg class="icon"><use href="#icon-restart"/></svg>Restart</button>
                     <button class="btn btn-primary" id="btnReconnect" onclick="reconnectSelected()"><svg class="icon"><use href="#icon-link"/></svg>Reconnect</button>
                     <button class="btn" id="btnUpgrade" style="background:#fd7e14;color:#fff;" onclick="upgradeSelected()"><svg class="icon"><use href="#icon-upload"/></svg>Upgrade</button>
+                    <button class="btn" id="btnCleanQueueDB" style="background:#795548;color:#fff;" onclick="cleanQueueDBSelected()"><svg class="icon"><use href="#icon-trash"/></svg>Clean Queue DB</button>
                     <button class="btn btn-danger" id="btnDelete" onclick="deleteSelected()"><svg class="icon"><use href="#icon-trash"/></svg>Delete</button>
                 </div>
             </div>
@@ -1025,6 +1028,7 @@ HTML_TEMPLATE = '''
         let queueSizes = {};
         let queueSizeNode = '';
         let queueOtherNodes = [];
+        let queueLoadedNodes = [];
         let showQueueDB = false;  // Queue DB is disabled by default for performance
         let validNodeNames = [];  // List of valid node names in current cluster
         let managerVersion = '';  // Manager/master node version for comparison
@@ -1155,7 +1159,7 @@ HTML_TEMPLATE = '''
             // Check if agent is on a node we don't have queue data for
             const agentNode = agent.node_name || '';
             const otherNode = queueOtherNodes.find(n => n.name === agentNode);
-            if (otherNode && agentNode !== queueSizeNode) {
+            if (otherNode && agentNode !== queueSizeNode && !queueLoadedNodes.includes(agentNode)) {
                 return `<a href="#" onclick="showSSHSetupTutorial('${escapeHtml(agentNode)}', '${escapeHtml(otherNode.ip)}'); return false;" style="color:#f39c12;text-decoration:underline;cursor:pointer;" title="SSH access required for ${escapeHtml(agentNode)}">SSH required</a>`;
             }
 
@@ -1334,7 +1338,7 @@ HTML_TEMPLATE = '''
                 if (validNodeNames.length === 0) {
                     const nodesData = await api('/nodes');
                     if (nodesData && nodesData.nodes) {
-                        validNodeNames = nodesData.nodes.map(n => n.name);
+                        validNodeNames = nodesData.nodes.filter(n => n.status !== 'not_in_cluster').map(n => n.name);
                         // Get master node version as the manager version
                         const masterNode = nodesData.nodes.find(n => n.type === 'master') || nodesData.nodes[0];
                         if (masterNode && masterNode.version) {
@@ -1381,7 +1385,8 @@ HTML_TEMPLATE = '''
                 queueSizes = queueData.queue_sizes;  // Now an object with arrays: {agent_id: [{size, node}, ...]}
                 queueSizeNode = queueData.local_node || '';
                 queueOtherNodes = queueData.other_nodes || [];
-                const loadedNodes = queueData.loaded_nodes || [];
+                queueLoadedNodes = queueData.loaded_nodes || [];
+                const loadedNodes = queueLoadedNodes;
                 const failedNodes = queueData.ssh_failed_nodes || [];
 
                 agents.forEach(a => {
@@ -1399,8 +1404,9 @@ HTML_TEMPLATE = '''
 
                 // Show appropriate message based on results
                 if (failedNodes.length > 0) {
-                    showToast(`Queue DB loaded from: ${loadedNodes.join(', ')}. Failed: ${failedNodes.join(', ')}`, 'warning', 6000);
-                } else if (loadedNodes.length > 1) {
+                    console.warn(`Queue DB SSH failed nodes: ${failedNodes.join(', ')}`);
+                }
+                if (loadedNodes.length > 1) {
                     showToast(`Queue DB loaded from all nodes: ${loadedNodes.join(', ')}`, 'success', 4000);
                 } else if (loadedNodes.length === 1) {
                     showToast(`Queue DB loaded from ${loadedNodes[0]}`, 'success', 3000);
@@ -1584,8 +1590,11 @@ HTML_TEMPLATE = '''
             // Helper to conditionally show/hide column
             const colStyle = (col) => visibleColumns[col] === false ? 'display:none' : '';
 
-            body.innerHTML = paged.map(a => `
-                <tr>
+            body.innerHTML = paged.map(a => {
+                const isInactive = a.status && a.status.toLowerCase() !== 'active';
+                const rowDim = isInactive ? ' style="opacity:0.6"' : '';
+                return `
+                <tr${rowDim}>
                     <td class="checkbox-cell"><input type="checkbox" value="${escapeHtml(a.id)}" onchange="toggleAgent('${escapeHtml(a.id)}')" ${selectedAgents.has(a.id) ? 'checked' : ''}></td>
                     <td><button class="btn btn-sm btn-icon" onclick="showAgentDetails('${escapeHtml(a.id)}')" title="View Details"><svg class="icon"><use href="#icon-search"/></svg></button></td>
                     <td style="${colStyle('id')}">${escapeHtml(a.id)}</td>
@@ -1598,8 +1607,8 @@ HTML_TEMPLATE = '''
                     <td style="${colStyle('node_name')}">${formatNodeName(a.node_name)}</td>
                     <td style="${colStyle('synced')}"><span class="sync-status sync-${a.synced === 'synced' ? 'ok' : (a.synced === 'not synced' ? 'pending' : 'unknown')}">${escapeHtml(a.synced) || '-'}</span></td>
                     <td class="queue-db-cell" style="display:${showQueueDB ? '' : 'none'}">${formatQueueSize(a)}</td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         }
 
         // Pagination functions
@@ -2212,7 +2221,7 @@ HTML_TEMPLATE = '''
                 const nodes = nodesData.nodes || [];
 
                 // Store valid node names for use in agent table
-                validNodeNames = nodes.map(n => n.name);
+                validNodeNames = nodes.filter(n => n.status !== 'not_in_cluster').map(n => n.name);
 
                 if (nodes.length === 0) {
                     body.innerHTML = '<tr><td colspan="9" class="loading">Cluster not configured or not running</td></tr>';
@@ -2329,8 +2338,15 @@ HTML_TEMPLATE = '''
                 const alertsJsonBtn = logs.alerts_json && logs.alerts_json.exists ?
                     `<button class="btn btn-sm" style="background:#9c27b0;color:#fff;" onclick="showLogViewerModal('${jsName}', 'alerts', 'json')" title="View alerts.json (${formatFileSize(logs.alerts_json.size)})"><svg class="icon"><use href="#icon-bell"/></svg>alerts.json</button>` : '';
 
-                return `<tr>
-                    <td>${safeName}${n.hostname ? `<br><span style="color:#888;">(${escapeHtml(n.hostname)})</span>` : ''}</td>
+                const isDisconnected = n.status === 'disconnected';
+                const isNotInCluster = n.status === 'not_in_cluster';
+                const isDimmed = isDisconnected || isNotInCluster;
+                const statusBadge = isDisconnected ? ' <span class="badge badge-disconnected">disconnected</span>' :
+                                    isNotInCluster ? ' <span class="badge badge-not-in-cluster">not in cluster</span>' : '';
+                const rowStyle = isDimmed ? ' style="opacity:0.7"' : '';
+
+                return `<tr${rowStyle}>
+                    <td>${safeName}${statusBadge}${n.hostname ? `<br><span style="color:#888;">(${escapeHtml(n.hostname)})</span>` : ''}</td>
                     <td style="text-align:center"><span class="badge ${n.type === 'master' ? 'badge-master' : 'badge-worker'}">${escapeHtml(n.type)}</span></td>
                     <td style="text-align:center">${escapeHtml(n.version)}</td>
                     <td>${escapeHtml(n.ip)}</td>
@@ -2718,6 +2734,123 @@ HTML_TEMPLATE = '''
                 showToast(result.message || 'Agents deleted', 'success');
                 if (!dryRun) { selectedAgents.clear(); updateSelectedUI(); refreshAgents(); }
             }
+        }
+
+        async function cleanQueueDBSelected() {
+            const selectedList = Array.from(selectedAgents);
+            const agentInfo = selectedList.map(id => {
+                const a = agents.find(x => x.id === id);
+                const entries = (a && a.queue_entries) || [];
+                const sizeStr = entries.length > 0
+                    ? entries.map(e => formatBytes(e.size) + ' on ' + e.node).join(', ')
+                    : 'unknown size';
+                return id + ' (' + (a ? a.name : '?') + ') - ' + sizeStr;
+            }).join('\\n');
+
+            if (!await showConfirm(
+                'Clean Queue DB for ' + selectedAgents.size + ' agent(s)?\\n\\n' +
+                'This will delete the queue DB files and restart the agents.\\n\\n' +
+                agentInfo
+            )) return;
+
+            const dryRun = document.getElementById('dryRunMode').checked;
+            // Build map of agent_id -> nodes that have queue DB files
+            const agentNodes = {};
+            selectedList.forEach(id => {
+                const a = agents.find(x => x.id === id);
+                const entries = (a && a.queue_entries) || [];
+                agentNodes[id] = entries.map(e => e.node);
+            });
+            const result = await api('/agents/queue-db/clean', 'POST', {
+                agent_ids: selectedList,
+                agent_nodes: agentNodes,
+                dry_run: dryRun
+            });
+
+            if (result) {
+                if (result.details) {
+                    showModal('Clean Queue DB Results', formatCleanResults(result), '');
+                } else {
+                    showToast(result.message || 'Queue DB cleaned', result.errors ? 'warning' : 'success');
+                }
+                if (!dryRun) {
+                    if (showQueueDB) {
+                        await loadQueueSizes();
+                    }
+                    selectedAgents.clear();
+                    updateSelectedUI();
+                    renderAgents();
+                }
+            }
+        }
+
+        function formatCleanResults(result) {
+            const dryRunLabel = result.dry_run ? ' <span class="badge" style="background:#ff9800;">DRY-RUN</span>' : '';
+            let html = '<div style="margin-bottom:12px;">' + escapeHtml(result.message) + dryRunLabel + '</div>';
+            html += '<div style="max-height:400px;overflow-y:auto;">';
+            html += '<table style="width:100%;border-collapse:collapse;">';
+            html += '<thead><tr style="border-bottom:1px solid #333;">';
+            html += '<th style="text-align:left;padding:6px;">Agent</th>';
+            html += '<th style="text-align:left;padding:6px;">Node</th>';
+            html += '<th style="text-align:left;padding:6px;">Status</th>';
+            html += '</tr></thead><tbody>';
+
+            (result.details || []).forEach(d => {
+                const a = agents.find(x => x.id === d.agent_id);
+                const agentLabel = d.agent_id + (a ? ' (' + escapeHtml(a.name) + ')' : '');
+                if (d.deleted && d.deleted.length > 0) {
+                    d.deleted.forEach(del => {
+                        const status = del.dry_run
+                            ? '<span style="color:#ff9800;">Would delete</span>'
+                            : '<span style="color:#4caf50;">Deleted</span>';
+                        html += '<tr style="border-bottom:1px solid #222;">';
+                        html += '<td style="padding:6px;">' + escapeHtml(agentLabel) + '</td>';
+                        html += '<td style="padding:6px;">' + escapeHtml(del.node) + '</td>';
+                        html += '<td style="padding:6px;">' + status + '</td>';
+                        html += '</tr>';
+                    });
+                }
+                if (d.errors && d.errors.length > 0) {
+                    d.errors.forEach(err => {
+                        html += '<tr style="border-bottom:1px solid #222;">';
+                        html += '<td style="padding:6px;">' + escapeHtml(agentLabel) + '</td>';
+                        html += '<td style="padding:6px;">' + escapeHtml(err.node) + '</td>';
+                        html += '<td style="padding:6px;"><span style="color:#f44336;">Error: ' + escapeHtml(err.error) + '</span></td>';
+                        html += '</tr>';
+                    });
+                }
+                if ((!d.deleted || d.deleted.length === 0) && (!d.errors || d.errors.length === 0)) {
+                    html += '<tr style="border-bottom:1px solid #222;">';
+                    html += '<td style="padding:6px;">' + escapeHtml(agentLabel) + '</td>';
+                    html += '<td style="padding:6px;">-</td>';
+                    html += '<td style="padding:6px;"><span style="color:#aaa;">No DB file found</span></td>';
+                    html += '</tr>';
+                }
+            });
+
+            html += '</tbody></table></div>';
+
+            if (result.restart_result) {
+                const data = result.restart_result.data || {};
+                const affected = data.affected_items || [];
+                const failed = data.failed_items || [];
+                const borderColor = failed.length > 0 ? '#f44336' : '#4caf50';
+                html += '<div style="margin-top:12px;padding:8px 12px;background:#1a1a2e;border-left:3px solid ' + borderColor + ';border-radius:4px;">';
+                html += 'Agent restart: ' + affected.length + ' agent(s) restarted';
+                if (failed.length > 0) {
+                    html += ', <span style="color:#f44336;">' + failed.length + ' failed</span>';
+                    html += '<div style="margin-top:6px;font-size:12px;color:#aaa;">';
+                    failed.forEach(f => {
+                        const fid = f.id || (f.error && f.error.code) || '?';
+                        const fmsg = (f.error && f.error.message) || 'Unknown error';
+                        html += '<div style="margin:2px 0;"><span style="color:#f44336;">&#x2716;</span> Agent ' + escapeHtml(String(fid)) + ': ' + escapeHtml(fmsg) + '</div>';
+                    });
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+
+            return html;
         }
 
         async function upgradeSelected() {
@@ -5430,8 +5563,24 @@ class WazuhAPISession:
                     'type': n.get('type'),
                     'version': version,
                     'ip': ip,
-                    'count': agent_counts.get(node_name, 0)
+                    'count': agent_counts.get(node_name, 0),
+                    'status': n.get('status', 'connected'),
                 })
+
+            # Add entries for nodes referenced by agents but not in cluster
+            known_names = {n['name'] for n in nodes}
+            for node_name_key, cnt in agent_counts.items():
+                if node_name_key and node_name_key != 'unknown' and node_name_key not in known_names:
+                    nodes.append({
+                        'name': node_name_key,
+                        'hostname': '',
+                        'type': 'worker',
+                        'version': '',
+                        'ip': '',
+                        'count': cnt,
+                        'status': 'not_in_cluster',
+                    })
+
             return nodes
 
         # Fallback: get manager info for single-node setup
@@ -5451,7 +5600,8 @@ class WazuhAPISession:
                     'type': 'master',
                     'version': version,
                     'ip': f"{self.host} (API)",
-                    'count': agent_counts.get(node_name, sum(agent_counts.values()))
+                    'count': agent_counts.get(node_name, sum(agent_counts.values())),
+                    'status': 'connected',
                 }]
         except:
             pass
@@ -6213,11 +6363,13 @@ def create_app(max_login_attempts: int = 3, lockout_minutes: int = 30) -> 'Flask
                                             pass
                             loaded_nodes.append(node_name)
                         else:
+                            logger.warning(f"SSH queue-size failed for {node_name}: returncode={result.returncode} stderr={result.stderr.strip()}")
                             ssh_failed_nodes.append(node_name)
                     except Exception as e:
                         logger.warning(f"SSH queue-size failed for {node_name}: {e}")
                         ssh_failed_nodes.append(node_name)
                 else:
+                    logger.warning(f"SSH queue-size skipped for {node_name}: no SSH config")
                     ssh_failed_nodes.append(node_name)
 
             # Build note message
@@ -6248,6 +6400,129 @@ def create_app(max_login_attempts: int = 3, lockout_minutes: int = 30) -> 'Flask
         """Get current logged in username for logging."""
         api_session = session.get('api_session', {})
         return api_session.get('username', 'unknown')
+
+    @app.route('/api/agents/queue-db/clean', methods=['POST'])
+    @login_required
+    def clean_agents_queue_db():
+        """Delete queue DB files for specified agents and restart them."""
+        import socket
+        import subprocess
+
+        try:
+            data = request.get_json()
+            agent_ids = data.get('agent_ids', [])
+            dry_run = data.get('dry_run', False)
+
+            # agent_nodes: {agent_id: [node1, node2, ...]} - nodes that have queue DB for each agent
+            agent_nodes = data.get('agent_nodes', {})
+
+            # Validate agent IDs
+            for aid in agent_ids:
+                if not validate_agent_id(aid):
+                    return jsonify({'error': f'Invalid agent ID: {aid}'}), 400
+
+            user = get_current_user()
+            logger.info(f"QUEUE_DB_CLEAN: user={user} agents={agent_ids} agent_nodes={agent_nodes} dry_run={dry_run}")
+
+            wazuh_path = '/var/ossec'
+            queue_db_path = os.path.join(wazuh_path, 'queue', 'db')
+            local_hostname = socket.gethostname()
+
+            # Get cluster nodes info
+            api = get_api_session()
+            nodes = api.get_nodes()
+            config = get_config()
+
+            # Determine local node name
+            local_node_name = local_hostname
+
+            for n in nodes:
+                node_name = n.get('name', '')
+                if (node_name == local_hostname or
+                    node_name.replace('-server', '') == local_hostname or
+                    local_hostname.replace('-server', '') == node_name.replace('-server', '')):
+                    local_node_name = node_name
+                    break
+
+            results = []
+
+            for aid in agent_ids:
+                db_filename = f"{aid}.db"
+                local_db_path = os.path.join(queue_db_path, db_filename)
+                agent_result = {'agent_id': aid, 'deleted': [], 'errors': []}
+
+                # Get target nodes for this agent (from frontend queue_entries data)
+                target_nodes = agent_nodes.get(aid, [])
+
+                # Delete local DB (only if local node is in target list, or no target info available)
+                if not target_nodes or local_node_name in target_nodes:
+                    if os.path.exists(local_db_path):
+                        if dry_run:
+                            agent_result['deleted'].append({'node': local_node_name, 'path': local_db_path, 'dry_run': True})
+                        else:
+                            try:
+                                os.remove(local_db_path)
+                                agent_result['deleted'].append({'node': local_node_name, 'path': local_db_path})
+                                logger.info(f"QUEUE_DB_CLEAN: deleted {local_db_path} on {local_node_name}")
+                            except Exception as e:
+                                agent_result['errors'].append({'node': local_node_name, 'error': str(e)})
+
+                # Delete remote node DB via SSH (only target nodes with queue DB)
+                remote_targets = [n for n in target_nodes if n != local_node_name] if target_nodes else []
+                for node_name in remote_targets:
+                    ssh_cfg = config.get_ssh_config_for_node(node_name)
+                    if not ssh_cfg:
+                        agent_result['errors'].append({'node': node_name, 'error': 'SSH not configured'})
+                        continue
+
+                    remote_path = os.path.join(queue_db_path, db_filename)
+                    if dry_run:
+                        agent_result['deleted'].append({'node': node_name, 'path': remote_path, 'dry_run': True})
+                    else:
+                        try:
+                            ssh_cmd = [
+                                'ssh',
+                                '-i', ssh_cfg['key_file'],
+                                '-o', 'StrictHostKeyChecking=no',
+                                '-o', 'ConnectTimeout=5',
+                                '-p', str(ssh_cfg['port']),
+                                f"{ssh_cfg['user']}@{ssh_cfg['host']}",
+                                f"rm -f {remote_path}"
+                            ]
+                            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+                            if result.returncode == 0:
+                                agent_result['deleted'].append({'node': node_name, 'path': remote_path})
+                                logger.info(f"QUEUE_DB_CLEAN: deleted {remote_path} on {node_name}")
+                            else:
+                                agent_result['errors'].append({'node': node_name, 'error': result.stderr.strip()})
+                        except Exception as e:
+                            agent_result['errors'].append({'node': node_name, 'error': str(e)})
+
+                results.append(agent_result)
+
+            # Restart agents to regenerate queue DB
+            restart_result = None
+            if not dry_run and agent_ids:
+                try:
+                    restart_result = api.restart_agents(agent_ids)
+                    logger.info(f"QUEUE_DB_CLEAN: restarted agents {agent_ids}")
+                except Exception as e:
+                    logger.error(f"QUEUE_DB_CLEAN: restart failed: {e}")
+
+            # Summary
+            total_deleted = sum(len(r['deleted']) for r in results)
+            total_errors = sum(len(r['errors']) for r in results)
+
+            return jsonify({
+                'message': f"{'[DRY-RUN] Would clean' if dry_run else 'Cleaned'} Queue DB for {len(agent_ids)} agent(s) ({total_deleted} file(s) {'would be ' if dry_run else ''}deleted, {total_errors} error(s))",
+                'details': results,
+                'restart_result': restart_result,
+                'dry_run': dry_run,
+                'errors': total_errors > 0
+            })
+        except Exception as e:
+            logger.error(f"QUEUE_DB_CLEAN ERROR: {str(e)}")
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/agents', methods=['DELETE'])
     @login_required
