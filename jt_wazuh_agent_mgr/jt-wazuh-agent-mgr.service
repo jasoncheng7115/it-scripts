@@ -1,0 +1,18 @@
+[Unit]
+Description=JT Wazuh Agent Manager Web UI
+Documentation=https://github.com/jasoncheng7115/it-scripts/tree/master/jt_wazuh_agent_mgr
+After=network.target wazuh-manager.service
+Wants=wazuh-manager.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jt_wazuh_agent_mgr
+ExecStart=/usr/bin/python3 /opt/jt_wazuh_agent_mgr/wazuh_agent_mgr.py --web --ssl-auto
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jt-wazuh-agent-mgr
+
+[Install]
+WantedBy=multi-user.target

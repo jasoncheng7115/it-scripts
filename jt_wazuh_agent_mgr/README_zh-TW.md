@@ -8,7 +8,7 @@
 
 > **建議**：以 Web UI 為主要操作介面，這是本工具的主力功能，具備完整的操作體驗。
 
-![Version](https://img.shields.io/badge/version-1.3.103-blue)
+![Version](https://img.shields.io/badge/version-1.3.131-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -31,7 +31,7 @@
 - 批次操作：重啟、重連、刪除
 - **Move to Node**（規劃中）：搭配 HAProxy 將 agent 遷移至指定節點（開發中）
 - 健康檢查與重複 agent 偵測
-- **Queue DB 容量檢查**：監控 agent 佇列資料庫使用量
+- **Queue DB 容量檢查**：監控 agent 佇列資料庫使用量，支援批次清理
 - Agent 升級：選擇 agent 後可批次升級，即時追蹤升級進度
 
 ### 叢集支援
@@ -139,13 +139,13 @@ jt_wazuh_agent_mgr/
 - Wazuh Manager 4.x
 - **必須安裝在 Wazuh Manager 上**（叢集模式請安裝在 Master 節點）
 
-## 安裝
+## 安裝 / 升級
 
 ```bash
 curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_wazuh_agent_mgr/install.sh | bash
 ```
 
-> **提示**：需以 root 執行。重複執行相同指令可更新版本（config.yaml 設定檔會保留）。
+> **提示**：需以 root 執行。重複執行相同指令可更新版本（config.yaml 設定檔會保留）。安裝腳本會自動設定並啟動 systemd 服務。
 
 ## 快速啟動（推薦）
 
@@ -165,6 +165,16 @@ curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_w
 
 # 使用自訂 SSL 憑證
 ./wazuh_agent_mgr.py --web --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+```
+
+### systemd 服務
+
+安裝腳本會自動註冊並啟動 systemd 服務，更新時會自動重啟。管理指令：
+
+```bash
+systemctl status jt-wazuh-agent-mgr       # 檢視狀態
+systemctl restart jt-wazuh-agent-mgr      # 重新啟動
+journalctl -u jt-wazuh-agent-mgr -f       # 即時查看記錄
 ```
 
 ## 設定
@@ -508,6 +518,14 @@ ssh:
 5. 修改 `config.yaml` 後需要重新啟動程式
 
 ## 更新記錄
+
+### v1.3.131 (2026-02-22)
+- **批次清理 Queue DB**：勾選 agent 後可批次刪除 queue DB 檔案並自動重啟 agent
+- **精準節點操作**：清理時只針對有 queue DB 的節點，不會連線無關節點
+- **結果詳細顯示**：以 modal 顯示每個 agent 在每個節點的刪除結果及重啟狀態（含失敗原因）
+- **修正 SSH required 誤顯示**：已成功載入的節點上若 agent 無 DB 檔案，正確顯示 `-` 而非 SSH required
+- **Queue DB 載入提示最佳化**：SSH 失敗的節點訊息改為寫入後端記錄，不再彈出前端提示
+- **安裝腳本改進**：自動安裝 systemd 服務並啟動，更新時自動重啟服務，install.sh 自身也會更新
 
 ### v1.3.103 (2026-01-04)
 - **修正分布圖動畫**：切換頁籤時不再重複播放動畫

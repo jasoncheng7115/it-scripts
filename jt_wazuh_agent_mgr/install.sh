@@ -8,6 +8,8 @@ set -e
 
 INSTALL_DIR="/opt/jt_wazuh_agent_mgr"
 BASE_URL="https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_wazuh_agent_mgr"
+SERVICE_NAME="jt-wazuh-agent-mgr"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 # Colors
 RED='\033[0;31m'
@@ -36,7 +38,7 @@ else
     mkdir -p "$INSTALL_DIR"
 fi
 
-# Create lib directory
+# Create directories
 mkdir -p "$INSTALL_DIR/lib"
 mkdir -p "$INSTALL_DIR/images"
 
@@ -72,6 +74,10 @@ done
 curl -sf "$BASE_URL/images/favicon.ico" -o "$INSTALL_DIR/images/favicon.ico" 2>/dev/null || true
 echo "  - images/favicon.ico"
 
+# Download systemd service file
+curl -sf "$BASE_URL/jt-wazuh-agent-mgr.service" -o "$INSTALL_DIR/jt-wazuh-agent-mgr.service"
+echo "  - jt-wazuh-agent-mgr.service"
+
 # Set permissions
 chmod +x "$INSTALL_DIR/wazuh_agent_mgr.py"
 chmod +x "$INSTALL_DIR/create_api_user.py"
@@ -80,6 +86,29 @@ chmod +x "$INSTALL_DIR/create_api_user.py"
 echo
 echo -e "${GREEN}Installing Python dependencies...${NC}"
 pip install -q -r "$INSTALL_DIR/requirements.txt"
+
+# Install and enable systemd service
+echo
+echo -e "${GREEN}Setting up systemd service...${NC}"
+cp "$INSTALL_DIR/jt-wazuh-agent-mgr.service" "$SERVICE_FILE"
+systemctl daemon-reload
+
+if [ "$UPDATE_MODE" = true ]; then
+    # Update: restart if already running
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        systemctl restart "$SERVICE_NAME"
+        echo -e "  - Service restarted"
+    else
+        systemctl enable "$SERVICE_NAME"
+        systemctl start "$SERVICE_NAME"
+        echo -e "  - Service enabled and started"
+    fi
+else
+    # Fresh install: enable and start
+    systemctl enable "$SERVICE_NAME"
+    systemctl start "$SERVICE_NAME"
+    echo -e "  - Service enabled and started"
+fi
 
 # Get version
 VERSION=$(grep -o '__version__ = "[^"]*"' "$INSTALL_DIR/lib/__init__.py" | cut -d'"' -f2)
@@ -93,5 +122,6 @@ else
 fi
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "Run with: ${YELLOW}cd $INSTALL_DIR && ./wazuh_agent_mgr.py --web --ssl-auto${NC}"
+echo -e "Service status: ${YELLOW}systemctl status $SERVICE_NAME${NC}"
+echo -e "View logs:      ${YELLOW}journalctl -u $SERVICE_NAME -f${NC}"
 echo

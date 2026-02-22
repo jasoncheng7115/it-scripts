@@ -8,7 +8,7 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 
 > **Recommended**: Use the Web UI as the primary interface - it's the main feature of this tool with full functionality.
 
-![Version](https://img.shields.io/badge/version-1.3.103-blue)
+![Version](https://img.shields.io/badge/version-1.3.131-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -32,7 +32,7 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 - Batch operations: restart, reconnect, delete, upgrade
 - **Move to Node** (planned): Migrate agents to specific node via HAProxy integration (under development)
 - Health check and duplicate detection
-- **Queue DB size check**: Monitor agent queue database usage
+- **Queue DB size check**: Monitor agent queue database usage with batch clean support
 - Agent upgrade with progress tracking
 
 ### Cluster Support
@@ -114,13 +114,13 @@ A powerful web-based management tool for Wazuh agents in cluster environments.
 - Wazuh Manager 4.x
 - **Must be installed on the Wazuh Manager** (for cluster mode, install on Master node)
 
-### Installation
+### Installation / Upgrade
 
 ```bash
 curl -sL https://raw.githubusercontent.com/jasoncheng7115/it-scripts/master/jt_wazuh_agent_mgr/install.sh | bash
 ```
 
-> **Note**: Run as root. Re-run the same command to update (your config.yaml will be preserved).
+> **Note**: Run as root. Re-run the same command to update (your config.yaml will be preserved). The installer will automatically set up and start a systemd service.
 
 ### Quick Run (Recommended)
 
@@ -140,6 +140,16 @@ That's it! Open **https://YOUR_WAZUH_MANAGER_IP:5000** in your browser and login
 
 # Custom SSL certificate
 ./wazuh_agent_mgr.py --web --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+```
+
+### systemd Service
+
+The installer automatically registers and starts a systemd service. Management commands:
+
+```bash
+systemctl status jt-wazuh-agent-mgr       # Check status
+systemctl restart jt-wazuh-agent-mgr      # Restart service
+journalctl -u jt-wazuh-agent-mgr -f       # View logs
 ```
 
 ## CLI Usage
@@ -254,6 +264,8 @@ All write operations support `--dry-run` to preview actions without executing:
 See [README_zh-TW.md](README_zh-TW.md) for full changelog (Chinese).
 
 ### Recent Updates (v1.3.x)
+- **Batch Clean Queue DB**: Select agents and clean queue DB files across cluster nodes, with automatic agent restart
+- **Installer auto-setup systemd**: Service is automatically installed, enabled, and started (or restarted on update)
 - Statistics page with sortable columns
 - Security hardening (input validation, injection prevention)
 - Upgrade history management
