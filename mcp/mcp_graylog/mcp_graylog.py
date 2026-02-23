@@ -24,7 +24,28 @@ Technical Capabilities:
 - Comprehensive error handling and retry mechanisms
 - Time snapshot for batch queries to prevent time drift
 
-Version: 1.9.34
+Version: 1.9.37
+
+Changes in 1.9.37:
+- Fixed silent error swallowing: API errors now logged at WARNING level (visible in stderr)
+- Added file logging to ~/.mcp_graylog.log (captures all DEBUG+ messages)
+- Tools return explicit error message when all Graylog API attempts fail
+- Previously: empty results silently returned, LLM thought no data existed
+
+Changes in 1.9.36:
+- Optimized LogAnalyzer return structures: removed per-source levels/first_seen/last_seen
+- Removed duplicate source_distribution/value_distribution dicts
+- Removed estimation_info, processing_stats, api_breakthrough_info metadata
+- Removed sample_messages from field distribution (biggest token saver)
+- Stripped stream rules/matching_type and widget notes from system tool returns
+- Shortened key names: percentage -> pct
+
+Changes in 1.9.35:
+- Added streamable-http transport support (--transport, --http-host, --http-port)
+- Optimized all tool descriptions for LLM token efficiency
+- Flattened return values: removed verbose processing_info, fix_notes, processing_note metadata
+- Compact JSON output (no indentation) for reduced token usage
+- Simplified error responses to consistent flat structure
 
 Changes in 1.9.34:
 - Fixed incorrect filename in help message (mcp_graylog.py)
@@ -99,13 +120,20 @@ from mcp.types import Resource, Tool, TextContent, ImageContent, EmbeddedResourc
 import mcp.types as types
 
 # Version information
-__version__ = "1.9.34"
+__version__ = "1.9.37"
 __author__ = "Jason Cheng (Jason Tools) - AI Collaboration"
 __license__ = "MIT"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("graylog-mcp-server")
+
+# File logging — always captures DEBUG+ for troubleshooting
+_log_file = os.path.join(os.path.expanduser("~"), ".mcp_graylog.log")
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(_file_handler)
 
 class GraylogError(Exception):
     """Custom exception for Graylog related errors"""
@@ -174,80 +202,40 @@ class LogAnalyzer:
             "daily_distribution": dict(daily_counts),
             "minute_distribution": dict(minute_counts),
             "peak_hours": peak_hours,
-            "peak_minutes": peak_minutes,
-            "total_time_slots": len(hourly_counts),
-            "total_minutes": len(minute_counts),
-            "processing_stats": {
-                "total_messages": len(messages),
-                "successfully_processed": processed_count,
-                "missing_timestamp": missing_timestamp_count,
-                "parse_errors": parse_error_count,
-                "total_in_minute_distribution": total_in_minutes,
-                "error_samples": error_samples
-            }
+            "peak_minutes": peak_minutes
         }
     
     @staticmethod
     def analyze_sources(messages: List[Dict], accurate_total_count: int = None) -> Dict:
-        """
-        Fixed version: Analyze source hosts, use accurate total count to calculate ratios
-        """
+        """Analyze source hosts, use accurate total count to calculate ratios"""
         source_counts = Counter()
-        source_details = defaultdict(lambda: {"count": 0, "levels": Counter(), "first_seen": None, "last_seen": None})
-        
+
         for msg in messages:
             source = str(msg.get('source', 'unknown')).strip()
-            level = str(msg.get('level', 'info')).lower()
-            timestamp = str(msg.get('timestamp', ''))
-            
             source_counts[source] += 1
-            source_details[source]["count"] += 1
-            source_details[source]["levels"][level] += 1
-            
-            if timestamp:
-                if not source_details[source]["first_seen"]:
-                    source_details[source]["first_seen"] = timestamp
-                source_details[source]["last_seen"] = timestamp
-        
-        # Key fix: Use accurate total count to calculate ratios
+
         total_for_percentage = accurate_total_count if accurate_total_count else len(messages)
-        
-        # Convert to list format
+
         detailed_sources = []
         for source, sample_count in source_counts.most_common(50):
-            details = source_details[source]
-            
-            # Key fix: Estimate actual count based on sample ratio
             if accurate_total_count and len(messages) > 0:
-                # Estimate actual count: (count in sample / total sample) * accurate total
                 estimated_actual_count = int((sample_count / len(messages)) * accurate_total_count)
                 percentage = round((estimated_actual_count / accurate_total_count) * 100, 2)
             else:
                 estimated_actual_count = sample_count
                 percentage = round((sample_count / total_for_percentage) * 100, 2)
-            
+
             detailed_sources.append({
                 "source": source,
-                "count": estimated_actual_count,  # Use estimated actual count
-                "sample_count": sample_count,      # Keep sample count for reference
-                "percentage": percentage,
-                "levels": dict(details["levels"]),
-                "first_seen": details["first_seen"],
-                "last_seen": details["last_seen"]
+                "count": estimated_actual_count,
+                "pct": percentage
             })
-        
-        # Re-sort by estimated actual count
+
         detailed_sources.sort(key=lambda x: x["count"], reverse=True)
-        
+
         return {
             "total_unique_sources": len(source_counts),
-            "top_sources": detailed_sources,
-            "source_distribution": {src["source"]: src["count"] for src in detailed_sources[:15]},
-            "estimation_info": {
-                "total_sample_messages": len(messages),
-                "accurate_total_count": accurate_total_count,
-                "estimation_method": "proportional_scaling" if accurate_total_count else "direct_count"
-            }
+            "top_sources": detailed_sources
         }
     
     @staticmethod
@@ -316,30 +304,26 @@ class LogAnalyzer:
     
     @staticmethod
     def generate_summary(messages: List[Dict], query: str, time_range: Dict, accurate_total_count: int = None) -> Dict:
-        """Generate complete summary with FIXED source analysis"""
+        """Generate complete summary"""
         if not messages:
             return {
-                "summary": "No messages found",
                 "total_events": accurate_total_count or 0,
+                "sample_size": 0,
                 "query": query,
-                "time_range": time_range,
-                "api_breakthrough_note": "API limits breakthrough attempted but no data found"
+                "time_range": time_range
             }
-        
-        # Basic statistics
+
         sample_size = len(messages)
         total = accurate_total_count if accurate_total_count is not None else sample_size
         time_span = LogAnalyzer._calculate_time_span(messages)
-        
-        # Key fix: Use accurate total count for source analysis
+
         time_analysis = LogAnalyzer.analyze_time_patterns(messages)
-        source_analysis = LogAnalyzer.analyze_sources(messages, accurate_total_count)  # Pass accurate total count
+        source_analysis = LogAnalyzer.analyze_sources(messages, accurate_total_count)
         level_analysis = LogAnalyzer.analyze_levels(messages)
         error_analysis = LogAnalyzer.extract_error_patterns(messages)
-        
-        # Calculate event frequency
+
         events_per_minute = round(total / max(time_span, 1), 2) if time_span > 0 else total
-        
+
         return {
             "summary": {
                 "total_events": total,
@@ -353,20 +337,7 @@ class LogAnalyzer:
             "time_analysis": time_analysis,
             "source_analysis": source_analysis,
             "level_analysis": level_analysis,
-            "error_analysis": error_analysis,
-            "query_info": {
-                "query": query,
-                "time_range": time_range,
-                "processed_at": datetime.utcnow().isoformat()
-            },
-            "data_note": f"Analyzed {sample_size} sample events from {total} total events using FIXED source analysis",
-            "api_breakthrough_info": {
-                "breakthrough_successful": total > 1000,
-                "data_quality": "high" if total > 5000 else "medium" if total > 1000 else "limited",
-                "api_limits_bypassed": total > 150,
-                "accurate_count_used": accurate_total_count is not None,
-                "source_analysis_fixed": True
-            }
+            "error_analysis": error_analysis
         }
     
     @staticmethod
@@ -390,94 +361,43 @@ class LogAnalyzer:
         return (latest - earliest).total_seconds() / 60
     
     @staticmethod
-    def analyze_field_distribution(messages: List[Dict], field_name: str, 
+    def analyze_field_distribution(messages: List[Dict], field_name: str,
                                  top_n: int = 50, accurate_total_count: int = None) -> Dict:
-        """
-        Analyze distribution of any specified field
-        通用欄位統計分析 - 可以統計任何指定的欄位
-        """
+        """Analyze distribution of any specified field"""
         field_counts = Counter()
-        field_details = defaultdict(lambda: {"count": 0, "first_seen": None, "last_seen": None, "sample_values": []})
-        missing_field_count = 0
-        
+        has_field_count = 0
+
         for msg in messages:
-            # Support both hyphenated and underscore field names
             value = msg.get(field_name)
             if value is None and '-' in field_name:
-                # Try underscore version
                 value = msg.get(field_name.replace('-', '_'))
             elif value is None and '_' in field_name:
-                # Try hyphenated version
                 value = msg.get(field_name.replace('_', '-'))
-            
+
             if value is not None:
-                value_str = str(value).strip()
-                field_counts[value_str] += 1
-                field_details[value_str]["count"] += 1
-                
-                # Track first and last seen
-                timestamp = msg.get('timestamp', '')
-                if timestamp:
-                    if not field_details[value_str]["first_seen"]:
-                        field_details[value_str]["first_seen"] = timestamp
-                    field_details[value_str]["last_seen"] = timestamp
-                
-                # Collect sample message for this value (up to 3)
-                if len(field_details[value_str]["sample_values"]) < 3:
-                    sample_msg = {
-                        "timestamp": timestamp,
-                        "source": msg.get('source', 'unknown'),
-                        field_name: value_str
-                    }
-                    # Add message field if it exists
-                    if 'message' in msg:
-                        sample_msg['message'] = msg['message'][:100]  # First 100 chars
-                    field_details[value_str]["sample_values"].append(sample_msg)
-            else:
-                missing_field_count += 1
-        
-        # Calculate percentages and prepare results
+                field_counts[str(value).strip()] += 1
+                has_field_count += 1
+
         total_for_percentage = accurate_total_count if accurate_total_count else len(messages)
-        
-        # Convert to list format with estimated counts
-        detailed_distribution = []
+
+        top_values = []
         for value, sample_count in field_counts.most_common(top_n):
-            details = field_details[value]
-            
-            # Estimate actual count based on sample ratio
             if accurate_total_count and len(messages) > 0:
-                estimated_actual_count = int((sample_count / len(messages)) * accurate_total_count)
-                percentage = round((estimated_actual_count / accurate_total_count) * 100, 2)
+                est_count = int((sample_count / len(messages)) * accurate_total_count)
+                pct = round((est_count / accurate_total_count) * 100, 2)
             else:
-                estimated_actual_count = sample_count
-                percentage = round((sample_count / total_for_percentage) * 100, 2)
-            
-            detailed_distribution.append({
-                "value": value,
-                "count": estimated_actual_count,
-                "sample_count": sample_count,
-                "percentage": percentage,
-                "first_seen": details["first_seen"],
-                "last_seen": details["last_seen"],
-                "sample_messages": details["sample_values"]
-            })
-        
-        # Summary statistics
-        unique_values = len(field_counts)
-        coverage_rate = round(((len(messages) - missing_field_count) / len(messages)) * 100, 2) if messages else 0
-        
+                est_count = sample_count
+                pct = round((sample_count / total_for_percentage) * 100, 2)
+
+            top_values.append({"value": value, "count": est_count, "pct": pct})
+
+        coverage_rate = round((has_field_count / len(messages)) * 100, 2) if messages else 0
+
         return {
             "field_name": field_name,
-            "total_unique_values": unique_values,
-            "coverage_rate": coverage_rate,  # Percentage of messages that have this field
-            "missing_field_count": missing_field_count,
-            "top_values": detailed_distribution,
-            "value_distribution": {item["value"]: item["count"] for item in detailed_distribution[:15]},
-            "estimation_info": {
-                "total_sample_messages": len(messages),
-                "accurate_total_count": accurate_total_count,
-                "estimation_method": "proportional_scaling" if accurate_total_count else "direct_count"
-            }
+            "total_unique_values": len(field_counts),
+            "coverage_rate": coverage_rate,
+            "top_values": top_values
         }
 
 class GraylogClient:
@@ -834,23 +754,26 @@ class GraylogClient:
         
         max_count = 0
         successful_strategies = []
-        
+        all_failed_with_error = True
+
         for strategy_name, strategy_func in count_strategies:
             try:
                 logger.info(f"Trying count strategy: {strategy_name}")
                 count_result = await strategy_func(query_string, timerange, streams)
-                
+                all_failed_with_error = False  # At least one strategy succeeded (even if 0)
+
                 if count_result > 0:
                     max_count = max(max_count, count_result)
                     successful_strategies.append(f"{strategy_name}: {count_result}")
                     logger.info(f"SUCCESS: {strategy_name} returned: {count_result}")
                 else:
-                    logger.debug(f"WARNING: {strategy_name} returned zero")
-                    
+                    logger.warning(f"{strategy_name} returned zero")
+
             except Exception as e:
-                logger.debug(f"ERROR: {strategy_name} failed: {e}")
+                logger.warning(f"{strategy_name} failed: {e}")
                 continue
-        
+
+        self._last_count_api_failed = all_failed_with_error
         logger.info(f"Accurate count result: {max_count}")
         logger.info(f"Successful strategies: {successful_strategies}")
         
@@ -1285,10 +1208,10 @@ class GraylogClient:
                                 logger.debug(f"{endpoint} successful: {len(chunk_messages)} messages")
                                 break
                             else:
-                                logger.debug(f"WARNING: {endpoint} returned CSV but no messages parsed")
+                                logger.warning(f"{endpoint} returned CSV but no messages parsed")
                         
                     except Exception as e:
-                        logger.debug(f"ERROR: {endpoint} failed: {e}")
+                        logger.warning(f"{endpoint} failed: {e}")
                         continue
                 
                 if chunk_messages:
@@ -1519,7 +1442,8 @@ class GraylogClient:
         """Execute single high limit search - Complete retention"""
         
         high_limits = [limit, 5000, 3000, 2000, 1500, 1000, 500]
-        
+        last_error = None
+
         for attempt_limit in high_limits:
             try:
                 data = {
@@ -1591,14 +1515,20 @@ class GraylogClient:
                                     return messages
                     
                     except Exception as e:
-                        logger.debug(f"Endpoint {endpoint} with limit {attempt_limit} failed: {e}")
+                        logger.warning(f"Endpoint {endpoint} with limit {attempt_limit} failed: {e}")
+                        last_error = e
                         continue
-                
+
             except Exception as e:
-                logger.debug(f"High limit {attempt_limit} failed: {e}")
+                logger.warning(f"High limit {attempt_limit} failed: {e}")
+                last_error = e
                 continue
         
-        logger.warning("All high limit attempts failed")
+        self._last_search_api_failed = last_error is not None
+        if last_error:
+            logger.warning(f"All high limit attempts failed, last error: {last_error}")
+        else:
+            logger.info("Search completed with no matching results")
         return []
 
     def _build_api_timerange(self, timerange: Dict) -> Dict:
@@ -2055,61 +1985,46 @@ server = Server("graylog-mcp")
 async def handle_list_tools() -> List[Tool]:
     """List all available Graylog management tools - Complete version"""
     return [
-        # API breakthrough dedicated tools with FIXED source analysis
+        # === Analysis tools (return aggregated stats, NOT raw messages) ===
         Tool(
             name="get_log_statistics",
-            description="Get comprehensive log statistics with FIXED accurate counting and FIXED source analysis.",
+            description="Get aggregated log statistics: total count, top sources, level breakdown, time patterns. Returns analyzed summary, NOT raw messages. Best for: quick overview of log activity in a time range.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
-                    "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
-                    "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    },
-                    "analysis_limit": {"type": "integer", "description": "Maximum messages to analyze", "default": 15000, "maximum": 50000}
+                    "query": {"type": "string", "description": "Graylog query (Lucene syntax). Ex: '*', 'source:myhost', 'level:ERROR', 'source:fw\\-01 AND level:ERROR'", "default": "*"},
+                    "range_from": {"type": "string", "description": "Start time. Relative: 'now-5m','now-1h','now-24h'. Absolute: '2024-01-15T10:00:00.000Z'", "default": "now-5m"},
+                    "range_to": {"type": "string", "description": "End time. Same format as range_from", "default": "now"},
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter (use get_streams to list)", "items": {"type": "string"}, "default": []},
+                    "analysis_limit": {"type": "integer", "description": "Max messages to sample for analysis", "default": 15000, "maximum": 50000}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
             name="analyze_time_patterns",
-            description="Analyze time-based patterns using API breakthrough with FIXED counting",
+            description="Analyze temporal distribution of logs: hourly/minute breakdown, peak times, traffic spikes. Returns: hourly_distribution, peak_hours, peak_minutes.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
-                    "range_from": {"type": "string", "description": "Start time", "default": "now-1h"},
+                    "query": {"type": "string", "description": "Graylog query (Lucene syntax). Ex: '*', 'source:myhost', 'level:ERROR'", "default": "*"},
+                    "range_from": {"type": "string", "description": "Start time. Ex: 'now-1h', 'now-24h'", "default": "now-1h"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
             name="analyze_source_distribution",
-            description="Analyze log distribution by source hosts with FIXED counting and improved sampling",
+            description="Rank log sources (hosts/devices) by volume. Returns: top_sources[] with {source, count, percentage}. Use to identify noisiest or quietest sources.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "_exists_:source"},
+                    "query": {"type": "string", "description": "Graylog query. Use '_exists_:source' for all sources with source field", "default": "_exists_:source"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    },
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []},
                     "top_n": {"type": "integer", "description": "Number of top sources to return", "default": 30, "maximum": 100}
                 },
                 "additionalProperties": False
@@ -2117,181 +2032,127 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="analyze_error_patterns",
-            description="Extract and analyze error patterns with FIXED counting",
+            description="Extract error patterns from logs: error keywords frequency, error-producing sources, recent error samples. Use to diagnose issues.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
+                    "query": {"type": "string", "description": "Graylog query", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-1h"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
             name="get_log_level_analysis",
-            description="Analyze log levels distribution with FIXED counting",
+            description="Get log level distribution (ERROR, WARN, INFO, DEBUG, etc.) with counts, percentages, error_rate, warning_rate.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
+                    "query": {"type": "string", "description": "Graylog query", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
             name="analyze_field_distribution",
-            description="Analyze distribution of any specified field (generic field statistics)",
+            description="Analyze value distribution for any log field. Returns top values ranked by frequency with count and percentage. Use for: action, src-ip, dst-ip, protocol, facility, application_name, etc.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "field_name": {"type": "string", "description": "Field name to analyze (e.g., 'action', 'src-ip', 'dst-ip', 'protocol', etc.)"},
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
+                    "field_name": {"type": "string", "description": "Field to analyze. Ex: 'action', 'src-ip', 'dst-ip', 'protocol', 'facility'"},
+                    "query": {"type": "string", "description": "Graylog query", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
                     "top_n": {"type": "integer", "description": "Number of top values to return", "default": 50, "maximum": 200},
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "required": ["field_name"],
                 "additionalProperties": False
             }
         ),
-        
-        # Sample query tools
+
+        # === Message retrieval tools (return raw log messages) ===
         Tool(
             name="get_log_sample",
-            description="Get a small sample of recent log messages for detailed inspection",
+            description="Retrieve sample raw log messages for inspection. Returns actual message content with selected fields. Use when you need to see log details, not just statistics.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string", "default": "*"},
+                    "query": {"type": "string", "description": "Graylog query", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "limit": {"type": "integer", "description": "Number of sample messages", "default": 50, "maximum": 200},
-                    "fields": {
-                        "type": "array",
-                        "description": "Fields to include",
-                        "items": {"type": "string"},
-                        "default": ["timestamp", "source", "message", "level"]
-                    },
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "limit": {"type": "integer", "description": "Number of messages to return", "default": 50, "maximum": 200},
+                    "fields": {"type": "array", "description": "Fields to include. Ex: ['timestamp','source','message','level']", "items": {"type": "string"}, "default": ["timestamp", "source", "message", "level"]},
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
             name="search_logs_paginated",
-            description="Search logs with smart time-based pagination (handles large datasets efficiently)",
+            description="Search logs with pagination. Returns raw messages with has_more flag for next page. Use for targeted searches or when paginating through results.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string"},
+                    "query": {"type": "string", "description": "Graylog query (required). Ex: 'source:myhost AND level:ERROR'"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
                     "limit": {"type": "integer", "description": "Results per page", "default": 100, "maximum": 500},
-                    "offset": {"type": "integer", "description": "Results offset (automatically uses time-based chunks)", "default": 0},
-                    "fields": {
-                        "type": "array",
-                        "description": "Fields to retrieve",
-                        "items": {"type": "string"},
-                        "default": ["timestamp", "source", "message", "level"]
-                    },
-                    "streams": {
-                        "type": "array",
-                        "description": "Stream IDs to search in (optional)",
-                        "items": {"type": "string"},
-                        "default": []
-                    }
+                    "offset": {"type": "integer", "description": "Pagination offset (0-based)", "default": 0},
+                    "fields": {"type": "array", "description": "Fields to retrieve", "items": {"type": "string"}, "default": ["timestamp", "source", "message", "level"]},
+                    "streams": {"type": "array", "description": "Stream IDs or names to filter", "items": {"type": "string"}, "default": []}
                 },
                 "required": ["query"],
                 "additionalProperties": False
             }
         ),
-        
-        # Export tools
+
+        # === Export tool (returns sample data + computed analysis) ===
         Tool(
             name="search_messages_export",
-            description="Export search results with comprehensive analysis",
+            description="Export and analyze logs. Returns both sample data and computed statistics (source distribution, level breakdown, field stats). Use for comprehensive investigation that needs both raw data and analysis.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Elasticsearch query string"},
+                    "query": {"type": "string", "description": "Graylog query (required)"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"},
-                    "limit": {"type": "integer", "description": "Maximum number of results", "default": 1000, "maximum": 50000},
-                    "fields": {
-                        "type": "array", 
-                        "description": "Fields to include in export", 
-                        "items": {"type": "string"},
-                        "default": ["timestamp", "source", "message"]
-                    }
+                    "limit": {"type": "integer", "description": "Max messages to process", "default": 1000, "maximum": 50000},
+                    "fields": {"type": "array", "description": "Fields to include", "items": {"type": "string"}, "default": ["timestamp", "source", "message"]}
                 },
                 "required": ["query"],
                 "additionalProperties": False
             }
         ),
-        
-        # System info tools
+
+        # === System & metadata tools ===
         Tool(
             name="get_streams",
-            description="List all available Graylog streams",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False
-            }
+            description="List all Graylog streams with ID, title, description, and status. Use stream IDs or names in the 'streams' parameter of other tools to scope searches.",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
         Tool(
             name="get_system_info",
-            description="Get Graylog system information and cluster status",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False
-            }
+            description="Get Graylog server version, cluster status, and node info.",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
-        
-        # Content Packs tools
         Tool(
             name="list_content_packs",
-            description="List all available Graylog content packs",
-            inputSchema={
-                "type": "object", 
-                "properties": {},
-                "additionalProperties": False
-            }
+            description="List all installed Graylog content packs.",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
         Tool(
             name="get_content_pack",
-            description="Get specific content pack details",
+            description="Get details of a specific content pack by ID.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "content_pack_id": {"type": "string", "description": "Content Pack ID"}
+                    "content_pack_id": {"type": "string", "description": "Content Pack ID (from list_content_packs)"}
                 },
                 "required": ["content_pack_id"],
                 "additionalProperties": False
@@ -2299,49 +2160,43 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_content_pack_revision",
-            description="Get specific revision of a content pack with full configuration details",
+            description="Get full configuration of a content pack revision, including extracted dashboards and widgets.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content_pack_id": {"type": "string", "description": "Content Pack ID"},
-                    "revision": {"type": "integer", "description": "Content pack revision number", "default": 1}
+                    "revision": {"type": "integer", "description": "Revision number", "default": 1}
                 },
                 "required": ["content_pack_id"],
                 "additionalProperties": False
             }
         ),
-
-        # Dashboard tools
         Tool(
             name="list_dashboards",
-            description="List all available Graylog dashboards",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False
-            }
+            description="List all Graylog dashboards with ID and title.",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
         Tool(
             name="get_dashboard",
-            description="Get specific dashboard details and widget list",
+            description="Get dashboard metadata and widget configurations by ID. Note: widget data values are not available via API, only widget config.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "dashboard_id": {"type": "string", "description": "Dashboard ID"}
+                    "dashboard_id": {"type": "string", "description": "Dashboard ID (from list_dashboards)"}
                 },
                 "required": ["dashboard_id"],
                 "additionalProperties": False
             }
         ),
-        
-        # Testing and debugging tools
+
+        # === Debug tools ===
         Tool(
             name="test_accurate_counting",
-            description="Test the fixed accurate counting methods for debugging",
+            description="[Debug] Test and compare different message counting strategies. Returns per-method counts and best result.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Test query", "default": "*"},
+                    "query": {"type": "string", "description": "Query to test", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"}
                 },
@@ -2350,11 +2205,11 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="test_source_analysis_fix",
-            description="Test the FIXED source analysis with detailed debugging information",
+            description="[Debug] Compare standard vs enhanced source analysis sampling. Returns side-by-side comparison of top sources from both methods.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Test query", "default": "*"},
+                    "query": {"type": "string", "description": "Query to test", "default": "*"},
                     "range_from": {"type": "string", "description": "Start time", "default": "now-5m"},
                     "range_to": {"type": "string", "description": "End time", "default": "now"}
                 },
@@ -2370,7 +2225,7 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
         result = await execute_tool(name, arguments)
         
         if isinstance(result, dict):
-            json_output = json.dumps(result, indent=2, ensure_ascii=False)
+            json_output = json.dumps(result, ensure_ascii=False, separators=(',', ':'))
         else:
             json_output = str(result)
             
@@ -2512,28 +2367,29 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 )
                 
                 logger.info(f"Successfully retrieved {len(messages)} messages for analysis")
-                
+
+                if not messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "total_count": 0,
+                        "sample_size": 0,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 # Use fixed LogAnalyzer for analysis
                 timerange_info = {
                     "from": range_from,
                     "to": range_to
                 }
-                
+
                 # Key fix: Ensure total count is correct
                 summary_result = LogAnalyzer.generate_summary(messages, query, timerange_info, accurate_total_count)
                 
-                # Add fix information
-                summary_result["processing_info"] = {
-                    "processed_on": "MCP_server",
-                    "accurate_total_count": accurate_total_count,
-                    "sample_messages_analyzed": len(messages),
-                    "analysis_limit": analysis_limit,
-                    "api_breakthrough_used": True,
-                    "source_analysis_enhanced": True,
-                    "counting_method": "fixed_accurate_counting_with_enhanced_source_analysis",
-                    "fix_version": __version__,
-                    "compression_ratio": f"{len(messages)}:1 (raw data not sent to client)",
-                    "processing_time": datetime.utcnow().isoformat()
+                summary_result["_meta"] = {
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "analysis_limit": analysis_limit
                 }
                 
                 return summary_result
@@ -2564,30 +2420,11 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # If we couldn't get any messages due to complex query
                 if not messages and accurate_total_count == 0:
                     return {
-                        "error": "Query too complex",
-                        "message": "Unable to analyze time patterns due to query complexity",
-                        "suggestion": "Try using more specific field searches instead of general text searches.",
-                        "time_patterns": {
-                            "hourly_distribution": {},
-                            "daily_distribution": {},
-                            "minute_distribution": {},
-                            "peak_hours": [],
-                            "peak_minutes": [],
-                            "total_time_slots": 0,
-                            "total_minutes": 0,
-                            "processing_stats": {
-                                "total_messages": 0,
-                                "successfully_processed": 0,
-                                "error_occurred": True
-                            }
-                        },
-                        "analysis_summary": {
-                            "accurate_total_count": 0,
-                            "sample_messages_analyzed": 0,
-                            "time_range": {"from": range_from, "to": range_to},
-                            "query": query,
-                            "error_occurred": True
-                        }
+                        "error": "Query too complex. Use field-specific searches instead of free text.",
+                        "time_patterns": {},
+                        "total_count": 0,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
                     }
                 
                 # Analyze time patterns
@@ -2595,14 +2432,10 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 
                 return {
                     "time_patterns": time_analysis,
-                    "analysis_summary": {
-                        "accurate_total_count": accurate_total_count,
-                        "sample_messages_analyzed": len(messages),
-                        "time_range": {"from": range_from, "to": range_to},
-                        "query": query,
-                        "counting_method": "smart_safe_retrieval"
-                    },
-                    "processing_note": "Time pattern analysis completed using smart pagination (v1.9.25)"
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2635,31 +2468,27 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 )
                 
                 logger.info(f"Source analysis sample: {len(messages)} messages (target was 25k)")
-                
+
+                if not messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "source_distribution": {},
+                        "total_count": 0,
+                        "sample_size": 0,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 # Use fixed source analysis method
                 source_analysis = LogAnalyzer.analyze_sources(messages, accurate_total_count)
                 source_analysis["top_sources"] = source_analysis["top_sources"][:top_n]
                 
                 return {
                     "source_distribution": source_analysis,
-                    "analysis_summary": {
-                        "accurate_total_count": accurate_total_count,
-                        "sample_messages_analyzed": len(messages),
-                        "target_sample_size": client.api_breakthrough_config["source_analysis_target"],
-                        "time_range": {"from": range_from, "to": range_to},
-                        "query": query,
-                        "top_n_requested": top_n,
-                        "counting_method": "fixed_accurate_counting_with_proportional_scaling",
-                        "sampling_strategy": "enhanced_time_slicing_with_large_sample",
-                        "fix_version": __version__
-                    },
-                    "fix_notes": {
-                        "problem_identified": "Sample size too small and not representative",
-                        "solution_applied": "Increased target sample to 25k with enhanced time slicing",
-                        "scaling_method": "Proportional scaling based on accurate total count",
-                        "improvement": "Source counts now estimated from larger representative sample"
-                    },
-                    "processing_note": "Source distribution analysis completed using FIXED accurate counting with enhanced sampling"
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2708,40 +2537,34 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     if "too_many_nested_clauses" in str(e):
                         # If query is too complex, return error with helpful message
                         return {
-                            "error": "Query too complex",
-                            "message": str(e),
-                            "suggestion": "Try using more specific field searches instead of general text searches.",
-                            "error_patterns": {
-                                "total_errors": 0,
-                                "error_sources": {},
-                                "error_keywords": {},
-                                "recent_errors": [],
-                                "error_percentage": 0
-                            },
-                            "analysis_summary": {
-                                "accurate_total_count": 0,
-                                "sample_messages_analyzed": 0,
-                                "time_range": {"from": range_from, "to": range_to},
-                                "query": query,
-                                "error_occurred": True
-                            }
+                            "error": "Query too complex. Use field-specific searches instead of free text.",
+                            "error_patterns": {},
+                            "total_count": 0,
+                            "query": query,
+                            "time_range": {"from": range_from, "to": range_to}
                         }
                     else:
                         raise
                 
+                if not messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "error_patterns": {},
+                        "total_count": 0,
+                        "sample_size": 0,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 # Analyze error patterns
                 error_analysis = LogAnalyzer.extract_error_patterns(messages)
-                
+
                 return {
                     "error_patterns": error_analysis,
-                    "analysis_summary": {
-                        "accurate_total_count": accurate_total_count,
-                        "sample_messages_analyzed": len(messages),
-                        "time_range": {"from": range_from, "to": range_to},
-                        "query": query,
-                        "counting_method": "smart_time_based_pagination"
-                    },
-                    "processing_note": "Error pattern analysis completed using smart pagination (v1.9.25)"
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2770,24 +2593,11 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 # If we couldn't get any messages due to complex query
                 if not messages and accurate_total_count == 0:
                     return {
-                        "error": "Query too complex",
-                        "message": "Unable to analyze log levels due to query complexity",
-                        "suggestion": "Try using more specific field searches instead of general text searches.",
-                        "level_analysis": {
-                            "level_distribution": {},
-                            "error_rate": 0,
-                            "warning_rate": 0,
-                            "total_errors": 0,
-                            "total_warnings": 0,
-                            "most_common_level": ("unknown", 0)
-                        },
-                        "analysis_summary": {
-                            "accurate_total_count": 0,
-                            "sample_messages_analyzed": 0,
-                            "time_range": {"from": range_from, "to": range_to},
-                            "query": query,
-                            "error_occurred": True
-                        }
+                        "error": "Query too complex. Use field-specific searches instead of free text.",
+                        "level_analysis": {},
+                        "total_count": 0,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
                     }
                 
                 # Analyze log levels
@@ -2795,14 +2605,10 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 
                 return {
                     "level_analysis": level_analysis,
-                    "analysis_summary": {
-                        "accurate_total_count": accurate_total_count,
-                        "sample_messages_analyzed": len(messages),
-                        "time_range": {"from": range_from, "to": range_to},
-                        "query": query,
-                        "counting_method": "smart_safe_retrieval"
-                    },
-                    "processing_note": "Log level analysis completed using smart pagination (v1.9.25)"
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2845,7 +2651,18 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 )
                 
                 logger.info(f"Accurate total count: {accurate_total_count}, messages retrieved: {len(messages)}")
-                
+
+                if not messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "field_analysis": {},
+                        "total_count": 0,
+                        "sample_size": 0,
+                        "field_name": field_name,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 # Analyze field distribution
                 field_analysis = LogAnalyzer.analyze_field_distribution(
                     messages, field_name, top_n, accurate_total_count
@@ -2853,21 +2670,11 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 
                 return {
                     "field_analysis": field_analysis,
-                    "analysis_summary": {
-                        "accurate_total_count": accurate_total_count,
-                        "sample_messages_analyzed": len(messages),
-                        "time_range": {"from": range_from, "to": range_to},
-                        "query": query,
-                        "field_analyzed": field_name,
-                        "unique_values_found": field_analysis["total_unique_values"],
-                        "field_coverage": f"{field_analysis['coverage_rate']}%",
-                        "counting_method": "fixed_accurate_counting_with_field_analysis"
-                    },
-                    "processing_info": {
-                        "processed_on": "MCP_server",
-                        "fix_version": __version__,
-                        "processing_time": datetime.utcnow().isoformat()
-                    }
+                    "total_count": accurate_total_count,
+                    "sample_size": len(messages),
+                    "field_name": field_name,
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2923,39 +2730,33 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     if "too_many_nested_clauses" in str(e):
                         # If query is too complex, return error with helpful message
                         return {
-                            "error": "Query too complex",
-                            "message": str(e),
-                            "suggestion": "Try using more specific field searches instead of general text searches. For example, use 'app:AdGuardHome' instead of 'AdGuardHome'.",
-                            "sample_messages": [],
-                            "sample_info": {
-                                "accurate_total_count": 0,
-                                "requested_limit": limit,
-                                "actual_count": 0,
-                                "total_available": 0,
-                                "fields_included": fields,
-                                "time_range": {"from": range_from, "to": range_to},
-                                "query": query,
-                                "error_occurred": True
-                            }
+                            "error": "Query too complex. Use field-specific searches (e.g. 'app:AdGuardHome' instead of 'AdGuardHome').",
+                            "messages": [],
+                            "total_count": 0,
+                            "query": query,
+                            "time_range": {"from": range_from, "to": range_to}
                         }
                     else:
                         raise
                 
                 sample_messages = messages[:limit] if len(messages) > limit else messages
-                
-                return {
-                    "sample_messages": sample_messages,
-                    "sample_info": {
-                        "accurate_total_count": accurate_total_count,
-                        "requested_limit": limit,
-                        "actual_count": len(sample_messages),
-                        "total_available": len(messages),
-                        "fields_included": fields,
-                        "time_range": {"from": range_from, "to": range_to},
+
+                if not sample_messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "messages": [],
+                        "total_count": 0,
+                        "returned": 0,
                         "query": query,
-                        "counting_method": "fixed_accurate_counting"
-                    },
-                    "note": "High-quality sample data using FIXED accurate counting"
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
+                return {
+                    "messages": sample_messages,
+                    "total_count": accurate_total_count,
+                    "returned": len(sample_messages),
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
                 
             except Exception as e:
@@ -2991,17 +2792,12 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         logger.warning(f"Query too complex for accurate count: {e}")
                         # Return error response for complex queries
                         return {
-                            "error": "Query too complex",
-                            "message": str(e),
-                            "suggestion": "Try using more specific field searches instead of general text searches.",
+                            "error": "Query too complex. Use field-specific searches instead of free text.",
                             "messages": [],
-                            "pagination": {
-                                "accurate_total_count": 0,
-                                "offset": offset,
-                                "limit": limit,
-                                "current_count": 0,
-                                "error_occurred": True
-                            }
+                            "total_count": 0,
+                            "has_more": False,
+                            "query": query,
+                            "time_range": {"from": range_from, "to": range_to}
                         }
                     else:
                         raise
@@ -3069,24 +2865,28 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         )
                         paginated_messages = messages
                 
+                if not paginated_messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "messages": [],
+                        "total_count": 0,
+                        "returned": 0,
+                        "has_more": False,
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 return {
                     "messages": paginated_messages,
-                    "pagination": {
-                        "accurate_total_count": accurate_total_count,
-                        "offset": offset,
-                        "limit": limit,
-                        "current_count": len(paginated_messages),
-                        "has_more": offset + limit < accurate_total_count,
-                        "counting_method": "smart_time_based_pagination"
-                    },
-                    "query_info": {
-                        "query": query,
-                        "time_range": {"from": range_from, "to": range_to},
-                        "fields": fields
-                    },
-                    "note": "Using smart time-based pagination for better performance"
+                    "total_count": accurate_total_count,
+                    "offset": offset,
+                    "limit": limit,
+                    "returned": len(paginated_messages),
+                    "has_more": offset + limit < accurate_total_count,
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to}
                 }
-                
+
             except Exception as e:
                 raise GraylogError(f"Failed to search logs with pagination: {e}")
         
@@ -3115,6 +2915,16 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 )
                 logger.info(f"Accurate total count: {accurate_total_count}, retrieved {len(messages)} messages")
                 
+                if not messages and accurate_total_count == 0 and (getattr(client, '_last_search_api_failed', False) or getattr(client, '_last_count_api_failed', False)):
+                    return {
+                        "error": "All Graylog API attempts failed. Check server connectivity, credentials, and ~/.mcp_graylog.log for details.",
+                        "total_count": 0,
+                        "sample_size": 0,
+                        "sample_data": [],
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
+                    }
+
                 if messages:
                     logger.info(f"Processing {len(messages)} messages for analysis")
                     
@@ -3161,44 +2971,21 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         sample_data.extend(messages[-50:])
                     
                     return {
-                        "export_analysis": {
-                            "accurate_total_count": accurate_total_count,
-                            "sample_records_processed": len(messages),
-                            "requested_limit": limit,
-                            "fields_analyzed": fields,
-                            "field_statistics": field_stats,
-                            "time_range": timerange_info,
-                            "query": query
-                        },
-                        "comprehensive_analysis": complete_analysis,
+                        "total_count": accurate_total_count,
+                        "sample_size": len(messages),
+                        "field_statistics": field_stats,
+                        "analysis": complete_analysis,
                         "sample_data": sample_data,
-                        "processing_info": {
-                            "analysis_completed_on": "MCP_server",
-                            "accurate_counting_used": True,
-                            "counting_method": "fixed_accurate_counting",
-                            "raw_data_size": f"{len(messages)} sample records from {accurate_total_count} total",
-                            "compression_achieved": f"Full analysis instead of raw records",
-                            "processing_time": datetime.utcnow().isoformat()
-                        },
-                        "note": "Complete analysis performed on MCP server using FIXED accurate counting"
+                        "query": query,
+                        "time_range": timerange_info
                     }
                 else:
                     return {
-                        "export_analysis": {
-                            "accurate_total_count": accurate_total_count,
-                            "sample_records_processed": 0,
-                            "requested_limit": limit,
-                            "fields_analyzed": fields,
-                            "time_range": {"from": range_from, "to": range_to},
-                            "query": query
-                        },
-                        "processing_info": {
-                            "analysis_completed_on": "MCP_server",
-                            "accurate_counting_used": True,
-                            "counting_method": "fixed_accurate_counting",
-                            "processing_time": datetime.utcnow().isoformat()
-                        },
-                        "note": "No sample data found using FIXED accurate counting"
+                        "total_count": accurate_total_count,
+                        "sample_size": 0,
+                        "sample_data": [],
+                        "query": query,
+                        "time_range": {"from": range_from, "to": range_to}
                     }
                     
             except Exception as e:
@@ -3217,9 +3004,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                             "id": stream.get("id", ""),
                             "title": stream.get("title", ""),
                             "description": stream.get("description", ""),
-                            "disabled": stream.get("disabled", False),
-                            "matching_type": stream.get("matching_type", ""),
-                            "rules": stream.get("rules", [])
+                            "disabled": stream.get("disabled", False)
                         }
                         stream_list.append(stream_info)
                     
@@ -3228,8 +3013,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     
                     return {
                         "streams": stream_list,
-                        "total": len(stream_list),
-                        "usage_tip": "You can use either stream title (e.g., 'PVE Stream') or stream ID in the streams parameter"
+                        "total": len(stream_list)
                     }
                 else:
                     return result
@@ -3303,13 +3087,10 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 
                 return {
                     "content_pack": result,
-                    "extracted_info": {
-                        "dashboards": dashboards,
-                        "widgets": widgets,
-                        "dashboard_count": len(dashboards),
-                        "widget_count": len(widgets)
-                    },
-                    "note": "Content packs may contain complete dashboard and widget configurations"
+                    "dashboards": dashboards,
+                    "widgets": widgets,
+                    "dashboard_count": len(dashboards),
+                    "widget_count": len(widgets)
                 }
                 
             except Exception as e:
@@ -3329,10 +3110,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                         
                         return {
                             "dashboards": dashboards,
-                            "total": len(dashboards),
-                            "total_elements": result.get("total", len(result.get("elements", []))),
-                            "pagination": result.get("pagination", {}),
-                            "source": "elements_api"
+                            "total": len(dashboards)
                         }
                     
                     elif "dashboards" in result:
@@ -3359,7 +3137,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     dashboard_response = await client.get(f"/views/{dashboard_id}")
                     api_used = "views_api"
                 except Exception as e:
-                    logger.debug(f"Views API failed: {e}")
+                    logger.warning(f"Views API failed: {e}")
                     
                     try:
                         dashboard_response = await client.get(f"/dashboards/{dashboard_id}")
@@ -3415,15 +3193,13 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                                     "config": widget.get("config", {}),
                                     "timerange": widget.get("timerange", {}),
                                     "query": widget.get("query", {}),
-                                    "streams": widget.get("streams", []),
-                                    "note": "Widget data not accessible via API - only configuration available"
+                                    "streams": widget.get("streams", [])
                                 }
                                 widgets.append(widget_info)
                             elif isinstance(widget, str):
                                 widget_info = {
                                     "id": widget,
-                                    "type": "unknown",
-                                    "note": "Widget data not accessible via API - only ID available"
+                                    "type": "unknown"
                                 }
                                 widgets.append(widget_info)
                 
@@ -3442,22 +3218,14 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                             "id": widget.get("id"),
                             "type": widget.get("type"),
                             "description": widget.get("description", ""),
-                            "cache_time": widget.get("cache_time", 0),
-                            "config": widget.get("config", {}),
-                            "note": "Widget data not accessible via API - only configuration available"
+                            "config": widget.get("config", {})
                         }
                         widgets.append(widget_info)
                 
                 result = {
                     "dashboard": dashboard_info,
                     "widgets": widgets,
-                    "widget_count": len(widgets),
-                    "api_used": api_used,
-                    "limitations": {
-                        "widget_data": "Widget data/values cannot be retrieved via API",
-                        "available": "Only dashboard metadata and widget configuration accessible",
-                        "alternative": "Use content packs for complete widget configurations"
-                    }
+                    "widget_count": len(widgets)
                 }
                 
                 return result
@@ -3526,26 +3294,12 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 min_count = min(successful_counts) if successful_counts else 0
                 
                 return {
-                    "test_summary": {
-                        "query": query,
-                        "time_range": {"from": range_from, "to": range_to},
-                        "max_count_found": max_count,
-                        "min_count_found": min_count,
-                        "count_variance": max_count - min_count if successful_counts else 0,
-                        "successful_methods": len(successful_counts),
-                        "total_methods_tested": len(count_strategies) + 1
-                    },
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to},
+                    "best_count": max_count,
+                    "count_variance": max_count - min_count if successful_counts else 0,
                     "method_results": test_results,
-                    "recommendations": {
-                        "best_count": max_count,
-                        "reliable_methods": [k for k, v in test_results.items() if v["status"] == "success" and v["count"] == max_count],
-                        "note": "The integrated method should use the highest count from successful methods"
-                    },
-                    "debug_info": {
-                        "timerange_config": timerange,
-                        "all_counts": successful_counts,
-                        "test_timestamp": datetime.utcnow().isoformat()
-                    }
+                    "reliable_methods": [k for k, v in test_results.items() if v["status"] == "success" and v["count"] == max_count]
                 }
                 
             except Exception as e:
@@ -3594,49 +3348,19 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 
                 # Step 4: Compare results
                 comparison_results = {
-                    "test_summary": {
-                        "query": query,
-                        "time_range": {"from": range_from, "to": range_to},
-                        "accurate_total_count": accurate_total_count,
-                        "standard_method_sample_size": len(old_messages),
-                        "fixed_method_sample_size": len(new_messages),
-                        "sample_size_improvement": f"{((len(new_messages) - len(old_messages)) / len(old_messages) * 100):.1f}%" if old_messages else "N/A"
-                    },
-                    "standard_method_results": {
+                    "query": query,
+                    "time_range": {"from": range_from, "to": range_to},
+                    "total_count": accurate_total_count,
+                    "standard_method": {
                         "sample_size": len(old_messages),
-                        "top_5_sources": [
-                            {
-                                "source": src["source"],
-                                "estimated_count": src["count"],
-                                "sample_count": src.get("sample_count", src["count"]),
-                                "percentage": src["percentage"]
-                            } for src in old_top_5
-                        ],
-                        "method": "standard_breakthrough_api_limits"
+                        "top_5": [{"source": s["source"], "count": s["count"], "pct": s["pct"]} for s in old_top_5]
                     },
-                    "fixed_method_results": {
+                    "enhanced_method": {
                         "sample_size": len(new_messages),
-                        "top_5_sources": [
-                            {
-                                "source": src["source"],
-                                "estimated_count": src["count"],
-                                "sample_count": src.get("sample_count", src["count"]),
-                                "percentage": src["percentage"]
-                            } for src in new_top_5
-                        ],
-                        "method": "breakthrough_for_source_analysis_with_enhanced_time_slicing"
+                        "top_5": [{"source": s["source"], "count": s["count"], "pct": s["pct"]} for s in new_top_5]
                     },
-                    "comparison_analysis": {
-                        "ranking_changes": [],
-                        "count_differences": [],
-                        "accuracy_improvements": []
-                    },
-                    "fix_validation": {
-                        "larger_sample_achieved": len(new_messages) > len(old_messages),
-                        "more_representative_data": len(new_messages) >= client.api_breakthrough_config.get("source_analysis_min_sample", 10000),
-                        "proportional_scaling_used": True,
-                        "enhanced_time_slicing_applied": True
-                    }
+                    "ranking_changes": [],
+                    "count_differences": []
                 }
                 
                 # Analyze ranking changes
@@ -3650,12 +3374,11 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     if old_rank != "N/A" and new_rank != "N/A":
                         rank_change = old_rank - new_rank  # Positive means rank improved
                         if rank_change != 0:
-                            comparison_results["comparison_analysis"]["ranking_changes"].append({
+                            comparison_results["ranking_changes"].append({
                                 "source": source,
-                                "old_rank": old_rank + 1,  # Convert to 1-based
+                                "old_rank": old_rank + 1,
                                 "new_rank": new_rank + 1,
-                                "change": "UP" if rank_change > 0 else "DOWN",
-                                "positions": abs(rank_change)
+                                "change": "UP" if rank_change > 0 else "DOWN"
                             })
                 
                 # Analyze count differences
@@ -3668,41 +3391,17 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                     difference = new_count - old_count
                     percentage_change = (difference / old_count * 100) if old_count > 0 else 0
                     
-                    comparison_results["comparison_analysis"]["count_differences"].append({
+                    comparison_results["count_differences"].append({
                         "source": source,
-                        "old_estimated_count": old_count,
-                        "new_estimated_count": new_count,
-                        "difference": difference,
-                        "percentage_change": f"{percentage_change:.1f}%"
+                        "old_count": old_count,
+                        "new_count": new_count,
+                        "diff_pct": f"{percentage_change:.1f}%"
                     })
-                
-                # Accuracy improvement analysis
-                if len(new_messages) > len(old_messages):
-                    improvement_factor = len(new_messages) / len(old_messages) if old_messages else float('inf')
-                    comparison_results["comparison_analysis"]["accuracy_improvements"].append(
-                        f"Sample size increased by {improvement_factor:.1f}x"
-                    )
-                
-                if len(new_messages) >= client.api_breakthrough_config.get("source_analysis_min_sample", 10000):
-                    comparison_results["comparison_analysis"]["accuracy_improvements"].append(
-                        "Achieved minimum recommended sample size for source analysis"
-                    )
-                
+
                 comparison_results["fix_status"] = {
-                    "fix_applied": True,
                     "sample_size_adequate": len(new_messages) >= 10000,
-                    "representativeness_improved": len(new_messages) > len(old_messages) * 1.5,
-                    "proportional_scaling_working": new_source_analysis.get("estimation_info", {}).get("estimation_method") == "proportional_scaling",
-                    "overall_fix_success": len(new_messages) >= 10000 and len(new_messages) > len(old_messages) * 1.5
+                    "improved": len(new_messages) > len(old_messages) * 1.5
                 }
-                
-                comparison_results["recommendations"] = [
-                    "[OK] FIXED method provides larger, more representative sample",
-                    "[OK] Proportional scaling estimates actual counts from sample ratios",
-                    "[OK] Enhanced time slicing ensures temporal representativeness",
-                    "Results should now be much closer to actual Graylog UI statistics",
-                    "Use 'analyze_source_distribution' tool for production analysis"
-                ]
                 
                 return comparison_results
                 
@@ -3731,6 +3430,9 @@ def parse_args():
         'api_token': os.getenv("GRAYLOG_API_TOKEN", ""),
         'verify_ssl': os.getenv("GRAYLOG_VERIFY_SSL", "false").lower() in ("true", "1", "yes"),
         'timeout': float(os.getenv("GRAYLOG_TIMEOUT", "30")),
+        'transport': os.getenv("MCP_TRANSPORT", "stdio"),
+        'http_host': os.getenv("MCP_HTTP_HOST", "0.0.0.0"),
+        'http_port': int(os.getenv("MCP_HTTP_PORT", "8000")),
         'test': False,
         'help': False,
         'debug': False
@@ -3761,9 +3463,23 @@ def parse_args():
         elif arg == '--debug':
             config['debug'] = True
             logging.getLogger().setLevel(logging.DEBUG)
-        
+        elif arg == '--transport' and i + 1 < len(args):
+            config['transport'] = args[i + 1]
+            i += 1
+        elif arg == '--http-host' and i + 1 < len(args):
+            config['http_host'] = args[i + 1]
+            i += 1
+        elif arg == '--http-port' and i + 1 < len(args):
+            config['http_port'] = int(args[i + 1])
+            i += 1
+
         i += 1
-    
+
+    valid_transports = ('stdio', 'streamable-http')
+    if config['transport'] not in valid_transports:
+        print(f"Error: --transport must be one of: {', '.join(valid_transports)}", file=sys.stderr)
+        sys.exit(1)
+
     return config
 
 async def main():
@@ -3776,14 +3492,14 @@ async def main():
         
         # Show help message
         if config['help']:
-            print("Graylog MCP Server - Complete Features + Smart Pagination v1.9.34")
-            print("Retain all original features + Graylog escaping compliance")
+            print(f"Graylog MCP Server v{__version__}")
             print()
-            print("Key fixes in v1.9.34:")
-            print("  [OK] Fixed Python SyntaxWarning for invalid escape sequences")
-            print("  [OK] Proper Graylog escaping rules implementation")
-            print(r"  [OK] Handles both source:router\-004 and source:\"router-004\"")
-            print("  [OK] Fixed double-escaped backslash from MCP protocol")
+            print("New in v1.9.37:")
+            print("  [OK] API errors now visible in stderr (upgraded from debug to warning)")
+            print("  [OK] File logging to ~/.mcp_graylog.log for diagnostics")
+            print("  [OK] Explicit error response when all API attempts fail")
+            print("  [OK] Streamable-HTTP transport support")
+            print("  [OK] LLM-optimized tool descriptions and return values")
             print()
             print("Previous fixes retained:")
             print("  [OK] Source analysis sampling accuracy")
@@ -3798,6 +3514,9 @@ async def main():
             print("  GRAYLOG_API_TOKEN - API token (alternative to user/pass)")
             print("  GRAYLOG_VERIFY_SSL - Verify SSL certificates (default: false)")
             print("  GRAYLOG_TIMEOUT - Request timeout in seconds (default: 30)")
+            print("  MCP_TRANSPORT - Transport mode: stdio or streamable-http (default: stdio)")
+            print("  MCP_HTTP_HOST - HTTP listen host (default: 0.0.0.0)")
+            print("  MCP_HTTP_PORT - HTTP listen port (default: 8000)")
             print()
             print("All Available Tools:")
             print("  Analysis Tools (FIXED):")
@@ -3831,10 +3550,18 @@ async def main():
             print("  --test        - Run connection and source analysis fix tests")
             print("  --debug       - Enable verbose debug information")
             print()
+            print("Transport Options:")
+            print("  --transport <mode>  - Transport mode: stdio (default) or streamable-http")
+            print("  --http-host <host>  - HTTP listen host (default: 0.0.0.0)")
+            print("  --http-port <port>  - HTTP listen port (default: 8000)")
+            print()
             print("Example:")
             print("  export GRAYLOG_HOST='http://192.168.1.127:9000'")
             print("  export GRAYLOG_API_TOKEN='your_api_token_here'")
             print("  python3 mcp_graylog.py --test --debug")
+            print()
+            print("  # Start with streamable-http transport:")
+            print("  python3 mcp_graylog.py --transport streamable-http --http-port 8001")
             return
         
         # Enable debug mode if requested
@@ -3948,6 +3675,7 @@ async def main():
         print(f"Graylog MCP Server v{__version__} starting...", file=sys.stderr)
         print(f"Host: {config['host']}", file=sys.stderr)
         print(f"Auth: {auth_method}", file=sys.stderr)
+        print(f"Transport: {config['transport']}", file=sys.stderr)
         print(f"Features:", file=sys.stderr)
         print(f"   Smart time-based pagination (NEW in v1.9.25)", file=sys.stderr)
         print(f"   API compatibility fixes (NEW in v1.9.25)", file=sys.stderr)
@@ -3961,21 +3689,56 @@ async def main():
         print(f"Server ready for connections", file=sys.stderr)
         
         # Run MCP server
-        from mcp.server.stdio import stdio_server
-        
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="Graylog",
-                    server_version=__version__,
-                    capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
+        transport = config['transport']
+
+        if transport == "stdio":
+            from mcp.server.stdio import stdio_server
+
+            async with stdio_server() as (read_stream, write_stream):
+                await server.run(
+                    read_stream,
+                    write_stream,
+                    InitializationOptions(
+                        server_name="Graylog",
+                        server_version=__version__,
+                        capabilities=server.get_capabilities(
+                            notification_options=NotificationOptions(),
+                            experimental_capabilities={},
+                        )
                     )
                 )
+
+        elif transport == "streamable-http":
+            from contextlib import asynccontextmanager
+            from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+            from starlette.applications import Starlette
+            from starlette.routing import Mount
+            import uvicorn
+
+            session_manager = StreamableHTTPSessionManager(
+                app=server, json_response=True,
             )
+
+            @asynccontextmanager
+            async def lifespan(app):
+                async with session_manager.run():
+                    yield
+
+            starlette_app = Starlette(
+                debug=False,
+                routes=[Mount("/mcp", app=session_manager.handle_request)],
+                lifespan=lifespan,
+            )
+
+            http_host = config['http_host']
+            http_port = config['http_port']
+            print(f"Streamable HTTP server listening on http://{http_host}:{http_port}/mcp", file=sys.stderr)
+
+            uvicorn_config = uvicorn.Config(
+                starlette_app, host=http_host, port=http_port, log_level="info",
+            )
+            uvicorn_server = uvicorn.Server(uvicorn_config)
+            await uvicorn_server.serve()
             
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
