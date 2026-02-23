@@ -19,7 +19,7 @@
 - **互動式程序**（從終端機啟動）：允許內網連線
 - **非互動式程序**（Claude Desktop 子程序、launchd 服務）：阻擋內網連線
 
-即使在安全軟體中關閉「檔案防護」和「網頁守衛」，Network Extension 仍然在系統層級運行。
+即使在安全軟體中關閉「檔案防護」和「網頁守衛」，Network Extension 仍然在系統層級執行。
 
 可用以下命令確認是否有 Network Extension：
 
@@ -45,13 +45,13 @@ MCP Server → localhost:28080 (Proxy) → 內網服務
 ```
 /path/to/mcp_proxy/
 ├── mcp_proxy.py          # 代理程式
-├── start_proxy.command   # macOS 啟動腳本（雙擊執行）
+├── start_proxy.command   # macOS 啟動腳本（點兩下執行）
 └── README.md             # 本文件
 ```
 
 ### 2. 啟動代理
 
-**macOS**：雙擊 `start_proxy.command`
+**macOS**：點兩下 `start_proxy.command`
 
 **Linux/手動**：
 ```bash
@@ -61,7 +61,7 @@ python3 -u mcp_proxy.py &
 
 ### 3. 設定 Claude Desktop
 
-編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`，為每個 MCP 服務的 `env` 添加：
+編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`，為每個 MCP 服務的 `env` 加入：
 
 ```json
 {
@@ -90,7 +90,7 @@ python3 -u mcp_proxy.py &
 ### macOS
 
 1. 打開 **系統設定** → **一般** → **登入項目**
-2. 點擊 **+** 添加 `start_proxy.command`
+2. 點選 **+** 加入 `start_proxy.command`
 
 ### Linux (systemd)
 
@@ -131,7 +131,7 @@ python3 -u /path/to/mcp_proxy/mcp_proxy.py
 # 手動啟動（背景）
 nohup python3 -u /path/to/mcp_proxy/mcp_proxy.py > /tmp/mcp_proxy.log 2>&1 &
 
-# 查看日誌
+# 查看記錄
 tail -f /tmp/mcp_proxy.log
 ```
 
@@ -140,10 +140,10 @@ tail -f /tmp/mcp_proxy.log
 ## 測試
 
 ```bash
-# 測試代理是否運行
+# 測試代理是否執行
 curl -x http://127.0.0.1:28080 -k https://your-internal-host:port/
 
-# 預期結果：能連線到目標服務（可能返回 401 等認證錯誤，但不是連線錯誤）
+# 預期結果：能連線到目標服務（可能回傳 401 等認證錯誤，但不是連線錯誤）
 ```
 
 ---
@@ -157,11 +157,11 @@ Error: Port already in use
 解決：`pkill -f mcp_proxy.py` 然後重新啟動
 
 ### MCP 仍然無法連線
-1. 確認代理正在運行：`lsof -i :28080`
-2. 確認 Claude Desktop 配置正確
+1. 確認代理正在執行：`lsof -i :28080`
+2. 確認 Claude Desktop 設定正確
 3. 重啟 Claude Desktop
 
-### 代理日誌顯示連線錯誤
+### 代理記錄顯示連線錯誤
 ```
 [ERROR] host:port - [Errno 65] No route to host
 ```
@@ -190,7 +190,7 @@ Error: Port already in use
 ## 注意事項
 
 - 代理必須從**終端機手動啟動**，不能用 launchd
-- 代理需要保持運行，關閉終端機窗口會停止代理
+- 代理需要保持執行，關閉終端機視窗會停止代理
 - 建議使用 `start_proxy.command` 並加入登入項目
 
 ---
