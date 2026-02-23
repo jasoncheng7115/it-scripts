@@ -6,3 +6,5 @@
 * Graylog
 * phpIPAM
 * Odoo
+* Wazuh
+* Zimbra
