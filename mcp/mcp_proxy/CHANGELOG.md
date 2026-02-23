@@ -22,6 +22,6 @@ All notable changes to MCP HTTP Proxy will be documented in this file.
   - 連線逾時 30 秒保護
   - Port 佔用偵測（macOS errno 48 / Linux errno 98）
   - 預設監聽 `127.0.0.1:28080`，可透過命令列參數自訂
-- `start_proxy.command`：macOS 雙擊啟動腳本，自動清除舊程序後啟動
+- `start_proxy.command`：macOS 點兩下啟動腳本，自動清除舊程序後啟動
 - `README.md`：操作手冊（快速設置、開機自啟、管理命令、故障排除）
 - `Claude_Desktop_MCP_Network_Fix.md`：完整問題分析文件（診斷過程、根因分析、解決方案）
