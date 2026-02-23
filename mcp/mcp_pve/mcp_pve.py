@@ -4,12 +4,22 @@ Proxmox VE MCP Server - Enhanced Edition with Batch Operations and Pagination
 Provides comprehensive Proxmox VE management functionality including batch data collection
 
 Author: Jason Cheng (jason@jason.tools)
-Version: 1.3.3
-Last Updated: 2025-11-29
+Version: 1.5.0
+Last Updated: 2026-02-10
 License: MIT
 Repository: https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/mcp/mcp_pve/mcp_pve.py
 
 Changelog:
+v1.5.0 (2026-02-10) - MAJOR: Consolidate 28 VM/CT tools into 15 unified tools
+         - Merged 14 pairs of VM/CT tools (get_vm_status+get_container_status, vm_start+ct_start, etc.)
+         - New unified tools: get_status, get_config, get_snapshots, start, shutdown, stop, reboot,
+           reset, migrate, backup, snapshot, clone, update_config, delete, get_performance
+         - Auto-detect VM vs container type via resolver (_resolved_type from cluster/resources)
+         - Added _resolve_type_with_fallback() helper for qemu/lxc API path selection
+         - Feature toggles now checked per-type after identity resolution
+         - Removed ~1050 lines of dead/duplicate code
+         - Tool count reduced from 49 to 36 (27% reduction, saves LLM tokens)
+
 v1.3.3 (2025-11-29) - Enhancement: Improved get_ceph_osd_details
          - Added node-specific endpoint /nodes/{node}/ceph/osd as primary method when node is specified
          - Improved API endpoint fallback strategy for better compatibility
@@ -77,8 +87,8 @@ from pydantic import AnyUrl
 import mcp.types as types
 
 # Version information
-__version__ = "1.3.3"
-__last_updated__ = "2025-11-29"
+__version__ = "1.5.0"
+__last_updated__ = "2026-02-10"
 __author__ = "Jason Cheng"
 __email__ = "jason@jason.tools"
 __license__ = "MIT"
@@ -134,6 +144,16 @@ logger = logging.getLogger("pve-mcp-server")
 class ProxmoxVEError(Exception):
     """Custom exception for Proxmox VE related errors"""
     pass
+
+# Tools that support auto-resolution of VM/container identity
+# (vmid-only → auto-detect node, vmname → search by name)
+TOOLS_WITH_VM_IDENTITY = {
+    "get_status", "get_config", "get_snapshots",
+    "start", "shutdown", "stop", "reboot", "reset",
+    "migrate", "backup", "snapshot",
+    "clone", "update_config", "delete",
+    "get_performance", "get_firewall_rules",
+}
 
 # ============================================================================
 # Helper Functions
@@ -221,9 +241,11 @@ class ProxmoxVEClient:
         self._use_api_token = bool(api_token_id and api_token_secret)
         
     async def __aenter__(self):
+        # Use proxy from environment if available (required by Claude Desktop sandbox)
         self.session = httpx.AsyncClient(
-            verify=self.verify_ssl, 
+            verify=self.verify_ssl,
             timeout=httpx.Timeout(self.timeout),
+            trust_env=True,  # Read proxy settings from environment
             headers={
                 'User-Agent': f'PVE-MCP-Server/{__version__}',
                 'Accept': 'application/json',
@@ -242,34 +264,81 @@ class ProxmoxVEClient:
             
     async def setup_api_token_auth(self):
         """Setup API token authentication"""
+        import socket
+
         try:
             logger.info(f"Setting up API token authentication for {self.api_token_id}")
-            
+
+            # Network diagnostic before connection attempt
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(self.host)
+                hostname = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+
+                logger.info(f"Network diagnostic - Target: {hostname}:{port}")
+
+                # DNS resolution test
+                try:
+                    ip = socket.gethostbyname(hostname)
+                    logger.info(f"DNS resolved: {hostname} -> {ip}")
+                except socket.gaierror as dns_err:
+                    logger.error(f"DNS resolution failed for {hostname}: {dns_err}")
+                    raise ProxmoxVEError(f"DNS resolution failed for {hostname}: {dns_err}")
+
+                # TCP connection test (non-fatal, may fail in sandboxed environments)
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5.0)
+                    result = sock.connect_ex((ip, port))
+                    sock.close()
+                    if result == 0:
+                        logger.info(f"TCP connection test: {ip}:{port} - SUCCESS")
+                    else:
+                        logger.warning(f"TCP connection test: {ip}:{port} - FAILED (errno={result}), will try httpx anyway")
+                except socket.timeout:
+                    logger.warning(f"TCP connection test: {ip}:{port} - TIMEOUT, will try httpx anyway")
+                except socket.error as sock_err:
+                    logger.warning(f"TCP connection test failed: {sock_err}, will try httpx anyway")
+
+            except ProxmoxVEError:
+                raise
+            except Exception as diag_err:
+                logger.warning(f"Network diagnostic error (non-fatal): {diag_err}")
+
             # Set authorization header for API token
             self.session.headers.update({
                 'Authorization': f'PVEAPIToken={self.api_token_id}={self.api_token_secret}'
             })
-            
+
             # Test the token by making a simple API call
             test_result = await self.session.get(f"{self.host}/api2/json/version")
-            
+
             if test_result.status_code == 401:
                 raise ProxmoxVEError("API token authentication failed: Invalid token ID or secret")
             elif test_result.status_code == 403:
                 raise ProxmoxVEError("API token authentication failed: Insufficient permissions")
             elif test_result.status_code >= 400:
                 raise ProxmoxVEError(f"API token authentication failed: HTTP {test_result.status_code}")
-            
+
             test_result.raise_for_status()
             self._authenticated = True
             logger.info("API token authentication successful")
-            
+
+        except httpx.ConnectError as e:
+            # Provide more detailed connection error message
+            logger.error(f"Connection error details: {type(e).__name__}: {e}")
+            raise ProxmoxVEError(f"Connection failed to {self.host}: {e}. Check if the host is reachable and the port is open.")
+        except httpx.TimeoutException as e:
+            logger.error(f"Timeout error: {e}")
+            raise ProxmoxVEError(f"Connection timeout to {self.host}: {e}")
         except httpx.RequestError as e:
+            logger.error(f"Request error details: {type(e).__name__}: {e}")
             raise ProxmoxVEError(f"Network error during API token setup: {e}")
         except Exception as e:
             if isinstance(e, ProxmoxVEError):
                 raise
-            logger.error(f"API token setup error: {e}")
+            logger.error(f"API token setup error: {type(e).__name__}: {e}")
             raise ProxmoxVEError(f"API token authentication failed: {e}")
             
     async def authenticate(self):
@@ -425,41 +494,25 @@ async def handle_list_tools() -> List[Tool]:
     """List all available tools with comprehensive descriptions"""
 
     # Define tool permissions mapping for feature toggles
-    # Added in v1.3.2 (2025-11-29): Implement actual feature toggle enforcement
+    # A unified tool is enabled if EITHER the VM or CT toggle is on
     tool_permissions = {
-        # VM Creation/Modification
+        # Creation (not unified)
         "create_vm": ENABLE_VM_CREATE,
-        "clone_vm": ENABLE_VM_CLONE,
-        "update_vm_config": ENABLE_VM_UPDATE,
-        "delete_vm": ENABLE_VM_DELETE,
-
-        # Container Creation/Modification
         "create_container": ENABLE_CT_CREATE,
-        "clone_container": ENABLE_CT_CLONE,
-        "update_container_config": ENABLE_CT_UPDATE,
-        "delete_container": ENABLE_CT_DELETE,
 
-        # VM Control
-        "vm_start": ENABLE_VM_START,
-        "vm_stop": ENABLE_VM_STOP,
-        "vm_shutdown": ENABLE_VM_SHUTDOWN,
-        "vm_reboot": ENABLE_VM_REBOOT,
-        "vm_reset": ENABLE_VM_RESET,
-
-        # Container Control
-        "ct_start": ENABLE_CT_START,
-        "ct_stop": ENABLE_CT_STOP,
-        "ct_shutdown": ENABLE_CT_SHUTDOWN,
-        "ct_reboot": ENABLE_CT_REBOOT,
-
-        # Advanced Operations
-        "vm_migrate": ENABLE_VM_MIGRATE,
-        "ct_migrate": ENABLE_CT_MIGRATE,
-        "vm_backup": ENABLE_VM_BACKUP,
-        "ct_backup": ENABLE_CT_BACKUP,
-        "vm_snapshot": ENABLE_VM_SNAPSHOT,
-        "ct_snapshot": ENABLE_CT_SNAPSHOT,
-        "create_backup_job": ENABLE_BACKUP_JOB
+        # Unified tools — enabled if either VM or CT toggle is on
+        "start": ENABLE_VM_START or ENABLE_CT_START,
+        "shutdown": ENABLE_VM_SHUTDOWN or ENABLE_CT_SHUTDOWN,
+        "stop": ENABLE_VM_STOP or ENABLE_CT_STOP,
+        "reboot": ENABLE_VM_REBOOT or ENABLE_CT_REBOOT,
+        "reset": ENABLE_VM_RESET,  # VM only
+        "migrate": ENABLE_VM_MIGRATE or ENABLE_CT_MIGRATE,
+        "backup": ENABLE_VM_BACKUP or ENABLE_CT_BACKUP,
+        "snapshot": ENABLE_VM_SNAPSHOT or ENABLE_CT_SNAPSHOT,
+        "clone": ENABLE_VM_CLONE or ENABLE_CT_CLONE,
+        "update_config": ENABLE_VM_UPDATE or ENABLE_CT_UPDATE,
+        "delete": ENABLE_VM_DELETE or ENABLE_CT_DELETE,
+        "create_backup_job": ENABLE_BACKUP_JOB,
     }
 
     # Build complete tool list
@@ -467,25 +520,7 @@ async def handle_list_tools() -> List[Tool]:
         # NEW: Batch Operations for Data Collection
         Tool(
             name="get_all_vm_firewall_rules",
-            description="""Get firewall rules and firewall options for all VMs and containers across all nodes.
-
-            This tool queries firewall configurations from every VM and container in the cluster.
-            For large environments, use pagination to prevent context overflow.
-
-            Parameters:
-            - include_containers: Whether to include LXC containers (default: True)
-            - include_disabled: Whether to include disabled firewall rules (default: True)
-            - limit: Maximum number of VMs/containers to query (default: 100, max: 500)
-            - offset: Number of VMs/containers to skip for pagination (default: 0)
-
-            Returns:
-            - data: Array of firewall configurations
-            - summary: Count statistics and pagination info
-            - display_message: Human-readable pagination status
-
-            Example: To get first 50 items, use limit=50, offset=0
-                     To get next 50 items, use limit=50, offset=50
-            """,
+            description="Get firewall rules for all VMs and containers across all nodes. Supports pagination with limit/offset.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -646,26 +681,7 @@ async def handle_list_tools() -> List[Tool]:
         # Virtual Machine Management
         Tool(
             name="list_vms",
-            description="""List virtual machines with pagination, filtering, and summary options to prevent context overflow.
-
-            Returns list of VMs from one node or all nodes with configurable detail level.
-
-            Parameters:
-            - node: Specific node name (optional - if not provided, lists from all nodes)
-            - summary_only: Return only essential info (ID, name, status) to prevent overflow (default: True)
-            - limit: Maximum number of VMs to return (default: 100, max: 500)
-            - offset: Number of VMs to skip for pagination (default: 0)
-            - filter_id: Filter by VM ID (supports single ID or comma-separated list, e.g., "100" or "100,101,102")
-            - filter_name: Filter by VM name (case-insensitive partial match, e.g., "web" matches "web-server")
-            - filter_status: Filter by status (running, stopped, paused)
-
-            Filters are applied before pagination (limit/offset).
-            Multiple filters can be combined (AND logic).
-
-            When summary_only=True (default), returns only: vmid, name, status, node
-            When summary_only=False, returns full VM details (may cause overflow with many VMs)
-
-            Response includes pagination info in display_message.""",
+            description="List virtual machines with optional filtering and pagination. Returns vmid, name, status, node. Use filter_name, filter_id, or filter_status to narrow results.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -675,47 +691,47 @@ async def handle_list_tools() -> List[Tool]:
                     "offset": {"type": "integer", "description": "Number of VMs to skip for pagination", "default": 0, "minimum": 0},
                     "filter_id": {"type": "string", "description": "Filter by VM ID (single or comma-separated, e.g., '100,101,102')"},
                     "filter_name": {"type": "string", "description": "Filter by VM name (case-insensitive partial match)"},
-                    "filter_status": {"type": "string", "description": "Filter by status (running, stopped, paused)"}
+                    "filter_status": {"type": "string", "description": "Filter by VM status", "enum": ["running", "stopped", "paused"]}
                 },
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="get_vm_status",
-            description="Get virtual machine current status and runtime information",
+            name="get_status",
+            description="Get VM or container status. Provide node+vmid, or just vmid, or vmname.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100}
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="get_vm_config",
-            description="Get virtual machine configuration details including hardware settings",
+            name="get_config",
+            description="Get VM or container configuration. Provide node+vmid, or just vmid, or vmname.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100}
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="get_vm_snapshots",
-            description="Get virtual machine snapshot information and tree structure",
+            name="get_snapshots",
+            description="Get VM or container snapshots. Provide node+vmid, or just vmid, or vmname.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100}
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
@@ -783,64 +799,67 @@ async def handle_list_tools() -> List[Tool]:
             }
         ),
         Tool(
-            name="clone_vm",
-            description="Clone existing virtual machine with new ID (requires confirmation)",
+            name="clone",
+            description="Clone a VM or container. Provide node+vmid, or just vmid, or vmname. Requires newid and confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Source node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Source VM ID to clone", "minimum": 100},
-                    "newid": {"type": "integer", "description": "New VM ID for clone", "minimum": 100},
-                    "name": {"type": "string", "description": "New VM name"},
-                    "description": {"type": "string", "description": "New VM description"},
+                    "node": {"type": "string", "description": "Source node name"},
+                    "vmid": {"type": "integer", "description": "Source VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
+                    "newid": {"type": "integer", "description": "New ID for clone", "minimum": 100},
+                    "name": {"type": "string", "description": "New name (VMs) or hostname (containers)"},
+                    "description": {"type": "string", "description": "New description"},
                     "target": {"type": "string", "description": "Target node (if different from source)"},
                     "storage": {"type": "string", "description": "Target storage for clone"},
-                    "format": {"type": "string", "description": "Storage format", "enum": ["raw", "qcow2", "vmdk"], "default": "raw"},
+                    "format": {"type": "string", "description": "Storage format (VMs only)", "enum": ["raw", "qcow2", "vmdk"], "default": "raw"},
                     "full": {"type": "boolean", "description": "Create full clone (not linked clone)", "default": True},
                     "pool": {"type": "string", "description": "Resource pool"},
                     "snapname": {"type": "string", "description": "Snapshot name to clone from"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid", "newid"],
+                "required": ["newid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="update_vm_config",
-            description="Update virtual machine configuration (requires confirmation)",
+            name="update_config",
+            description="Update VM or container configuration. Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
-                    "name": {"type": "string", "description": "VM name"},
-                    "description": {"type": "string", "description": "VM description"},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
+                    "name": {"type": "string", "description": "VM name (VMs only)"},
+                    "hostname": {"type": "string", "description": "Container hostname (containers only)"},
+                    "description": {"type": "string", "description": "Description"},
                     "cores": {"type": "integer", "description": "Number of CPU cores", "minimum": 1, "maximum": 128},
                     "memory": {"type": "integer", "description": "Memory in MB", "minimum": 16, "maximum": 4194304},
-                    "balloon": {"type": "integer", "description": "Memory balloon device size in MB", "minimum": 0},
-                    "onboot": {"type": "integer", "description": "Start VM on boot", "enum": [0, 1]},
-                    "agent": {"type": "integer", "description": "Enable QEMU guest agent", "enum": [0, 1]},
+                    "balloon": {"type": "integer", "description": "Memory balloon in MB (VMs only)", "minimum": 0},
+                    "swap": {"type": "integer", "description": "Swap in MB (containers only)", "minimum": 0, "maximum": 4194304},
+                    "onboot": {"type": "integer", "description": "Start on boot", "enum": [0, 1]},
+                    "agent": {"type": "integer", "description": "Enable QEMU guest agent (VMs only)", "enum": [0, 1]},
                     "protection": {"type": "integer", "description": "Prevent accidental removal", "enum": [0, 1]},
                     "tags": {"type": "string", "description": "Tags separated by semicolons"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="delete_vm",
-            description="Delete virtual machine permanently (requires confirmation)",
+            name="delete",
+            description="Delete a VM or container permanently. Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
-                    "purge": {"type": "boolean", "description": "Remove VM from all clusters and configs", "default": False},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
+                    "purge": {"type": "boolean", "description": "Remove from all clusters and configs", "default": False},
                     "destroy_unreferenced_disks": {"type": "boolean", "description": "Destroy unreferenced disks", "default": True},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
@@ -915,66 +934,7 @@ async def handle_list_tools() -> List[Tool]:
                 "additionalProperties": False
             }
         ),
-        Tool(
-            name="clone_container",
-            description="Clone existing LXC container with new ID (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Source node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Source container ID to clone", "minimum": 100},
-                    "newid": {"type": "integer", "description": "New container ID for clone", "minimum": 100},
-                    "hostname": {"type": "string", "description": "New container hostname"},
-                    "description": {"type": "string", "description": "New container description"},
-                    "target": {"type": "string", "description": "Target node (if different from source)"},
-                    "storage": {"type": "string", "description": "Target storage for clone"},
-                    "pool": {"type": "string", "description": "Resource pool"},
-                    "snapname": {"type": "string", "description": "Snapshot name to clone from"},
-                    "full": {"type": "boolean", "description": "Create full clone", "default": False},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid", "newid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="update_container_config",
-            description="Update LXC container configuration (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "hostname": {"type": "string", "description": "Container hostname"},
-                    "description": {"type": "string", "description": "Container description"},
-                    "cores": {"type": "integer", "description": "Number of CPU cores", "minimum": 1, "maximum": 128},
-                    "memory": {"type": "integer", "description": "Memory in MB", "minimum": 16, "maximum": 4194304},
-                    "swap": {"type": "integer", "description": "Swap in MB", "minimum": 0, "maximum": 4194304},
-                    "onboot": {"type": "integer", "description": "Start container on boot", "enum": [0, 1]},
-                    "protection": {"type": "integer", "description": "Prevent accidental removal", "enum": [0, 1]},
-                    "tags": {"type": "string", "description": "Tags separated by semicolons"},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="delete_container",
-            description="Delete LXC container permanently (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "purge": {"type": "boolean", "description": "Remove container from all clusters and configs", "default": False},
-                    "destroy_unreferenced_disks": {"type": "boolean", "description": "Destroy unreferenced disks", "default": True},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
+        # clone_container, update_container_config, delete_container — unified into clone, update_config, delete
         
         # Resource Management
         Tool(
@@ -1039,372 +999,137 @@ async def handle_list_tools() -> List[Tool]:
             }
         ),
         
-        # VM Control Operations (requires confirmation)
+        # Unified VM/Container Control Operations (requires confirmation)
         Tool(
-            name="vm_start",
-            description="""Start a virtual machine.
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name (e.g., "host-110")
-            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
-            - confirm (boolean): Must be true to execute
-
-            CORRECT EXAMPLE:
-            {"node": "host-110", "vmid": 166, "confirm": true}
-
-            If you only know VM name: First call list_vms(filter_name="name") to get node and vmid.""",
+            name="start",
+            description="Start a VM or container. Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_shutdown",
-            description="""Shutdown a virtual machine gracefully using ACPI (recommended method).
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name (e.g., "host-110")
-            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
-            - confirm (boolean): Must be true to execute
-
-            CORRECT EXAMPLE:
-            {"node": "host-110", "vmid": 166, "confirm": true}
-
-            Note: This is the recommended shutdown method. Use vm_stop only if this fails or hangs.""",
+            name="shutdown",
+            description="Gracefully shutdown a VM or container. Provide node+vmid, or just vmid, or vmname. Set confirm=true. Prefer over stop.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_stop",
-            description="""Stop a virtual machine forcefully (hard power off).
-
-            WARNING: May cause data loss! Use vm_shutdown instead when possible.
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name (e.g., "host-110")
-            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
-            - confirm (boolean): Must be true to execute
-
-            CORRECT EXAMPLE:
-            {"node": "host-110", "vmid": 166, "confirm": true}
-
-            Only use if vm_shutdown fails. This is like pulling the power cable.""",
+            name="stop",
+            description="Force stop a VM or container (may cause data loss). Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_reboot",
-            description="Reboot virtual machine gracefully (requires confirmation)",
+            name="reboot",
+            description="Reboot a VM or container gracefully. Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_reset",
-            description="Reset virtual machine forcefully (equivalent to hardware reset - requires confirmation)",
+            name="reset",
+            description="Reset VM forcefully via hardware reset (VMs only). Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM name (partial match, alternative to vmid)"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_migrate",
-            description="Migrate virtual machine to another node (requires confirmation)",
+            name="migrate",
+            description="Migrate VM or container to another node. Provide node+vmid, or just vmid, or vmname. Set confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Source node name where VM is currently located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
-                    "target": {"type": "string", "description": "Target node name where VM will be migrated"},
-                    "online": {"type": "boolean", "description": "Online migration (live migration)", "default": True},
+                    "node": {"type": "string", "description": "Source node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
+                    "target": {"type": "string", "description": "Target node name"},
+                    "online": {"type": "boolean", "description": "Online/live migration", "default": True},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid", "target"],
+                "required": ["target"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_backup",
-            description="""Create backup of a virtual machine to specified storage.
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name (e.g., "host-110")
-            - vmid (integer): VM ID number (e.g., 166) - NOT the VM name!
-            - storage (string): Backup storage name (e.g., "backup-storage", "local")
-            - confirm (boolean): Must be true to execute
-
-            OPTIONAL PARAMETERS:
-            - mode (string): "snapshot" (default, VM running), "suspend", or "stop"
-            - compress (string): "zstd" (default), "gzip", "lzo", "1", or "0"
-
-            CORRECT EXAMPLE:
-            {"node": "host-110", "vmid": 166, "storage": "backup-storage", "confirm": true}""",
+            name="backup",
+            description="Backup a VM or container. Provide node+vmid, or just vmid, or vmname. Requires storage and confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "storage": {"type": "string", "description": "Backup storage name"},
                     "mode": {"type": "string", "description": "Backup mode", "enum": ["snapshot", "suspend", "stop"], "default": "snapshot"},
                     "compress": {"type": "string", "description": "Compression method", "enum": ["0", "1", "gzip", "lzo", "zstd"], "default": "zstd"},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
                 },
-                "required": ["node", "vmid", "storage"],
+                "required": ["storage"],
                 "additionalProperties": False
             }
         ),
         Tool(
-            name="vm_snapshot",
-            description="""Create snapshot of a virtual machine for point-in-time recovery.
-
-            ⚠️ CRITICAL: Parameter names are EXACT - do NOT use variations!
-            ✅ CORRECT: snapname
-            ❌ WRONG: snapshot_name, snapshotname, snap_name
-
-            IMPORTANT: You must provide the exact parameter names: node, vmid, snapname, confirm
-
-            WORKFLOW:
-            1. If you only know VM name (e.g., "mon5"), first call: list_vms with filter_name="mon5"
-            2. From the result, get the node and vmid values
-            3. Then call vm_snapshot with the correct parameters
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name where VM is located (e.g., "host-110", "pve-node1")
-            - vmid (integer): Virtual machine ID number (e.g., 166, 100) - NOT the VM name!
-            - snapname (string): Snapshot name (e.g., "snapshot1", "before-update", "快照")
-            - confirm (boolean): Must be true to execute
-
-            OPTIONAL PARAMETERS:
-            - description (string): Description text (default: "")
-            - vmstate (boolean): Include RAM state (default: false)
-
-            CORRECT EXAMPLE:
-            {
-              "node": "host-110",
-              "vmid": 166,
-              "snapname": "snapshot1",
-              "confirm": true
-            }
-
-            WRONG - DO NOT USE:
-            {"vm": "mon5", "snapshot_name": "snapshot1"}  ❌ Wrong parameter names!
-
-            Step-by-step for VM named "mon5":
-            Step 1: list_vms(filter_name="mon5") → returns node="host-110", vmid=166
-            Step 2: vm_snapshot(node="host-110", vmid=166, snapname="snapshot1", confirm=true)""",
+            name="snapshot",
+            description="Create snapshot for a VM or container. Provide node+vmid, or just vmid, or vmname. Requires snapname and confirm=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "snapname": {"type": "string", "description": "Snapshot name (must be unique)"},
                     "description": {"type": "string", "description": "Snapshot description", "default": ""},
-                    "vmstate": {"type": "boolean", "description": "Include VM memory state in snapshot", "default": False},
+                    "vmstate": {"type": "boolean", "description": "Include VM memory state (VMs only)", "default": False},
                     "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute"}
                 },
-                "required": ["node", "vmid", "snapname", "confirm"],
+                "required": ["snapname", "confirm"],
                 "additionalProperties": False
             }
         ),
         
-        # Container Control Operations (requires confirmation)
-        Tool(
-            name="ct_start",
-            description="Start LXC container (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_shutdown",
-            description="Shutdown LXC container gracefully (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_stop",
-            description="Stop LXC container forcefully (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_reboot",
-            description="Reboot LXC container (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_migrate",
-            description="Migrate LXC container to another node (requires confirmation)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Source node name where container is currently located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "target": {"type": "string", "description": "Target node name where container will be migrated"},
-                    "online": {"type": "boolean", "description": "Online migration", "default": True},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid", "target"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_backup",
-            description="""Create backup of an LXC container to specified storage.
-
-            Use this tool to create a full backup of a container with specified compression and backup mode.
-
-            Required parameters:
-            - node: Node name where the container is located (e.g., "pve-node1", "host-109")
-            - vmid: Container ID (e.g., 100, 200)
-            - storage: Backup storage name where backup will be saved
-
-            Optional parameters:
-            - mode: Backup mode - "snapshot" (default, container keeps running), "suspend" (paused), or "stop" (stopped)
-            - compress: Compression - "zstd" (default, best), "gzip", "lzo", "1" (on), or "0" (off)
-            - confirm: Must be true to execute (safety feature)
-
-            Example: To backup container 200 on node host-109 to backup-storage:
-            ct_backup(node="host-109", vmid=200, storage="backup-storage", confirm=true)""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "storage": {"type": "string", "description": "Backup storage name"},
-                    "mode": {"type": "string", "description": "Backup mode", "enum": ["snapshot", "suspend", "stop"], "default": "snapshot"},
-                    "compress": {"type": "string", "description": "Compression method", "enum": ["0", "1", "gzip", "lzo", "zstd"], "default": "zstd"},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute", "default": False}
-                },
-                "required": ["node", "vmid", "storage"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="ct_snapshot",
-            description="""Create snapshot of an LXC container for point-in-time recovery.
-
-            ⚠️ CRITICAL: Parameter names are EXACT - do NOT use variations!
-            ✅ CORRECT: snapname
-            ❌ WRONG: snapshot_name, snapshotname, snap_name
-
-            REQUIRED PARAMETERS (exact names):
-            - node (string): Node name (e.g., "host-110")
-            - vmid (integer): Container ID number (e.g., 200) - NOT the container name!
-            - snapname (string): Snapshot name (e.g., "snapshot1", "before-update")
-            - confirm (boolean): Must be true to execute
-
-            OPTIONAL PARAMETERS:
-            - description (string): Description text (default: "")
-
-            CORRECT EXAMPLE:
-            {"node": "host-109", "vmid": 200, "snapname": "before-update", "confirm": true}
-
-            If you only know container name: First call list_containers(filter_name="name") to get node and vmid.""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100},
-                    "snapname": {"type": "string", "description": "Snapshot name (must be unique)"},
-                    "description": {"type": "string", "description": "Snapshot description", "default": ""},
-                    "confirm": {"type": "boolean", "description": "Confirmation flag - must be true to execute"}
-                },
-                "required": ["node", "vmid", "snapname", "confirm"],
-                "additionalProperties": False
-            }
-        ),
+        # ct_start..ct_snapshot — unified into start, shutdown, stop, reboot, migrate, backup, snapshot
 
         # Container Management
         Tool(
             name="list_containers",
-            description="""List LXC containers with pagination, filtering, and summary options to prevent context overflow.
-
-            Returns list of containers from one node or all nodes with configurable detail level.
-
-            Parameters:
-            - node: Specific node name (optional - if not provided, lists from all nodes)
-            - summary_only: Return only essential info (ID, name, status) to prevent overflow (default: True)
-            - limit: Maximum number of containers to return (default: 100, max: 500)
-            - offset: Number of containers to skip for pagination (default: 0)
-            - filter_id: Filter by container ID (supports single ID or comma-separated list, e.g., "100" or "100,101,102")
-            - filter_name: Filter by container name (case-insensitive partial match, e.g., "web" matches "web-server")
-            - filter_status: Filter by status (running, stopped, paused)
-
-            Filters are applied before pagination (limit/offset).
-            Multiple filters can be combined (AND logic).
-
-            When summary_only=True (default), returns only: vmid, name, status, node
-            When summary_only=False, returns full container details (may cause overflow with many containers)
-
-            Response includes pagination info in display_message.""",
+            description="List LXC containers with optional filtering and pagination. Returns vmid, name, status, node. Use filter_name, filter_id, or filter_status to narrow results.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1414,37 +1139,12 @@ async def handle_list_tools() -> List[Tool]:
                     "offset": {"type": "integer", "description": "Number of containers to skip for pagination", "default": 0, "minimum": 0},
                     "filter_id": {"type": "string", "description": "Filter by container ID (single or comma-separated, e.g., '100,101,102')"},
                     "filter_name": {"type": "string", "description": "Filter by container name (case-insensitive partial match)"},
-                    "filter_status": {"type": "string", "description": "Filter by status (running, stopped, paused)"}
+                    "filter_status": {"type": "string", "description": "Filter by container status", "enum": ["running", "stopped", "paused"]}
                 },
                 "additionalProperties": False
             }
         ),
-        Tool(
-            name="get_container_status",
-            description="Get LXC container current status and runtime information",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
-        Tool(
-            name="get_container_config",
-            description="Get LXC container configuration details",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "node": {"type": "string", "description": "Node name where container is located"},
-                    "vmid": {"type": "integer", "description": "Container ID", "minimum": 100}
-                },
-                "required": ["node", "vmid"],
-                "additionalProperties": False
-            }
-        ),
+        # get_container_status, get_container_config — unified into get_status, get_config
         
         # Storage Management
         Tool(
@@ -1460,28 +1160,13 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_storage_content",
-            description="""Get storage content list including VMs, templates, ISOs, and backups.
-
-            Parameters:
-            - node: Node name
-            - storage: Storage name
-            - content: Content type filter (optional, e.g., 'images', 'iso', 'vztmpl', 'backup', 'rootdir')
-
-            Common content types:
-            - images: VM disk images
-            - iso: ISO images
-            - vztmpl: Container templates
-            - backup: Backup files
-            - rootdir: Container volumes
-            - snippets: Snippets
-
-            If content is not specified, returns all content types (may fail on some storage types).""",
+            description="Get storage content list. Specify content type to filter results.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "node": {"type": "string", "description": "Node name"},
                     "storage": {"type": "string", "description": "Storage name"},
-                    "content": {"type": "string", "description": "Content type (images, iso, vztmpl, backup, rootdir, snippets)"}
+                    "content": {"type": "string", "description": "Content type filter", "enum": ["images", "iso", "vztmpl", "backup", "rootdir", "snippets"]}
                 },
                 "required": ["node", "storage"],
                 "additionalProperties": False
@@ -1501,32 +1186,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_ceph_status",
-            description="""Get Ceph cluster status and health information with optional detail control.
-
-            By default, returns only essential health summary to prevent context overflow.
-            Use include_details parameter to get comprehensive information when needed.
-
-            Parameters:
-            - summary_only: Return only critical health information (default: True)
-                           When True: Returns health status, mon status, basic OSD/PG counts
-                           When False: Returns full Ceph status with detailed breakdown
-            - include_details: Include complete raw Ceph status output (default: False)
-                              Warning: May cause context overflow in large clusters!
-
-            Returns:
-            - health_status: Overall health (HEALTH_OK, HEALTH_WARN, HEALTH_ERR)
-            - summary: Brief status information
-            - monitors/osds/placement_groups/storage: Key metrics (if not summary_only)
-            - full_details: Complete Ceph status (only if include_details=True)
-            - display_message: Human-readable status summary
-
-            Example:
-            - Quick health check: summary_only=True (default, safest)
-            - Standard status: summary_only=False (recommended)
-            - Full details: include_details=True (use with caution!)
-
-            Safety: Default parameters prevent context overflow
-            """,
+            description="Get Ceph cluster health status. Set summary_only=false for full details.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1555,23 +1215,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_ceph_osd_details",
-            description="""Get detailed information for specific Ceph OSD(s).
-
-            Returns detailed status, performance, and metadata for one or more OSDs.
-
-            Parameters:
-            - osd_id: Specific OSD ID (e.g., 0, 1, 2) to get details for
-            - node: Node name (optional - if provided, only checks OSDs on this node)
-            - include_metadata: Include device and filesystem metadata (default: True)
-
-            Returns for each OSD:
-            - Status: up/down, in/out
-            - Performance: operations/sec, read/write bytes
-            - Utilization: used space, total space, percentage
-            - Device info: device path, type (SSD/HDD)
-            - Host/location information
-
-            If osd_id not specified, returns details for all OSDs (may be large).""",
+            description="Get detailed information for specific Ceph OSD(s). Specify osd_id for a single OSD or omit for all.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1607,12 +1251,13 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_firewall_rules",
-            description="Get firewall rules for cluster, node, or specific VM/container",
+            description="Get firewall rules for cluster, node, or specific VM/container. Provide node+vmid, or just vmid, or vmname.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "node": {"type": "string", "description": "Node name (optional)"},
-                    "vmid": {"type": "integer", "description": "VM/Container ID (optional)", "minimum": 100}
+                    "vmid": {"type": "integer", "description": "VM/Container ID (optional)", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name to search (partial match, alternative to vmid)"}
                 },
                 "additionalProperties": False
             }
@@ -1633,12 +1278,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_cpu_info",
-            description="""Get CPU information and capabilities. Automatically tries multiple endpoints for compatibility.
-
-            Returns CPU model, count, sockets, and usage information.
-            Tries multiple API endpoints to ensure compatibility across Proxmox VE versions.
-
-            Response includes '_source' field indicating which endpoint provided the data.""",
+            description="Get CPU information and capabilities for a node.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1650,12 +1290,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_disk_info",
-            description="""Get disk information including SMART health and wearout data.
-
-            Returns detailed disk information with corrected wearout percentage display.
-
-            Note: Wearout shows disk wear level (0% = new, 100% = worn out).
-            Health status shows SMART health (PASSED, FAILED, UNKNOWN).""",
+            description="Get disk information including SMART health and wearout data.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1681,16 +1316,16 @@ async def handle_list_tools() -> List[Tool]:
             }
         ),
         Tool(
-            name="get_vm_performance",
-            description="Get virtual machine performance statistics",
+            name="get_performance",
+            description="Get VM or container performance statistics. Provide node+vmid, or just vmid, or vmname.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "node": {"type": "string", "description": "Node name where VM is located"},
-                    "vmid": {"type": "integer", "description": "Virtual machine ID", "minimum": 100},
+                    "node": {"type": "string", "description": "Node name"},
+                    "vmid": {"type": "integer", "description": "VM/container ID", "minimum": 100},
+                    "vmname": {"type": "string", "description": "VM/container name (partial match, alternative to vmid)"},
                     "timeframe": {"type": "string", "description": "Time range for statistics", "enum": ["hour", "day", "week", "month", "year"], "default": "hour"}
                 },
-                "required": ["node", "vmid"],
                 "additionalProperties": False
             }
         ),
@@ -1698,17 +1333,7 @@ async def handle_list_tools() -> List[Tool]:
         # Log Monitoring
         Tool(
             name="get_system_logs",
-            description="""Get system logs from node journal or syslog. Automatically tries multiple parameter formats and fallback endpoints.
-
-            Retrieves systemd journal logs or syslog entries from a specific node.
-            The response includes '_params_used' or '_endpoint_used' to indicate which method succeeded.
-
-            Parameters:
-            - node: Node name (required)
-            - limit: Maximum number of log entries to return
-            - service: Filter by systemd service name (e.g., 'pveproxy', 'pvedaemon')
-
-            Note: Automatically tries different API parameter formats and falls back to syslog if journal unavailable.""",
+            description="Get system logs from a node. Optionally filter by service name.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1723,18 +1348,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_cluster_logs",
-            description="""Get cluster-wide logs and task history. Automatically tries multiple endpoints to find available cluster logs.
-
-            Returns cluster event logs or task history depending on Proxmox VE version.
-            The response includes '_endpoint_used' to indicate which API endpoint was successful.
-
-            Parameters:
-            - limit: Maximum number of log entries/tasks to return
-            - start: Offset for pagination (tasks only)
-            - errors: Filter to show only failed tasks (tasks only)
-            - vmid: Filter by specific VM ID (tasks only)
-
-            Note: Some filters only work with certain endpoints. The tool will try the best available endpoint.""",
+            description="Get cluster-wide logs and task history. Supports filtering by errors and vmid.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1839,6 +1453,15 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
             
         return [types.TextContent(type="text", text=json_output)]
         
+    except KeyError as e:
+        error_result = {
+            "error": f"Missing required parameter: {e.args[0]}",
+            "tool": name,
+            "hint": "Check the tool schema for required parameters."
+        }
+        json_output = json.dumps(error_result, indent=2, ensure_ascii=False)
+        logger.error(f"Missing required parameter for tool '{name}': {e.args[0]}")
+        return [types.TextContent(type="text", text=json_output)]
     except ProxmoxVEError as e:
         error_msg = f"Proxmox VE Error: {str(e)}"
         logger.error(error_msg)
@@ -1848,71 +1471,238 @@ async def handle_call_tool(name: str, arguments: dict) -> List[Union[types.TextC
         logger.error(error_msg)
         return [types.TextContent(type="text", text=error_msg)]
 
+def normalize_arguments(name: str, arguments: dict) -> dict:
+    """Normalize arguments to handle common LLM mistakes."""
+    args = dict(arguments)
+
+    # --- Parameter name aliases (common model mistakes) ---
+    aliases = {
+        "snapshot_name": "snapname",
+        "snapshotname": "snapname",
+        "snap_name": "snapname",
+        "vm_id": "vmid",
+        "vmId": "vmid",
+        "vm_name": "name",
+        "host_name": "hostname",
+        "new_id": "newid",
+        "newId": "newid",
+        "target_node": "target",
+        "node_name": "node",
+        "storage_name": "storage",
+        "filter_by_id": "filter_id",
+        "filter_by_name": "filter_name",
+        "filter_by_status": "filter_status",
+        "vmName": "vmname",
+        "container_name": "vmname",
+        "ct_name": "vmname",
+    }
+    for wrong, correct in aliases.items():
+        if wrong in args and correct not in args:
+            args[correct] = args.pop(wrong)
+
+    # --- Type coercion ---
+    # vmid: must be int
+    if "vmid" in args:
+        v = args["vmid"]
+        if isinstance(v, str):
+            args["vmid"] = int(v)
+        elif isinstance(v, float):
+            args["vmid"] = int(v)
+
+    # newid: must be int
+    if "newid" in args:
+        v = args["newid"]
+        if isinstance(v, str):
+            args["newid"] = int(v)
+
+    # osd_id: must be int
+    if "osd_id" in args:
+        v = args["osd_id"]
+        if isinstance(v, str):
+            args["osd_id"] = int(v)
+
+    # Integer fields
+    for key in ("cores", "sockets", "memory", "balloon", "swap",
+                "limit", "offset", "limit_per_vm", "limit_per_source",
+                "since_hours", "http_port", "tty", "cpuunits", "vcpus"):
+        if key in args and isinstance(args[key], str):
+            args[key] = int(args[key])
+
+    # Float fields
+    if "cpulimit" in args and isinstance(args["cpulimit"], str):
+        args["cpulimit"] = float(args["cpulimit"])
+
+    # Boolean fields
+    bool_keys = ("confirm", "summary_only", "include_containers",
+                 "include_disabled", "include_details", "include_hardware_info",
+                 "include_job_history", "include_node_stats", "include_node_logs",
+                 "include_vm_logs", "include_container_logs", "include_metadata",
+                 "include_detailed_stats", "include_logs",
+                 "online", "full", "purge", "destroy_unreferenced_disks",
+                 "vmstate", "errors", "start", "protection")
+    for key in bool_keys:
+        if key in args:
+            v = args[key]
+            if isinstance(v, str):
+                args[key] = v.lower() in ("true", "1", "yes")
+            elif isinstance(v, int):
+                args[key] = bool(v)
+
+    # onboot, agent, unprivileged, console — Proxmox expects 0/1 int
+    for key in ("onboot", "agent", "unprivileged", "console"):
+        if key in args:
+            v = args[key]
+            if isinstance(v, bool):
+                args[key] = 1 if v else 0
+            elif isinstance(v, str):
+                args[key] = 1 if v.lower() in ("true", "1", "yes") else 0
+
+    # filter_status: normalize to lowercase
+    if "filter_status" in args and isinstance(args["filter_status"], str):
+        args["filter_status"] = args["filter_status"].lower().strip()
+
+    return args
+
+
+async def resolve_vm_identity(client, arguments: dict, tool_name: str) -> dict:
+    """Resolve VM/container identity from vmid-only or vmname to node+vmid.
+
+    - node + vmid both present → return immediately (zero API calls)
+    - vmid only → GET /cluster/resources to find node
+    - vmname only → GET /cluster/resources, partial name match (case-insensitive)
+    - Neither → return as-is (downstream will raise KeyError)
+    """
+    args = dict(arguments)
+    has_node = bool(args.get("node"))
+    has_vmid = "vmid" in args and args["vmid"] is not None
+    vmname = args.pop("vmname", None)
+
+    # Fast path: both provided, nothing to resolve
+    if has_node and has_vmid:
+        return args
+
+    # Nothing to resolve with
+    if not has_vmid and not vmname:
+        return args
+
+    # Fetch cluster resources (single API call)
+    result = await client.get("/cluster/resources", params={"type": "vm"})
+    resources = result.get("data", [])
+
+    if has_vmid:
+        # Resolve node from vmid
+        vmid = int(args["vmid"])
+        for r in resources:
+            if r.get("vmid") == vmid:
+                args["node"] = r["node"]
+                args["_resolved_name"] = r.get("name", "")
+                args["_resolved_type"] = r.get("type", "")
+                return args
+        raise ProxmoxVEError(
+            f"VM/Container with ID {vmid} not found on any node. "
+            f"Use list_vms or list_containers to see available IDs."
+        )
+
+    # Resolve from vmname (partial, case-insensitive)
+    search = vmname.lower()
+    matches = [r for r in resources if search in r.get("name", "").lower()]
+
+    if not matches:
+        raise ProxmoxVEError(
+            f"No VM or container found matching name '{vmname}'. "
+            f"Use list_vms or list_containers to see available names."
+        )
+
+    if len(matches) == 1:
+        m = matches[0]
+        args["node"] = m["node"]
+        args["vmid"] = m["vmid"]
+        args["_resolved_name"] = m.get("name", "")
+        args["_resolved_type"] = m.get("type", "")
+        return args
+
+    # Multiple matches — check for exact name match
+    exact = [r for r in matches if r.get("name", "").lower() == search]
+    if len(exact) == 1:
+        m = exact[0]
+        args["node"] = m["node"]
+        args["vmid"] = m["vmid"]
+        args["_resolved_name"] = m.get("name", "")
+        args["_resolved_type"] = m.get("type", "")
+        return args
+
+    # Ambiguous — list all matches
+    lines = [f"Multiple VMs/containers match name '{vmname}'. Specify vmid to disambiguate:"]
+    for r in matches:
+        lines.append(
+            f"  vmid={r.get('vmid')} name='{r.get('name', '')}' "
+            f"node={r.get('node', '')} type={r.get('type', '')} status={r.get('status', '')}"
+        )
+    raise ProxmoxVEError("\n".join(lines))
+
+
+async def _resolve_type_with_fallback(client, node, vmid, resolved_type, path_suffix, method="get", **kwargs):
+    """Auto-detect qemu/lxc when type unknown. Try qemu first, fallback to lxc."""
+    if resolved_type:
+        prefix = "qemu" if resolved_type == "qemu" else "lxc"
+        return await getattr(client, method)(f"/nodes/{node}/{prefix}/{vmid}{path_suffix}", **kwargs)
+    # Unknown type (fast path: node+vmid both given, no API lookup) — try qemu first
+    try:
+        return await getattr(client, method)(f"/nodes/{node}/qemu/{vmid}{path_suffix}", **kwargs)
+    except Exception:
+        return await getattr(client, method)(f"/nodes/{node}/lxc/{vmid}{path_suffix}", **kwargs)
+
+
 async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
     """Execute specific tool operations with enhanced validation and error handling"""
 
-    # Check feature toggles - Added in v1.3.2 (2025-11-29)
-    # Map operations to their feature toggle flags
-    operation_permissions = {
-        # VM Creation/Modification
+    # Normalize arguments to handle common LLM mistakes
+    arguments = normalize_arguments(name, arguments)
+
+    # Non-unified operations — checked before resolver (no _resolved_type needed)
+    static_permissions = {
         "create_vm": ("ENABLE_VM_CREATE", ENABLE_VM_CREATE),
-        "clone_vm": ("ENABLE_VM_CLONE", ENABLE_VM_CLONE),
-        "update_vm_config": ("ENABLE_VM_UPDATE", ENABLE_VM_UPDATE),
-        "delete_vm": ("ENABLE_VM_DELETE", ENABLE_VM_DELETE),
-
-        # Container Creation/Modification
         "create_container": ("ENABLE_CT_CREATE", ENABLE_CT_CREATE),
-        "clone_container": ("ENABLE_CT_CLONE", ENABLE_CT_CLONE),
-        "update_container_config": ("ENABLE_CT_UPDATE", ENABLE_CT_UPDATE),
-        "delete_container": ("ENABLE_CT_DELETE", ENABLE_CT_DELETE),
-
-        # VM Control
-        "vm_start": ("ENABLE_VM_START", ENABLE_VM_START),
-        "vm_stop": ("ENABLE_VM_STOP", ENABLE_VM_STOP),
-        "vm_shutdown": ("ENABLE_VM_SHUTDOWN", ENABLE_VM_SHUTDOWN),
-        "vm_reboot": ("ENABLE_VM_REBOOT", ENABLE_VM_REBOOT),
-        "vm_reset": ("ENABLE_VM_RESET", ENABLE_VM_RESET),
-
-        # Container Control
-        "ct_start": ("ENABLE_CT_START", ENABLE_CT_START),
-        "ct_stop": ("ENABLE_CT_STOP", ENABLE_CT_STOP),
-        "ct_shutdown": ("ENABLE_CT_SHUTDOWN", ENABLE_CT_SHUTDOWN),
-        "ct_reboot": ("ENABLE_CT_REBOOT", ENABLE_CT_REBOOT),
-
-        # Advanced Operations
-        "vm_migrate": ("ENABLE_VM_MIGRATE", ENABLE_VM_MIGRATE),
-        "ct_migrate": ("ENABLE_CT_MIGRATE", ENABLE_CT_MIGRATE),
-        "vm_backup": ("ENABLE_VM_BACKUP", ENABLE_VM_BACKUP),
-        "ct_backup": ("ENABLE_CT_BACKUP", ENABLE_CT_BACKUP),
-        "vm_snapshot": ("ENABLE_VM_SNAPSHOT", ENABLE_VM_SNAPSHOT),
-        "ct_snapshot": ("ENABLE_CT_SNAPSHOT", ENABLE_CT_SNAPSHOT),
-        "create_backup_job": ("ENABLE_BACKUP_JOB", ENABLE_BACKUP_JOB)
+        "create_backup_job": ("ENABLE_BACKUP_JOB", ENABLE_BACKUP_JOB),
     }
-
-    # Check if operation requires permission
-    if name in operation_permissions:
-        flag_name, flag_value = operation_permissions[name]
+    if name in static_permissions:
+        flag_name, flag_value = static_permissions[name]
         if not flag_value:
             raise ProxmoxVEError(
                 f"Operation '{name}' is disabled. "
-                f"To enable this operation, set {flag_name} = True in the configuration. "
-                f"This is a safety feature to prevent accidental modifications."
+                f"Set {flag_name} = True to enable. Safety feature."
             )
+
+    # Unified permissions — checked AFTER resolver (need _resolved_type)
+    # Defined here, enforced after resolve_vm_identity
+    unified_permissions = {
+        "start":         {"qemu": ("ENABLE_VM_START", ENABLE_VM_START),       "lxc": ("ENABLE_CT_START", ENABLE_CT_START)},
+        "shutdown":      {"qemu": ("ENABLE_VM_SHUTDOWN", ENABLE_VM_SHUTDOWN), "lxc": ("ENABLE_CT_SHUTDOWN", ENABLE_CT_SHUTDOWN)},
+        "stop":          {"qemu": ("ENABLE_VM_STOP", ENABLE_VM_STOP),         "lxc": ("ENABLE_CT_STOP", ENABLE_CT_STOP)},
+        "reboot":        {"qemu": ("ENABLE_VM_REBOOT", ENABLE_VM_REBOOT),     "lxc": ("ENABLE_CT_REBOOT", ENABLE_CT_REBOOT)},
+        "reset":         {"qemu": ("ENABLE_VM_RESET", ENABLE_VM_RESET)},
+        "migrate":       {"qemu": ("ENABLE_VM_MIGRATE", ENABLE_VM_MIGRATE),   "lxc": ("ENABLE_CT_MIGRATE", ENABLE_CT_MIGRATE)},
+        "backup":        {"qemu": ("ENABLE_VM_BACKUP", ENABLE_VM_BACKUP),     "lxc": ("ENABLE_CT_BACKUP", ENABLE_CT_BACKUP)},
+        "snapshot":      {"qemu": ("ENABLE_VM_SNAPSHOT", ENABLE_VM_SNAPSHOT), "lxc": ("ENABLE_CT_SNAPSHOT", ENABLE_CT_SNAPSHOT)},
+        "clone":         {"qemu": ("ENABLE_VM_CLONE", ENABLE_VM_CLONE),       "lxc": ("ENABLE_CT_CLONE", ENABLE_CT_CLONE)},
+        "update_config": {"qemu": ("ENABLE_VM_UPDATE", ENABLE_VM_UPDATE),     "lxc": ("ENABLE_CT_UPDATE", ENABLE_CT_UPDATE)},
+        "delete":        {"qemu": ("ENABLE_VM_DELETE", ENABLE_VM_DELETE),     "lxc": ("ENABLE_CT_DELETE", ENABLE_CT_DELETE)},
+    }
 
     # Validate VM/Container IDs
     if 'vmid' in arguments:
         vmid = arguments['vmid']
         if isinstance(vmid, int) and vmid < 100:
             raise ProxmoxVEError(f"Invalid VM/Container ID: {vmid}. ID must be >= 100")
-    
+
     # Control operations that require confirmation
     control_operations = [
-        "vm_start", "vm_shutdown", "vm_stop", "vm_reboot", "vm_reset", "vm_migrate", "vm_backup", "vm_snapshot",
-        "ct_start", "ct_shutdown", "ct_stop", "ct_reboot", "ct_migrate", "ct_backup", "ct_snapshot",
-        "create_backup_job", "create_vm", "clone_vm", "update_vm_config", "delete_vm",
-        "create_container", "clone_container", "update_container_config", "delete_container"
+        "start", "shutdown", "stop", "reboot", "reset",
+        "migrate", "backup", "snapshot",
+        "clone", "update_config", "delete",
+        "create_backup_job", "create_vm", "create_container",
     ]
-    
+
     if name in control_operations:
         if not arguments.get("confirm", False):
             return {
@@ -1922,13 +1712,190 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 "arguments": arguments,
                 "warning": "This operation will modify system state. Please ensure you understand the consequences."
             }
-    
+
     # Get client and execute operations
     client = get_pve_client()
-    
+
     async with client:
+        # Auto-resolve VM/container identity (vmid-only or vmname lookup)
+        if name in TOOLS_WITH_VM_IDENTITY:
+            arguments = await resolve_vm_identity(client, arguments, name)
+
+        # Extract resolver metadata before dispatch
+        resolved_type = arguments.pop("_resolved_type", None)
+        resolved_name = arguments.pop("_resolved_name", None)
+
+        # Unified permission check (needs _resolved_type from resolver)
+        if name in unified_permissions:
+            perm_map = unified_permissions[name]
+            check_type = resolved_type
+            if not check_type:
+                if not any(v[1] for v in perm_map.values()):
+                    first_flag = next(iter(perm_map.values()))[0]
+                    raise ProxmoxVEError(
+                        f"Operation '{name}' is disabled. "
+                        f"Set {first_flag} = True to enable. Safety feature."
+                    )
+            else:
+                if check_type not in perm_map:
+                    raise ProxmoxVEError(
+                        f"Operation '{name}' is not supported for type '{check_type}'."
+                    )
+                flag_name, flag_value = perm_map[check_type]
+                if not flag_value:
+                    raise ProxmoxVEError(
+                        f"Operation '{name}' is disabled for {check_type}. "
+                        f"Set {flag_name} = True to enable. Safety feature."
+                    )
+
+        # ================================================================
+        # Unified VM/Container dispatch
+        # ================================================================
+        if name == "get_status":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/status/current")
+
+        elif name == "get_config":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/config")
+
+        elif name == "get_snapshots":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/snapshot")
+
+        elif name == "start":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/status/start", method="post")
+
+        elif name == "shutdown":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/status/shutdown", method="post")
+
+        elif name == "stop":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/status/stop", method="post")
+
+        elif name == "reboot":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/status/reboot", method="post")
+
+        elif name == "reset":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            if resolved_type == "lxc":
+                raise ProxmoxVEError("reset is only supported for VMs, not containers.")
+            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/reset")
+
+        elif name == "migrate":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            target = arguments["target"]
+            online = arguments.get("online", True)
+            migrate_data = {
+                "target": target,
+                "online": 1 if online else 0
+            }
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/migrate", method="post", data=migrate_data)
+
+        elif name == "backup":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            storage = arguments["storage"]
+            mode = arguments.get("mode", "snapshot")
+            compress = arguments.get("compress", "zstd")
+            backup_data = {
+                "storage": storage,
+                "mode": mode,
+                "compress": compress
+            }
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/backup", method="post", data=backup_data)
+
+        elif name == "snapshot":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            snapname = arguments["snapname"]
+            description = arguments.get("description", "")
+            snapshot_data = {
+                "snapname": snapname,
+                "description": description
+            }
+            if resolved_type != "lxc":
+                vmstate = arguments.get("vmstate", False)
+                snapshot_data["vmstate"] = 1 if vmstate else 0
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/snapshot", method="post", data=snapshot_data)
+
+        elif name == "clone":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            newid = arguments["newid"]
+            clone_data = {"newid": newid}
+            if resolved_type == "lxc":
+                supported_params = ["description", "target", "storage", "pool", "snapname", "full"]
+                for param in supported_params:
+                    if param in arguments:
+                        clone_data[param] = arguments[param]
+                if "name" in arguments:
+                    clone_data["hostname"] = arguments["name"]
+                return await client.post(f"/nodes/{node}/lxc/{vmid}/clone", data=clone_data)
+            else:
+                supported_params = ["name", "description", "target", "storage", "format", "full", "pool", "snapname"]
+                for param in supported_params:
+                    if param in arguments:
+                        clone_data[param] = arguments[param]
+                return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/clone", method="post", data=clone_data)
+
+        elif name == "update_config":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            update_data = {}
+            if resolved_type == "lxc":
+                supported_params = ["hostname", "description", "cores", "memory", "swap", "onboot", "protection", "tags"]
+                for param in supported_params:
+                    if param in arguments:
+                        update_data[param] = arguments[param]
+                if "name" in arguments and "hostname" not in arguments:
+                    update_data["hostname"] = arguments["name"]
+                return await client.put(f"/nodes/{node}/lxc/{vmid}/config", data=update_data)
+            else:
+                supported_params = ["name", "description", "cores", "memory", "balloon", "onboot", "agent", "protection", "tags"]
+                for param in supported_params:
+                    if param in arguments:
+                        update_data[param] = arguments[param]
+                return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/config", method="put", data=update_data)
+
+        elif name == "delete":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            delete_params = {}
+            if arguments.get("purge", False):
+                delete_params["purge"] = 1
+            if arguments.get("destroy_unreferenced_disks", True):
+                delete_params["destroy-unreferenced-disks"] = 1
+            if resolved_type == "lxc":
+                return await client.delete(f"/nodes/{node}/lxc/{vmid}", params=delete_params)
+            elif resolved_type == "qemu":
+                return await client.delete(f"/nodes/{node}/qemu/{vmid}", params=delete_params)
+            else:
+                try:
+                    return await client.delete(f"/nodes/{node}/qemu/{vmid}", params=delete_params)
+                except Exception:
+                    return await client.delete(f"/nodes/{node}/lxc/{vmid}", params=delete_params)
+
+        elif name == "get_performance":
+            node = arguments["node"]
+            vmid = arguments["vmid"]
+            timeframe = arguments.get("timeframe", "hour")
+            return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/rrddata", params={"timeframe": timeframe})
+
         # NEW: Enhanced Batch Operations for Data Collection with Firewall Options
-        if name == "get_all_vm_firewall_rules":
+        elif name == "get_all_vm_firewall_rules":
             include_containers = arguments.get("include_containers", True)
             include_disabled = arguments.get("include_disabled", True)
             
@@ -2946,6 +2913,10 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             filter_name = arguments.get("filter_name")
             filter_status = arguments.get("filter_status")
 
+            # Handle filter_id sent as bare integer
+            if isinstance(filter_id, (int, float)):
+                filter_id = str(int(filter_id))
+
             # Validate pagination parameters
             limit, offset = validate_pagination_params(limit, offset, DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT)
 
@@ -3050,91 +3021,6 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 "display_message": display_msg
             }
         
-        elif name == "get_vm_status":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/status/current")
-        
-        elif name == "get_vm_config":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/config")
-        
-        elif name == "get_vm_snapshots":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/snapshot")
-        
-        # VM Control Operations
-        elif name == "vm_start":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/start")
-        
-        elif name == "vm_shutdown":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/shutdown")
-        
-        elif name == "vm_stop":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/stop")
-        
-        elif name == "vm_reboot":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/reboot")
-        
-        elif name == "vm_reset":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/status/reset")
-
-        # VM migrate implementation
-        elif name == "vm_migrate":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            target = arguments["target"]
-            online = arguments.get("online", True)
-            
-            migrate_data = {
-                "target": target,
-                "online": 1 if online else 0
-            }
-            
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/migrate", data=migrate_data)
-        
-        elif name == "vm_backup":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            storage = arguments["storage"]
-            mode = arguments.get("mode", "snapshot")
-            compress = arguments.get("compress", "zstd")
-            
-            backup_data = {
-                "storage": storage,
-                "mode": mode,
-                "compress": compress
-            }
-            
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/backup", data=backup_data)
-        
-        elif name == "vm_snapshot":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            snapname = arguments["snapname"]
-            description = arguments.get("description", "")
-            vmstate = arguments.get("vmstate", False)
-            
-            snapshot_data = {
-                "snapname": snapname,
-                "description": description,
-                "vmstate": 1 if vmstate else 0
-            }
-            
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/snapshot", data=snapshot_data)
-        
         # Container Management
         elif name == "list_containers":
             # Enhanced in v1.3.1 (2025-11-29):
@@ -3149,6 +3035,10 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             filter_id = arguments.get("filter_id")
             filter_name = arguments.get("filter_name")
             filter_status = arguments.get("filter_status")
+
+            # Handle filter_id sent as bare integer
+            if isinstance(filter_id, (int, float)):
+                filter_id = str(int(filter_id))
 
             # Validate pagination parameters
             limit, offset = validate_pagination_params(limit, offset, DEFAULT_BATCH_LIMIT, MAX_BATCH_LIMIT)
@@ -3253,78 +3143,6 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
                 "summary": summary_dict,
                 "display_message": display_msg
             }
-        
-        elif name == "get_container_status":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/lxc/{vmid}/status/current")
-        
-        elif name == "get_container_config":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/lxc/{vmid}/config")
-        
-        # Container Control Operations
-        elif name == "ct_start":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/status/start")
-        
-        elif name == "ct_shutdown":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/status/shutdown")
-        
-        elif name == "ct_stop":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/status/stop")
-        
-        elif name == "ct_reboot":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/status/reboot")
-        
-        elif name == "ct_migrate":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            target = arguments["target"]
-            online = arguments.get("online", True)
-            
-            migrate_data = {
-                "target": target,
-                "online": 1 if online else 0
-            }
-            
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/migrate", data=migrate_data)
-        
-        elif name == "ct_backup":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            storage = arguments["storage"]
-            mode = arguments.get("mode", "snapshot")
-            compress = arguments.get("compress", "zstd")
-            
-            backup_data = {
-                "storage": storage,
-                "mode": mode,
-                "compress": compress
-            }
-            
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/backup", data=backup_data)
-        
-        elif name == "ct_snapshot":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            snapname = arguments["snapname"]
-            description = arguments.get("description", "")
-            
-            snapshot_data = {
-                "snapname": snapname,
-                "description": description
-            }
-            
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/snapshot", data=snapshot_data)
         
         # Storage Management
         elif name == "get_storage_status":
@@ -4194,12 +4012,7 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             if "vmid" in arguments and "node" in arguments:
                 node = arguments["node"]
                 vmid = arguments["vmid"]
-                try:
-                    # Try VM first
-                    return await client.get(f"/nodes/{node}/qemu/{vmid}/firewall/rules")
-                except:
-                    # Try container
-                    return await client.get(f"/nodes/{node}/lxc/{vmid}/firewall/rules")
+                return await _resolve_type_with_fallback(client, node, vmid, resolved_type, "/firewall/rules")
             elif "node" in arguments:
                 node = arguments["node"]
                 return await client.get(f"/nodes/{node}/firewall/rules")
@@ -4294,12 +4107,8 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             timeframe = arguments.get("timeframe", "hour")
             return await client.get(f"/nodes/{node}/rrddata", {"timeframe": timeframe})
         
-        elif name == "get_vm_performance":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            timeframe = arguments.get("timeframe", "hour")
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/rrddata", {"timeframe": timeframe})
-        
+        # get_vm_performance — unified into get_performance above
+
         # Log Management
         elif name == "get_system_logs":
             node = arguments["node"]
@@ -4531,45 +4340,8 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             
             return result
         
-        elif name == "clone_vm":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            newid = arguments["newid"]
-            
-            clone_data = {"newid": newid}
-            
-            # Copy supported clone parameters
-            supported_params = ["name", "description", "target", "storage", "format", "full", "pool", "snapname"]
-            for param in supported_params:
-                if param in arguments:
-                    clone_data[param] = arguments[param]
-            
-            return await client.post(f"/nodes/{node}/qemu/{vmid}/clone", data=clone_data)
-        
-        elif name == "update_vm_config":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            
-            update_data = {}
-            supported_params = ["name", "description", "cores", "memory", "balloon", "onboot", "agent", "protection", "tags"]
-            for param in supported_params:
-                if param in arguments:
-                    update_data[param] = arguments[param]
-            
-            return await client.put(f"/nodes/{node}/qemu/{vmid}/config", data=update_data)
-        
-        elif name == "delete_vm":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            
-            delete_params = {}
-            if arguments.get("purge", False):
-                delete_params["purge"] = 1
-            if arguments.get("destroy_unreferenced_disks", True):
-                delete_params["destroy-unreferenced-disks"] = 1
-            
-            return await client.delete(f"/nodes/{node}/qemu/{vmid}", params=delete_params)
-        
+        # clone_vm, update_vm_config, delete_vm — unified into clone, update_config, delete above
+
         # Container Creation and Management Operations
         elif name == "create_container":
             node = arguments["node"]
@@ -4609,1098 +4381,13 @@ async def execute_tool(name: str, arguments: dict) -> Union[dict, str]:
             
             return result
         
-        elif name == "clone_container":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            newid = arguments["newid"]
-            
-            clone_data = {"newid": newid}
-            
-            # Copy supported clone parameters
-            supported_params = ["hostname", "description", "target", "storage", "pool", "snapname", "full"]
-            for param in supported_params:
-                if param in arguments:
-                    clone_data[param] = arguments[param]
-            
-            return await client.post(f"/nodes/{node}/lxc/{vmid}/clone", data=clone_data)
-        
-        elif name == "update_container_config":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            
-            update_data = {}
-            supported_params = ["hostname", "description", "cores", "memory", "swap", "onboot", "protection", "tags"]
-            for param in supported_params:
-                if param in arguments:
-                    update_data[param] = arguments[param]
-            
-            return await client.put(f"/nodes/{node}/lxc/{vmid}/config", data=update_data)
-        
-        elif name == "delete_container":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            
-            delete_params = {}
-            if arguments.get("purge", False):
-                delete_params["purge"] = 1
-            if arguments.get("destroy_unreferenced_disks", True):
-                delete_params["destroy-unreferenced-disks"] = 1
-            
-            return await client.delete(f"/nodes/{node}/lxc/{vmid}", params=delete_params)
-        
+        # clone_container, update_container_config, delete_container — unified above
+
         else:
             raise ProxmoxVEError(f"Tool '{name}' is not implemented. This should not happen as all tools are now implemented.")
-    """Execute specific tool operations with enhanced validation and error handling"""
-    
-    # Validate VM/Container IDs
-    if 'vmid' in arguments:
-        vmid = arguments['vmid']
-        if isinstance(vmid, int) and vmid < 100:
-            raise ProxmoxVEError(f"Invalid VM/Container ID: {vmid}. ID must be >= 100")
-    
-    # Control operations that require confirmation
-    control_operations = [
-        "vm_start", "vm_shutdown", "vm_stop", "vm_reboot", "vm_reset", "vm_migrate", "vm_backup", "vm_snapshot",
-        "ct_start", "ct_shutdown", "ct_stop", "ct_reboot", "ct_migrate", "ct_backup", "ct_snapshot",
-        "create_backup_job", "create_vm", "clone_vm", "update_vm_config", "delete_vm",
-        "create_container", "clone_container", "update_container_config", "delete_container"
-    ]
-    
-    if name in control_operations:
-        if not arguments.get("confirm", False):
-            return {
-                "status": "confirmation_required",
-                "message": f"This operation ({name}) requires confirmation for safety. Please set 'confirm': true to proceed.",
-                "operation": name,
-                "arguments": arguments,
-                "warning": "This operation will modify system state. Please ensure you understand the consequences."
-            }
-    
-    # Get client and execute operations
-    client = get_pve_client()
-    
-    async with client:
-        # NEW: Enhanced Batch Operations for Data Collection with Firewall Options
-        if name == "get_all_vm_firewall_rules":
-            include_containers = arguments.get("include_containers", True)
-            include_disabled = arguments.get("include_disabled", True)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_firewall_rules = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get VMs firewall rules
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        try:
-                            # Get firewall rules
-                            firewall_result = await client.get(f"/nodes/{node}/qemu/{vmid}/firewall/rules")
-                            
-                            # Get firewall options
-                            firewall_options = {}
-                            try:
-                                options_result = await client.get(f"/nodes/{node}/qemu/{vmid}/firewall/options")
-                                firewall_options = options_result.get("data", {})
-                            except Exception as e:
-                                logger.warning(f"Cannot get firewall options for VM {vmid} on node {node}: {e}")
-                                firewall_options = {"error": str(e)}
-                            
-                            if firewall_result.get("data"):
-                                rules = firewall_result["data"]
-                                if not include_disabled:
-                                    rules = [rule for rule in rules if rule.get("enable", 1) == 1]
-                                
-                                if rules or firewall_options:  # Add if there are rules or options
-                                    all_firewall_rules.append({
-                                        "node": node,
-                                        "vmid": vmid,
-                                        "name": vm.get("name", f"VM-{vmid}"),
-                                        "type": "qemu",
-                                        "status": vm.get("status", "unknown"),
-                                        "firewall_rules": rules,
-                                        "firewall_options": firewall_options,
-                                        "rule_count": len(rules)
-                                    })
-                        except Exception as e:
-                            logger.warning(f"Cannot get firewall rules for VM {vmid} on node {node}: {e}")
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get containers firewall rules
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                # Get firewall rules
-                                firewall_result = await client.get(f"/nodes/{node}/lxc/{vmid}/firewall/rules")
-                                
-                                # Get firewall options
-                                firewall_options = {}
-                                try:
-                                    options_result = await client.get(f"/nodes/{node}/lxc/{vmid}/firewall/options")
-                                    firewall_options = options_result.get("data", {})
-                                except Exception as e:
-                                    logger.warning(f"Cannot get firewall options for container {vmid} on node {node}: {e}")
-                                    firewall_options = {"error": str(e)}
-                                
-                                if firewall_result.get("data"):
-                                    rules = firewall_result["data"]
-                                    if not include_disabled:
-                                        rules = [rule for rule in rules if rule.get("enable", 1) == 1]
-                                    
-                                    if rules or firewall_options:  # Add if there are rules or options
-                                        all_firewall_rules.append({
-                                            "node": node,
-                                            "vmid": vmid,
-                                            "name": container.get("name", f"CT-{vmid}"),
-                                            "type": "lxc",
-                                            "status": container.get("status", "unknown"),
-                                            "firewall_rules": rules,
-                                            "firewall_options": firewall_options,
-                                            "rule_count": len(rules)
-                                        })
-                            except Exception as e:
-                                logger.warning(f"Cannot get firewall rules for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            return {
-                "data": all_firewall_rules,
-                "summary": {
-                    "total_entries": len(all_firewall_rules),
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "include_disabled": include_disabled
-                }
-            }
-        
-        elif name == "get_all_vm_status_history":
-            include_containers = arguments.get("include_containers", True)
-            limit_per_vm = arguments.get("limit_per_vm", 50)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_status_history = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get VM status history
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        try:
-                            # Get task history for this VM (includes start/stop operations)
-                            tasks_result = await client.get(f"/nodes/{node}/tasks", {
-                                "limit": limit_per_vm,
-                                "vmid": vmid
-                            })
-                            
-                            power_operations = []
-                            for task in tasks_result.get("data", []):
-                                task_type = task.get("type", "")
-                                if task_type in ["qmstart", "qmstop", "qmshutdown", "qmreboot", "qmreset"]:
-                                    power_operations.append({
-                                        "operation": task_type,
-                                        "status": task.get("status", "unknown"),
-                                        "starttime": task.get("starttime"),
-                                        "endtime": task.get("endtime"),
-                                        "user": task.get("user", ""),
-                                        "upid": task.get("upid", "")
-                                    })
-                            
-                            if power_operations:
-                                all_status_history.append({
-                                    "node": node,
-                                    "vmid": vmid,
-                                    "name": vm.get("name", f"VM-{vmid}"),
-                                    "type": "qemu",
-                                    "current_status": vm.get("status", "unknown"),
-                                    "power_operations": power_operations,
-                                    "operation_count": len(power_operations)
-                                })
-                        except Exception as e:
-                            logger.warning(f"Cannot get status history for VM {vmid} on node {node}: {e}")
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container status history
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                tasks_result = await client.get(f"/nodes/{node}/tasks", {
-                                    "limit": limit_per_vm,
-                                    "vmid": vmid
-                                })
-                                
-                                power_operations = []
-                                for task in tasks_result.get("data", []):
-                                    task_type = task.get("type", "")
-                                    if task_type in ["vzstart", "vzstop", "vzshutdown", "vzreboot"]:
-                                        power_operations.append({
-                                            "operation": task_type,
-                                            "status": task.get("status", "unknown"),
-                                            "starttime": task.get("starttime"),
-                                            "endtime": task.get("endtime"),
-                                            "user": task.get("user", ""),
-                                            "upid": task.get("upid", "")
-                                        })
-                                
-                                if power_operations:
-                                    all_status_history.append({
-                                        "node": node,
-                                        "vmid": vmid,
-                                        "name": container.get("name", f"CT-{vmid}"),
-                                        "type": "lxc",
-                                        "current_status": container.get("status", "unknown"),
-                                        "power_operations": power_operations,
-                                        "operation_count": len(power_operations)
-                                    })
-                            except Exception as e:
-                                logger.warning(f"Cannot get status history for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            return {
-                "data": all_status_history,
-                "summary": {
-                    "total_entries": len(all_status_history),
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "limit_per_vm": limit_per_vm
-                }
-            }
-        
-        elif name == "get_all_operation_logs":
-            include_node_logs = arguments.get("include_node_logs", True)
-            include_vm_logs = arguments.get("include_vm_logs", True)
-            include_container_logs = arguments.get("include_container_logs", True)
-            limit_per_source = arguments.get("limit_per_source", 100)
-            since_hours = arguments.get("since_hours", 24)
-            
-            since_timestamp = int(time.time()) - (since_hours * 3600)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_operation_logs = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get node-level logs
-                if include_node_logs:
-                    try:
-                        node_tasks = await client.get(f"/nodes/{node}/tasks", {
-                            "limit": limit_per_source,
-                            "since": since_timestamp
-                        })
-                        
-                        for task in node_tasks.get("data", []):
-                            if task.get("starttime", 0) >= since_timestamp:
-                                all_operation_logs.append({
-                                    "source_type": "node",
-                                    "source_name": node,
-                                    "node": node,
-                                    "vmid": task.get("id"),
-                                    "operation": task.get("type", ""),
-                                    "status": task.get("status", "unknown"),
-                                    "starttime": task.get("starttime"),
-                                    "endtime": task.get("endtime"),
-                                    "user": task.get("user", ""),
-                                    "upid": task.get("upid", ""),
-                                    "log_entry": task
-                                })
-                    except Exception as e:
-                        logger.warning(f"Cannot get node logs from {node}: {e}")
-                
-                # Get VM-specific logs
-                if include_vm_logs:
-                    try:
-                        vms_result = await client.get(f"/nodes/{node}/qemu")
-                        for vm in vms_result.get("data", []):
-                            vmid = vm["vmid"]
-                            try:
-                                vm_tasks = await client.get(f"/nodes/{node}/tasks", {
-                                    "limit": limit_per_source // 10,
-                                    "vmid": vmid,
-                                    "since": since_timestamp
-                                })
-                                
-                                for task in vm_tasks.get("data", []):
-                                    if task.get("starttime", 0) >= since_timestamp:
-                                        all_operation_logs.append({
-                                            "source_type": "vm",
-                                            "source_name": vm.get("name", f"VM-{vmid}"),
-                                            "node": node,
-                                            "vmid": vmid,
-                                            "operation": task.get("type", ""),
-                                            "status": task.get("status", "unknown"),
-                                            "starttime": task.get("starttime"),
-                                            "endtime": task.get("endtime"),
-                                            "user": task.get("user", ""),
-                                            "upid": task.get("upid", ""),
-                                            "log_entry": task
-                                        })
-                            except Exception as e:
-                                logger.warning(f"Cannot get logs for VM {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container-specific logs
-                if include_container_logs:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                ct_tasks = await client.get(f"/nodes/{node}/tasks", {
-                                    "limit": limit_per_source // 10,
-                                    "vmid": vmid,
-                                    "since": since_timestamp
-                                })
-                                
-                                for task in ct_tasks.get("data", []):
-                                    if task.get("starttime", 0) >= since_timestamp:
-                                        all_operation_logs.append({
-                                            "source_type": "container",
-                                            "source_name": container.get("name", f"CT-{vmid}"),
-                                            "node": node,
-                                            "vmid": vmid,
-                                            "operation": task.get("type", ""),
-                                            "status": task.get("status", "unknown"),
-                                            "starttime": task.get("starttime"),
-                                            "endtime": task.get("endtime"),
-                                            "user": task.get("user", ""),
-                                            "upid": task.get("upid", ""),
-                                            "log_entry": task
-                                        })
-                            except Exception as e:
-                                logger.warning(f"Cannot get logs for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            # Sort by starttime (newest first)
-            all_operation_logs.sort(key=lambda x: x.get("starttime", 0), reverse=True)
-            
-            return {
-                "data": all_operation_logs,
-                "summary": {
-                    "total_entries": len(all_operation_logs),
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "since_hours": since_hours,
-                    "include_node_logs": include_node_logs,
-                    "include_vm_logs": include_vm_logs,
-                    "include_container_logs": include_container_logs
-                }
-            }
-        
-        elif name == "get_all_snapshots":
-            include_containers = arguments.get("include_containers", True)
-            include_details = arguments.get("include_details", False)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_snapshots = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get VM snapshots
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        try:
-                            snapshots_result = await client.get(f"/nodes/{node}/qemu/{vmid}/snapshot")
-                            snapshots = snapshots_result.get("data", [])
-                            
-                            if snapshots:
-                                snapshot_info = {
-                                    "node": node,
-                                    "vmid": vmid,
-                                    "name": vm.get("name", f"VM-{vmid}"),
-                                    "type": "qemu",
-                                    "status": vm.get("status", "unknown"),
-                                    "snapshot_count": len(snapshots),
-                                    "snapshots": []
-                                }
-                                
-                                for snapshot in snapshots:
-                                    snap_data = {
-                                        "name": snapshot.get("name", ""),
-                                        "description": snapshot.get("description", ""),
-                                        "snaptime": snapshot.get("snaptime")
-                                    }
-                                    
-                                    if include_details:
-                                        snap_data.update({
-                                            "vmstate": snapshot.get("vmstate", 0),
-                                            "parent": snapshot.get("parent", ""),
-                                            "running": snapshot.get("running", 0)
-                                        })
-                                    
-                                    snapshot_info["snapshots"].append(snap_data)
-                                
-                                all_snapshots.append(snapshot_info)
-                        except Exception as e:
-                            logger.warning(f"Cannot get snapshots for VM {vmid} on node {node}: {e}")
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container snapshots
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                snapshots_result = await client.get(f"/nodes/{node}/lxc/{vmid}/snapshot")
-                                snapshots = snapshots_result.get("data", [])
-                                
-                                if snapshots:
-                                    snapshot_info = {
-                                        "node": node,
-                                        "vmid": vmid,
-                                        "name": container.get("name", f"CT-{vmid}"),
-                                        "type": "lxc",
-                                        "status": container.get("status", "unknown"),
-                                        "snapshot_count": len(snapshots),
-                                        "snapshots": []
-                                    }
-                                    
-                                    for snapshot in snapshots:
-                                        snap_data = {
-                                            "name": snapshot.get("name", ""),
-                                            "description": snapshot.get("description", ""),
-                                            "snaptime": snapshot.get("snaptime")
-                                        }
-                                        
-                                        if include_details:
-                                            snap_data.update({
-                                                "parent": snapshot.get("parent", "")
-                                            })
-                                        
-                                        snapshot_info["snapshots"].append(snap_data)
-                                    
-                                    all_snapshots.append(snapshot_info)
-                            except Exception as e:
-                                logger.warning(f"Cannot get snapshots for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            total_snapshots = sum(item["snapshot_count"] for item in all_snapshots)
-            
-            return {
-                "data": all_snapshots,
-                "summary": {
-                    "total_vms_with_snapshots": len(all_snapshots),
-                    "total_snapshots": total_snapshots,
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "include_details": include_details
-                }
-            }
-        
-        elif name == "get_all_vm_configs":
-            include_containers = arguments.get("include_containers", True)
-            include_hardware_info = arguments.get("include_hardware_info", True)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_configs = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get VM configurations
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        try:
-                            config_result = await client.get(f"/nodes/{node}/qemu/{vmid}/config")
-                            config_data = config_result.get("data", {})
-                            
-                            vm_config = {
-                                "node": node,
-                                "vmid": vmid,
-                                "name": vm.get("name", config_data.get("name", f"VM-{vmid}")),
-                                "type": "qemu",
-                                "status": vm.get("status", "unknown"),
-                                "configuration": config_data
-                            }
-                            
-                            if include_hardware_info:
-                                vm_config["hardware_summary"] = {
-                                    "cores": config_data.get("cores", 1),
-                                    "memory": config_data.get("memory", 512),
-                                    "sockets": config_data.get("sockets", 1),
-                                    "cpu": config_data.get("cpu", "kvm64"),
-                                    "ostype": config_data.get("ostype", "l26"),
-                                    "machine": config_data.get("machine", "pc"),
-                                    "bios": config_data.get("bios", "seabios"),
-                                    "balloon": config_data.get("balloon", 0),
-                                    "boot": config_data.get("boot", ""),
-                                    "agent": config_data.get("agent", 0),
-                                    "protection": config_data.get("protection", 0)
-                                }
-                                
-                                # Extract storage information
-                                storage_devices = {}
-                                for key, value in config_data.items():
-                                    if key.startswith(('scsi', 'ide', 'sata', 'virtio')):
-                                        storage_devices[key] = value
-                                vm_config["storage_devices"] = storage_devices
-                                
-                                # Extract network information
-                                network_devices = {}
-                                for key, value in config_data.items():
-                                    if key.startswith('net'):
-                                        network_devices[key] = value
-                                vm_config["network_devices"] = network_devices
-                            
-                            all_configs.append(vm_config)
-                        except Exception as e:
-                            logger.warning(f"Cannot get config for VM {vmid} on node {node}: {e}")
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container configurations
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                config_result = await client.get(f"/nodes/{node}/lxc/{vmid}/config")
-                                config_data = config_result.get("data", {})
-                                
-                                ct_config = {
-                                    "node": node,
-                                    "vmid": vmid,
-                                    "name": container.get("name", config_data.get("hostname", f"CT-{vmid}")),
-                                    "type": "lxc",
-                                    "status": container.get("status", "unknown"),
-                                    "configuration": config_data
-                                }
-                                
-                                if include_hardware_info:
-                                    ct_config["hardware_summary"] = {
-                                        "cores": config_data.get("cores", 1),
-                                        "memory": config_data.get("memory", 512),
-                                        "swap": config_data.get("swap", 512),
-                                        "hostname": config_data.get("hostname", ""),
-                                        "ostype": config_data.get("ostype", ""),
-                                        "arch": config_data.get("arch", "amd64"),
-                                        "unprivileged": config_data.get("unprivileged", 1),
-                                        "protection": config_data.get("protection", 0),
-                                        "onboot": config_data.get("onboot", 0)
-                                    }
-                                    
-                                    # Extract storage information
-                                    storage_devices = {}
-                                    for key, value in config_data.items():
-                                        if key.startswith(('rootfs', 'mp')):
-                                            storage_devices[key] = value
-                                    ct_config["storage_devices"] = storage_devices
-                                    
-                                    # Extract network information
-                                    network_devices = {}
-                                    for key, value in config_data.items():
-                                        if key.startswith('net'):
-                                            network_devices[key] = value
-                                    ct_config["network_devices"] = network_devices
-                                
-                                all_configs.append(ct_config)
-                            except Exception as e:
-                                logger.warning(f"Cannot get config for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            return {
-                "data": all_configs,
-                "summary": {
-                    "total_entries": len(all_configs),
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "include_hardware_info": include_hardware_info,
-                    "vm_count": len([c for c in all_configs if c["type"] == "qemu"]),
-                    "container_count": len([c for c in all_configs if c["type"] == "lxc"])
-                }
-            }
-        
-        elif name == "get_all_backup_status":
-            include_containers = arguments.get("include_containers", True)
-            include_job_history = arguments.get("include_job_history", True)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_backup_status = []
-            
-            # Get backup jobs configuration
-            backup_jobs = {}
-            try:
-                jobs_result = await client.get("/cluster/backup")
-                for job in jobs_result.get("data", []):
-                    job_id = job.get("id", "")
-                    backup_jobs[job_id] = job
-            except Exception as e:
-                logger.warning(f"Cannot get backup jobs: {e}")
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get storage information to find backup storages
-                backup_storages = []
-                try:
-                    storage_result = await client.get(f"/nodes/{node}/storage")
-                    for storage in storage_result.get("data", []):
-                        content = storage.get("content", "")
-                        if "backup" in content.split(","):
-                            backup_storages.append(storage["storage"])
-                except Exception as e:
-                    logger.warning(f"Cannot get storage info from node {node}: {e}")
-                
-                # Get VM backup status
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        
-                        vm_backup_info = {
-                            "node": node,
-                            "vmid": vmid,
-                            "name": vm.get("name", f"VM-{vmid}"),
-                            "type": "qemu",
-                            "status": vm.get("status", "unknown"),
-                            "backup_files": [],
-                            "backup_jobs": [],
-                            "last_backup": None
-                        }
-                        
-                        # Check backup files in each backup storage
-                        for storage in backup_storages:
-                            try:
-                                backups_result = await client.get(f"/nodes/{node}/storage/{storage}/content", {
-                                    "content": "backup",
-                                    "vmid": vmid
-                                })
-                                
-                                for backup in backups_result.get("data", []):
-                                    vm_backup_info["backup_files"].append({
-                                        "storage": storage,
-                                        "filename": backup.get("volid", ""),
-                                        "size": backup.get("size", 0),
-                                        "format": backup.get("format", ""),
-                                        "ctime": backup.get("ctime", 0)
-                                    })
-                            except Exception as e:
-                                logger.warning(f"Cannot get backups for VM {vmid} from storage {storage}: {e}")
-                        
-                        # Sort backup files by creation time
-                        if vm_backup_info["backup_files"]:
-                            vm_backup_info["backup_files"].sort(key=lambda x: x.get("ctime", 0), reverse=True)
-                            vm_backup_info["last_backup"] = vm_backup_info["backup_files"][0]
-                        
-                        # Find applicable backup jobs
-                        for job_id, job in backup_jobs.items():
-                            job_vmids = job.get("vmid", "").split(",")
-                            if str(vmid) in job_vmids or "all" in job_vmids:
-                                vm_backup_info["backup_jobs"].append({
-                                    "job_id": job_id,
-                                    "enabled": job.get("enabled", 1),
-                                    "schedule": job.get("schedule", ""),
-                                    "storage": job.get("storage", ""),
-                                    "mode": job.get("mode", "snapshot")
-                                })
-                        
-                        if vm_backup_info["backup_files"] or vm_backup_info["backup_jobs"]:
-                            all_backup_status.append(vm_backup_info)
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container backup status
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            
-                            ct_backup_info = {
-                                "node": node,
-                                "vmid": vmid,
-                                "name": container.get("name", f"CT-{vmid}"),
-                                "type": "lxc",
-                                "status": container.get("status", "unknown"),
-                                "backup_files": [],
-                                "backup_jobs": [],
-                                "last_backup": None
-                            }
-                            
-                            # Check backup files in each backup storage
-                            for storage in backup_storages:
-                                try:
-                                    backups_result = await client.get(f"/nodes/{node}/storage/{storage}/content", {
-                                        "content": "backup",
-                                        "vmid": vmid
-                                    })
-                                    
-                                    for backup in backups_result.get("data", []):
-                                        ct_backup_info["backup_files"].append({
-                                            "storage": storage,
-                                            "filename": backup.get("volid", ""),
-                                            "size": backup.get("size", 0),
-                                            "format": backup.get("format", ""),
-                                            "ctime": backup.get("ctime", 0)
-                                        })
-                                except Exception as e:
-                                    logger.warning(f"Cannot get backups for container {vmid} from storage {storage}: {e}")
-                            
-                            # Sort backup files by creation time
-                            if ct_backup_info["backup_files"]:
-                                ct_backup_info["backup_files"].sort(key=lambda x: x.get("ctime", 0), reverse=True)
-                                ct_backup_info["last_backup"] = ct_backup_info["backup_files"][0]
-                            
-                            # Find applicable backup jobs
-                            for job_id, job in backup_jobs.items():
-                                job_vmids = job.get("vmid", "").split(",")
-                                if str(vmid) in job_vmids or "all" in job_vmids:
-                                    ct_backup_info["backup_jobs"].append({
-                                        "job_id": job_id,
-                                        "enabled": job.get("enabled", 1),
-                                        "schedule": job.get("schedule", ""),
-                                        "storage": job.get("storage", ""),
-                                        "mode": job.get("mode", "snapshot")
-                                    })
-                            
-                            if ct_backup_info["backup_files"] or ct_backup_info["backup_jobs"]:
-                                all_backup_status.append(ct_backup_info)
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            # Calculate summary statistics
-            total_backup_files = sum(len(item["backup_files"]) for item in all_backup_status)
-            vms_with_backups = len([item for item in all_backup_status if item["type"] == "qemu" and item["backup_files"]])
-            containers_with_backups = len([item for item in all_backup_status if item["type"] == "lxc" and item["backup_files"]])
-            
-            return {
-                "data": all_backup_status,
-                "backup_jobs": list(backup_jobs.values()) if include_job_history else [],
-                "summary": {
-                    "total_entries": len(all_backup_status),
-                    "total_backup_files": total_backup_files,
-                    "vms_with_backups": vms_with_backups,
-                    "containers_with_backups": containers_with_backups,
-                    "backup_jobs_count": len(backup_jobs),
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "include_job_history": include_job_history
-                }
-            }
-        
-        elif name == "get_all_performance_stats":
-            include_containers = arguments.get("include_containers", True)
-            timeframe = arguments.get("timeframe", "hour")
-            include_node_stats = arguments.get("include_node_stats", True)
-            
-            # Get all nodes
-            nodes_result = await client.get("/nodes")
-            all_performance_stats = []
-            
-            for node_info in nodes_result.get("data", []):
-                node = node_info["node"]
-                
-                # Get node performance stats
-                if include_node_stats:
-                    try:
-                        node_stats = await client.get(f"/nodes/{node}/rrddata", {"timeframe": timeframe})
-                        all_performance_stats.append({
-                            "source_type": "node",
-                            "source_name": node,
-                            "node": node,
-                            "vmid": None,
-                            "performance_data": node_stats.get("data", []),
-                            "data_points": len(node_stats.get("data", [])),
-                            "timeframe": timeframe
-                        })
-                    except Exception as e:
-                        logger.warning(f"Cannot get performance stats for node {node}: {e}")
-                
-                # Get VM performance stats
-                try:
-                    vms_result = await client.get(f"/nodes/{node}/qemu")
-                    for vm in vms_result.get("data", []):
-                        vmid = vm["vmid"]
-                        try:
-                            vm_stats = await client.get(f"/nodes/{node}/qemu/{vmid}/rrddata", {"timeframe": timeframe})
-                            all_performance_stats.append({
-                                "source_type": "vm",
-                                "source_name": vm.get("name", f"VM-{vmid}"),
-                                "node": node,
-                                "vmid": vmid,
-                                "performance_data": vm_stats.get("data", []),
-                                "data_points": len(vm_stats.get("data", [])),
-                                "timeframe": timeframe
-                            })
-                        except Exception as e:
-                            logger.warning(f"Cannot get performance stats for VM {vmid} on node {node}: {e}")
-                except Exception as e:
-                    logger.warning(f"Cannot get VMs from node {node}: {e}")
-                
-                # Get container performance stats
-                if include_containers:
-                    try:
-                        containers_result = await client.get(f"/nodes/{node}/lxc")
-                        for container in containers_result.get("data", []):
-                            vmid = container["vmid"]
-                            try:
-                                ct_stats = await client.get(f"/nodes/{node}/lxc/{vmid}/rrddata", {"timeframe": timeframe})
-                                all_performance_stats.append({
-                                    "source_type": "container",
-                                    "source_name": container.get("name", f"CT-{vmid}"),
-                                    "node": node,
-                                    "vmid": vmid,
-                                    "performance_data": ct_stats.get("data", []),
-                                    "data_points": len(ct_stats.get("data", [])),
-                                    "timeframe": timeframe
-                                })
-                            except Exception as e:
-                                logger.warning(f"Cannot get performance stats for container {vmid} on node {node}: {e}")
-                    except Exception as e:
-                        logger.warning(f"Cannot get containers from node {node}: {e}")
-            
-            total_data_points = sum(item["data_points"] for item in all_performance_stats)
-            node_stats_count = len([item for item in all_performance_stats if item["source_type"] == "node"])
-            vm_stats_count = len([item for item in all_performance_stats if item["source_type"] == "vm"])
-            container_stats_count = len([item for item in all_performance_stats if item["source_type"] == "container"])
-            
-            return {
-                "data": all_performance_stats,
-                "summary": {
-                    "total_sources": len(all_performance_stats),
-                    "total_data_points": total_data_points,
-                    "node_stats_count": node_stats_count,
-                    "vm_stats_count": vm_stats_count,
-                    "container_stats_count": container_stats_count,
-                    "timeframe": timeframe,
-                    "nodes_scanned": len(nodes_result.get("data", [])),
-                    "include_containers": include_containers,
-                    "include_node_stats": include_node_stats
-                }
-            }
-        
-        elif name == "get_cluster_overview":
-            include_detailed_stats = arguments.get("include_detailed_stats", False)
-            include_logs = arguments.get("include_logs", True)
-            
-            cluster_overview = {}
-            
-            # Get cluster status
-            try:
-                cluster_status = await client.get("/cluster/status")
-                cluster_overview["cluster_status"] = cluster_status.get("data", [])
-            except Exception as e:
-                cluster_overview["cluster_status_error"] = str(e)
-            
-            # Get all nodes
-            try:
-                nodes_result = await client.get("/nodes")
-                cluster_overview["nodes"] = []
-                
-                total_memory = 0
-                total_memory_used = 0
-                total_cpu_cores = 0
-                total_cpu_usage = 0.0
-                total_vms = 0
-                total_containers = 0
-                
-                for node_info in nodes_result.get("data", []):
-                    node = node_info["node"]
-                    
-                    # Get detailed node status
-                    try:
-                        node_status = await client.get(f"/nodes/{node}/status")
-                        node_data = node_status.get("data", {})
-                        
-                        # Calculate totals
-                        memory = node_data.get("memory", {})
-                        total_memory += memory.get("total", 0)
-                        total_memory_used += memory.get("used", 0)
-                        
-                        cpu_info = node_data.get("cpu", 0)
-                        cpuinfo = node_data.get("cpuinfo", {})
-                        cores = cpuinfo.get("cores", 1)
-                        total_cpu_cores += cores
-                        total_cpu_usage += cpu_info * cores
-                        
-                        # Get VMs and containers count
-                        try:
-                            vms_result = await client.get(f"/nodes/{node}/qemu")
-                            node_vms = len(vms_result.get("data", []))
-                            total_vms += node_vms
-                        except:
-                            node_vms = 0
-                        
-                        try:
-                            containers_result = await client.get(f"/nodes/{node}/lxc")
-                            node_containers = len(containers_result.get("data", []))
-                            total_containers += node_containers
-                        except:
-                            node_containers = 0
-                        
-                        node_overview = {
-                            "node": node,
-                            "status": node_data.get("pveversion", "unknown"),
-                            "uptime": node_data.get("uptime", 0),
-                            "cpu_usage": cpu_info,
-                            "cpu_cores": cores,
-                            "memory_total": memory.get("total", 0),
-                            "memory_used": memory.get("used", 0),
-                            "memory_percentage": (memory.get("used", 0) / memory.get("total", 1)) * 100,
-                            "vm_count": node_vms,
-                            "container_count": node_containers,
-                            "loadavg": node_data.get("loadavg", [])
-                        }
-                        
-                        if include_detailed_stats:
-                            # Get storage info
-                            try:
-                                storage_result = await client.get(f"/nodes/{node}/storage")
-                                node_overview["storage"] = storage_result.get("data", [])
-                            except:
-                                node_overview["storage"] = []
-                            
-                            # Get network interfaces
-                            try:
-                                network_result = await client.get(f"/nodes/{node}/network")
-                                node_overview["network_interfaces"] = network_result.get("data", [])
-                            except:
-                                node_overview["network_interfaces"] = []
-                        
-                        cluster_overview["nodes"].append(node_overview)
-                    except Exception as e:
-                        cluster_overview["nodes"].append({
-                            "node": node,
-                            "error": str(e)
-                        })
-                
-                # Calculate cluster-wide statistics
-                cluster_overview["cluster_summary"] = {
-                    "total_nodes": len(nodes_result.get("data", [])),
-                    "total_vms": total_vms,
-                    "total_containers": total_containers,
-                    "total_memory_gb": round(total_memory / (1024**3), 2),
-                    "total_memory_used_gb": round(total_memory_used / (1024**3), 2),
-                    "memory_usage_percentage": round((total_memory_used / total_memory) * 100, 2) if total_memory > 0 else 0,
-                    "total_cpu_cores": total_cpu_cores,
-                    "average_cpu_usage": round(total_cpu_usage / total_cpu_cores, 2) if total_cpu_cores > 0 else 0
-                }
-                
-            except Exception as e:
-                cluster_overview["nodes_error"] = str(e)
-            
-            # Get cluster logs
-            if include_logs:
-                try:
-                    logs_result = await client.get("/cluster/tasks", {"limit": 50})
-                    cluster_overview["recent_tasks"] = logs_result.get("data", [])
-                except Exception as e:
-                    cluster_overview["logs_error"] = str(e)
-            
-            # Get backup jobs
-            try:
-                backup_jobs = await client.get("/cluster/backup")
-                cluster_overview["backup_jobs"] = backup_jobs.get("data", [])
-            except Exception as e:
-                cluster_overview["backup_jobs_error"] = str(e)
-            
-            # Get HA status
-            try:
-                ha_status = await client.get("/cluster/ha/status/current")
-                cluster_overview["ha_status"] = ha_status.get("data", [])
-            except Exception as e:
-                cluster_overview["ha_status_error"] = str(e)
-            
-            return {
-                "data": cluster_overview,
-                "summary": {
-                    "include_detailed_stats": include_detailed_stats,
-                    "include_logs": include_logs,
-                    "generation_time": int(time.time())
-                }
-            }
-        elif name == "get_cluster_status":
-            return await client.get("/cluster/status")
-        
-        elif name == "get_cluster_nodes":
-            return await client.get("/nodes")
-        
-        elif name == "get_node_status":
-            node = arguments["node"]
-            return await client.get(f"/nodes/{node}/status")
-        
-        elif name == "get_node_resources":
-            node = arguments["node"]
-            # Get cluster resources filtered by node
-            cluster_resources = await client.get("/cluster/resources")
-            node_resources = []
-            
-            # Filter resources for the specific node
-            for resource in cluster_resources.get("data", []):
-                if resource.get("node") == node:
-                    node_resources.append(resource)
-            
-            # Also get node-specific information
-            node_status = await client.get(f"/nodes/{node}/status")
-            
-            return {
-                "data": {
-                    "resources": node_resources,
-                    "node_status": node_status.get("data", {}),
-                    "summary": {
-                        "total_resources": len(node_resources),
-                        "vms": len([r for r in node_resources if r.get("type") == "qemu"]),
-                        "containers": len([r for r in node_resources if r.get("type") == "lxc"]),
-                        "storage": len([r for r in node_resources if r.get("type") == "storage"])
-                    }
-                }
-            }
-        
-        elif name == "get_node_tasks":
-            node = arguments["node"]
-            limit = arguments.get("limit", 50)
-            return await client.get(f"/nodes/{node}/tasks", {"limit": limit})
 
-        # Duplicate list_vms removed - see line 2612 for the actual implementation
 
-        elif name == "get_vm_status":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/status/current")
-        
-        elif name == "get_vm_config":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/config")
-        
-        elif name == "get_vm_snapshots":
-            node = arguments["node"]
-            vmid = arguments["vmid"]
-            return await client.get(f"/nodes/{node}/qemu/{vmid}/snapshot")
-        
-        else:
-            raise ProxmoxVEError(f"Tool '{name}' is not implemented. This should not happen as all tools are now implemented.")
+# Dead code block removed in v1.5.0 (was unreachable duplicate of execute_tool)
 
 def parse_args():
     """Parse command line arguments with enhanced validation"""
@@ -5713,6 +4400,9 @@ def parse_args():
         'api_token_secret': os.getenv("PVE_API_TOKEN_SECRET", ""),
         'verify_ssl': os.getenv("PVE_VERIFY_SSL", "false").lower() in ("true", "1", "yes"),
         'timeout': float(os.getenv("PVE_TIMEOUT", "30")),
+        'transport': os.getenv("MCP_TRANSPORT", "stdio"),
+        'http_host': os.getenv("MCP_HTTP_HOST", "0.0.0.0"),
+        'http_port': int(os.getenv("MCP_HTTP_PORT", "8000")),
         'test': False,
         'help': False
     }
@@ -5740,26 +4430,140 @@ def parse_args():
             i += 1
         elif arg == '--verify-ssl':
             config['verify_ssl'] = True
+        elif arg == '--transport' and i + 1 < len(args):
+            config['transport'] = args[i + 1]
+            i += 1
+        elif arg == '--http-host' and i + 1 < len(args):
+            config['http_host'] = args[i + 1]
+            i += 1
+        elif arg == '--http-port' and i + 1 < len(args):
+            config['http_port'] = int(args[i + 1])
+            i += 1
         elif arg == '--test':
             config['test'] = True
-        
+
         i += 1
-    
+
+    # Validate transport value
+    valid_transports = ('stdio', 'streamable-http')
+    if config['transport'] not in valid_transports:
+        print(f"Error: --transport must be one of: {', '.join(valid_transports)} (got '{config['transport']}')", file=sys.stderr)
+        sys.exit(1)
+
     return config
 
 async def main():
     """Main function with enhanced error handling and logging"""
     try:
         global pve_config
-        
+
+        # ============================================================================
+        # NETWORK DIAGNOSTICS - Added to debug Claude Desktop network issues
+        # ============================================================================
+        import socket
+
+        print("=" * 60, file=sys.stderr)
+        print("NETWORK DIAGNOSTICS - MCP Startup Debug Info", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+
+        # 1. Output proxy-related environment variables
+        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+                      'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy',
+                      'SOCKS_PROXY', 'socks_proxy']
+        print("\n[Proxy Environment Variables]", file=sys.stderr)
+        proxy_found = False
+        for var in proxy_vars:
+            value = os.environ.get(var)
+            if value:
+                print(f"  {var}: {value}", file=sys.stderr)
+                proxy_found = True
+        if not proxy_found:
+            print("  (No proxy variables set)", file=sys.stderr)
+
+        # 2. Output PVE-related environment variables
+        print("\n[PVE Environment Variables]", file=sys.stderr)
+        pve_vars = ['PVE_HOST', 'PVE_API_TOKEN_ID', 'PVE_VERIFY_SSL', 'PVE_TIMEOUT']
+        for var in pve_vars:
+            value = os.environ.get(var, "(not set)")
+            # Mask sensitive values
+            if 'SECRET' in var or 'PASSWORD' in var:
+                value = "***REDACTED***" if value and value != "(not set)" else "(not set)"
+            print(f"  {var}: {value}", file=sys.stderr)
+
+        # 3. Keep proxy variables - Claude Desktop sandbox requires proxy for network access
+        print(f"\n[Proxy Variables] (kept for Claude Desktop sandbox compatibility)", file=sys.stderr)
+        if proxy_found:
+            print(f"  Proxy will be used for connections", file=sys.stderr)
+        else:
+            print(f"  No proxy configured", file=sys.stderr)
+
+        # 4. DNS resolution test
+        pve_host_env = os.environ.get('PVE_HOST', '')
+        if pve_host_env:
+            try:
+                # Extract hostname from URL
+                from urllib.parse import urlparse
+                parsed = urlparse(pve_host_env)
+                hostname = parsed.hostname or parsed.path.split(':')[0]
+                print(f"\n[DNS Resolution Test]", file=sys.stderr)
+                print(f"  Target hostname: {hostname}", file=sys.stderr)
+                ip = socket.gethostbyname(hostname)
+                print(f"  Resolved IP: {ip}", file=sys.stderr)
+            except socket.gaierror as e:
+                print(f"  DNS resolution FAILED: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"  DNS test error: {e}", file=sys.stderr)
+
+        # 5. Network interface info
+        print(f"\n[Network Info]", file=sys.stderr)
+        try:
+            local_hostname = socket.gethostname()
+            print(f"  Local hostname: {local_hostname}", file=sys.stderr)
+            # Try to get local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1)
+            try:
+                # Connect to a public IP to determine local interface
+                s.connect(('8.8.8.8', 80))
+                local_ip = s.getsockname()[0]
+                print(f"  Local IP (outbound): {local_ip}", file=sys.stderr)
+            except:
+                print(f"  Local IP: Unable to determine", file=sys.stderr)
+            finally:
+                s.close()
+        except Exception as e:
+            print(f"  Network info error: {e}", file=sys.stderr)
+
+        print("=" * 60, file=sys.stderr)
+        print("END NETWORK DIAGNOSTICS", file=sys.stderr)
+        print("=" * 60 + "\n", file=sys.stderr)
+        # ============================================================================
+
         # Parse command line arguments
         config = parse_args()
         
         # Show help message
         if config['help']:
-            print("Proxmox VE MCP Server - Enhanced Edition v1.2.1")
-            print("Use environment variables PVE_HOST, PVE_USERNAME, PVE_PASSWORD")
-            print("or PVE_API_TOKEN_ID, PVE_API_TOKEN_SECRET for authentication")
+            print(f"Proxmox VE MCP Server - Enhanced Edition v{__version__}")
+            print()
+            print("Usage: python mcp_pve.py [OPTIONS]")
+            print()
+            print("Proxmox VE connection:")
+            print("  --host HOST               PVE host URL (env: PVE_HOST)")
+            print("  --username USER            PVE username (env: PVE_USERNAME)")
+            print("  --password PASS            PVE password (env: PVE_PASSWORD)")
+            print("  --api-token-id ID          PVE API token ID (env: PVE_API_TOKEN_ID)")
+            print("  --api-token-secret SECRET  PVE API token secret (env: PVE_API_TOKEN_SECRET)")
+            print("  --verify-ssl               Enable SSL verification (env: PVE_VERIFY_SSL)")
+            print()
+            print("Transport:")
+            print("  --transport TYPE           Transport type: stdio | streamable-http (env: MCP_TRANSPORT, default: stdio)")
+            print("  --http-host HOST           HTTP listen address (env: MCP_HTTP_HOST, default: 0.0.0.0)")
+            print("  --http-port PORT           HTTP listen port (env: MCP_HTTP_PORT, default: 8000)")
+            print()
+            print("Other:")
+            print("  --test                     Run in test mode")
+            print("  -h, --help                 Show this help message")
             return
         
         # Validate required settings
@@ -5789,29 +4593,70 @@ async def main():
         
         # Show startup information
         auth_method = "API Token" if (config['api_token_id'] and config['api_token_secret']) else "Username/Password"
+        transport = config['transport']
         print(f"Proxmox VE MCP Server v{__version__} - Enhanced Edition starting...", file=sys.stderr)
         print(f"Host: {config['host']}", file=sys.stderr)
         print(f"Auth: {auth_method}", file=sys.stderr)
+        print(f"Transport: {transport}", file=sys.stderr)
         print(f"Features: {len(await handle_list_tools())} tools available", file=sys.stderr)
         print("Enhanced MCP Server ready for connections", file=sys.stderr)
-        
+
         # Run MCP server
-        from mcp.server.stdio import stdio_server
-        
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="Proxmox_VE",
-                    server_version=__version__,
-                    capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={},
+        if transport == "stdio":
+            from mcp.server.stdio import stdio_server
+
+            async with stdio_server() as (read_stream, write_stream):
+                await server.run(
+                    read_stream,
+                    write_stream,
+                    InitializationOptions(
+                        server_name="Proxmox_VE",
+                        server_version=__version__,
+                        capabilities=server.get_capabilities(
+                            notification_options=NotificationOptions(),
+                            experimental_capabilities={},
+                        )
                     )
                 )
+
+        elif transport == "streamable-http":
+            from contextlib import asynccontextmanager
+            from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+            from starlette.applications import Starlette
+            from starlette.routing import Mount
+            import uvicorn
+
+            session_manager = StreamableHTTPSessionManager(
+                app=server,
+                json_response=True,
             )
-            
+
+            @asynccontextmanager
+            async def lifespan(app):
+                async with session_manager.run():
+                    yield
+
+            starlette_app = Starlette(
+                debug=False,
+                routes=[
+                    Mount("/mcp", app=session_manager.handle_request),
+                ],
+                lifespan=lifespan,
+            )
+
+            http_host = config['http_host']
+            http_port = config['http_port']
+            print(f"Streamable HTTP server listening on http://{http_host}:{http_port}/mcp", file=sys.stderr)
+
+            uvicorn_config = uvicorn.Config(
+                starlette_app,
+                host=http_host,
+                port=http_port,
+                log_level="info",
+            )
+            uvicorn_server = uvicorn.Server(uvicorn_config)
+            await uvicorn_server.serve()
+
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
