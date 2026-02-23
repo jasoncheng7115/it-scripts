@@ -1,1176 +1,882 @@
 #!/usr/bin/env python3
 """
-MCP Server for phpIPAM API – v1.2
+MCP Server for phpIPAM API – v2.1
 ===================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-06-28
-Modified: 2025-06-29
+Modified: 2026-02-09
 License: MIT
 
 FastMCP-based phpIPAM integration with comprehensive IP management operations,
 advanced search, and network resource tracking.
+
+Optimized for compatibility with smaller LLMs (e.g. gpt-oss:120b):
+- Clear, distinct tool descriptions with usage guidance
+- Explicit parameter descriptions in docstring Args
+- Consistent page/page_size pagination on every list endpoint
+- No redundant/overlapping tools
+- Token-efficient plain-text output (pipe-table for lists, key:value for details)
 """
 
+import argparse
 import json
 import os
 import sys
 import time
-from typing import Optional, Dict, Any, List, Union
-from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 from functools import wraps
 import logging
 import hashlib
-import re
 
 import requests
 import urllib3
 from mcp.server.fastmcp import FastMCP
 
-# Disable SSL warnings
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('phpipam')
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("phpipam")
 
+
+# ---------------------------------------------------------------------------
+# Configuration (environment variables only)
+# ---------------------------------------------------------------------------
 class Config:
     def __init__(self):
-        # All configuration from environment variables only
         base_url = os.getenv("PHPIPAM_URL")
         if not base_url:
             logger.error("PHPIPAM_URL environment variable not set")
             sys.exit(1)
-        
-        # Remove possible /api suffix
-        if base_url.endswith('/api'):
+        if base_url.endswith("/api"):
             base_url = base_url[:-4]
-        self.BASE_URL = base_url.rstrip('/')
-        
+        self.BASE_URL = base_url.rstrip("/")
+
         self.TOKEN = os.getenv("PHPIPAM_TOKEN")
         if not self.TOKEN:
             logger.error("PHPIPAM_TOKEN environment variable not set")
             sys.exit(1)
-            
+
         self.APP_ID = os.getenv("PHPIPAM_APP_ID")
         if not self.APP_ID:
             logger.error("PHPIPAM_APP_ID environment variable not set")
             sys.exit(1)
-            
+
         self.CACHE_TTL = int(os.getenv("PHPIPAM_CACHE_TTL", "300"))
         self.TIMEOUT = int(os.getenv("PHPIPAM_TIMEOUT", "10"))
         self.VERIFY_SSL = os.getenv("PHPIPAM_VERIFY_SSL", "false").lower() == "true"
         self.MAX_RETRIES = 3
-        self.BATCH_SIZE = 500  # Set batch size to 500 as requested
-        
-        self.validate()
-    
-    def validate(self):
-        logger.info(f"phpIPAM Base URL: {self.BASE_URL} (without /api)")
-        logger.info(f"Full API URL will be: {self.BASE_URL}/api/{self.APP_ID}")
-        logger.info(f"App ID: {self.APP_ID}")
-        logger.info(f"Cache TTL: {self.CACHE_TTL}s, Timeout: {self.TIMEOUT}s")
-        logger.info(f"Batch Size: {self.BATCH_SIZE} records")
-        logger.info(f"SSL Verification: {'Enabled' if self.VERIFY_SSL else 'Disabled'}")
+
+        logger.info(f"phpIPAM API: {self.BASE_URL}/api/{self.APP_ID}")
+        logger.info(f"Cache TTL: {self.CACHE_TTL}s | Timeout: {self.TIMEOUT}s | SSL: {self.VERIFY_SSL}")
+
 
 config = Config()
 
-# Cache implementation
+
+# ---------------------------------------------------------------------------
+# Simple TTL cache
+# ---------------------------------------------------------------------------
 class SimpleCache:
     def __init__(self, ttl: int = 300):
-        self.cache = {}
+        self._store: Dict[str, tuple] = {}
         self.ttl = ttl
-    
-    def _generate_key(self, key_data: str) -> str:
-        return hashlib.md5(key_data.encode('utf-8')).hexdigest()
-    
+
+    def _key(self, raw: str) -> str:
+        return hashlib.md5(raw.encode()).hexdigest()
+
     def get(self, key: str) -> Optional[Any]:
-        safe_key = self._generate_key(key)
-        if safe_key in self.cache:
-            data, timestamp = self.cache[safe_key]
-            if time.time() - timestamp < self.ttl:
+        k = self._key(key)
+        if k in self._store:
+            data, ts = self._store[k]
+            if time.time() - ts < self.ttl:
                 return data
-            else:
-                del self.cache[safe_key]
+            del self._store[k]
         return None
-    
+
     def set(self, key: str, value: Any):
-        safe_key = self._generate_key(key)
-        self.cache[safe_key] = (value, time.time())
-    
+        self._store[self._key(key)] = (value, time.time())
+
     def clear(self):
-        self.cache.clear()
-    
+        self._store.clear()
+
     def stats(self) -> Dict[str, int]:
-        current_time = time.time()
-        active_keys = 0
-        for _, (_, timestamp) in self.cache.items():
-            if current_time - timestamp < self.ttl:
-                active_keys += 1
-        return {
-            "total_keys": len(self.cache),
-            "active_keys": active_keys,
-            "ttl_seconds": self.ttl
-        }
+        now = time.time()
+        active = sum(1 for _, (_, ts) in self._store.items() if now - ts < self.ttl)
+        return {"total_keys": len(self._store), "active_keys": active, "ttl_seconds": self.ttl}
+
 
 cache = SimpleCache(config.CACHE_TTL)
 
-# Initialize requests session
+
+# ---------------------------------------------------------------------------
+# HTTP session
+# ---------------------------------------------------------------------------
 session = requests.Session()
 session.headers.update({
     "token": config.TOKEN,
-    "User-Agent": "mcp-phpipam/1.2",
+    "User-Agent": "mcp-phpipam/2.1",
     "Accept": "application/json",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
 })
 
-# Create FastMCP server
-mcp = FastMCP("phpIPAM")
 
+# ---------------------------------------------------------------------------
+# FastMCP server
+# ---------------------------------------------------------------------------
+mcp = FastMCP(
+    "phpIPAM",
+    host=os.getenv("FASTMCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("FASTMCP_PORT", "8000")),
+)
+
+
+# ---------------------------------------------------------------------------
 # Retry decorator
+# ---------------------------------------------------------------------------
 def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            last_exception = None
+            last_exc = None
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    last_exception = e
+                    last_exc = e
                     if attempt < max_retries - 1:
-                        wait_time = delay * (2 ** attempt)
-                        logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying in {wait_time}s")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"All {max_retries} attempts failed")
-            raise last_exception
+                        wait = delay * (2 ** attempt)
+                        logger.warning(f"Attempt {attempt + 1} failed: {e}, retry in {wait}s")
+                        time.sleep(wait)
+            raise last_exc
         return wrapper
     return decorator
 
+
+# ---------------------------------------------------------------------------
+# Core API helpers
+# ---------------------------------------------------------------------------
 @retry_on_failure(max_retries=config.MAX_RETRIES)
-def _api_request(method: str, path: str, params: Optional[Dict[str, Any]] = None,
-                 json_body: Optional[Dict[str, Any]] = None, use_cache: bool = True) -> Dict[str, Any]:
-    """Execute a request to phpIPAM API with simplified error handling."""
-    
-    # Build URL exactly like the working example
+def _api_request(
+    method: str,
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    use_cache: bool = True,
+) -> Any:
+    """Low-level phpIPAM API call with cache + retry."""
     url = f"{config.BASE_URL}/api/{config.APP_ID}/{path.lstrip('/')}"
-    
-    # Generate cache key
-    cache_key = f"{method}:{url}:{json.dumps(params or {}, sort_keys=True)}:{json.dumps(json_body or {}, sort_keys=True)}" if use_cache else None
-    
-    # Check cache first for GET requests
-    if cache_key and method.upper() == 'GET':
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.debug(f"Cache hit for {path}")
-            return cached_result
-    
-    # Detailed logging
-    logger.info(f"API Request: {method} {url}")
-    if params:
-        logger.info(f"  Params: {params}")
-    
-    try:
-        # Execute the request
-        response = session.request(
-            method.upper(), 
-            url, 
-            params=params, 
-            json=json_body, 
-            timeout=config.TIMEOUT,
-            verify=config.VERIFY_SSL
-        )
-        
-        # Log response details
-        logger.info(f"Response Status: {response.status_code}")
-        
-        # Raise exception for bad HTTP status
-        response.raise_for_status()
-        
-        # Parse JSON response
-        response_data = response.json()
-        
-        # Extract data field like the working example
-        if isinstance(response_data, dict) and "data" in response_data:
-            result_data = response_data["data"]
+    cache_key = f"{method}:{url}:{json.dumps(params or {}, sort_keys=True)}"
+
+    if use_cache and method.upper() == "GET":
+        hit = cache.get(cache_key)
+        if hit is not None:
+            return hit
+
+    logger.info(f"API {method} {url} params={params}")
+    resp = session.request(
+        method.upper(), url,
+        params=params, json=json_body,
+        timeout=config.TIMEOUT, verify=config.VERIFY_SSL,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    data = body.get("data", body) if isinstance(body, dict) else body
+
+    if use_cache and method.upper() == "GET":
+        cache.set(cache_key, data)
+    return data
+
+
+def _ensure_list(data: Any) -> List:
+    """Normalise API response to a list."""
+    if isinstance(data, list):
+        return data
+    return [data] if data else []
+
+
+# ---------------------------------------------------------------------------
+# Column definitions for LIST views (pipe-table)
+#   (api_field_key, display_header)
+# ---------------------------------------------------------------------------
+COLS_SECTION = [("id", "ID"), ("name", "Name"), ("description", "Desc"), ("masterSection", "Parent")]
+COLS_SUBNET = [("id", "ID"), ("subnet", "Subnet"), ("mask", "Mask"), ("description", "Desc"), ("sectionId", "SectID"), ("vlanId", "VLAN")]
+COLS_ADDRESS = [("id", "ID"), ("ip", "IP"), ("hostname", "Hostname"), ("description", "Desc"), ("mac", "MAC"), ("tag", "Tag")]
+COLS_VLAN = [("id", "ID"), ("number", "Number"), ("name", "Name"), ("description", "Desc")]
+COLS_DEVICE = [("id", "ID"), ("hostname", "Hostname"), ("ip_addr", "IP"), ("type", "Type"), ("vendor", "Vendor"), ("model", "Model")]
+COLS_RACK = [("id", "ID"), ("name", "Name"), ("size", "Size(U)"), ("location", "Location"), ("description", "Desc")]
+COLS_RACK_DEVICE = [("hostname", "Hostname"), ("type", "Type"), ("start_u", "StartU"), ("size_u", "SizeU"), ("side", "Side")]
+COLS_FOLDER = [("id", "ID"), ("name", "Name"), ("description", "Desc")]
+COLS_TAG = [("id", "ID"), ("type", "Type"), ("showtag", "Show"), ("bgcolor", "Color")]
+
+# ---------------------------------------------------------------------------
+# Field definitions for DETAIL views (key:value, allowlist only)
+#   (api_field_key, display_label)
+# ---------------------------------------------------------------------------
+DETAIL_SECTION = [
+    ("id", "id"), ("name", "name"), ("description", "description"),
+    ("masterSection", "parentSection"), ("subnetNum", "subnetCount"),
+    ("showVLAN", "showVLAN"), ("showVRF", "showVRF"),
+]
+DETAIL_SUBNET = [
+    ("id", "id"), ("subnet", "subnet"), ("mask", "mask"),
+    ("description", "description"), ("sectionId", "sectionId"),
+    ("vlanId", "vlanId"), ("vrfId", "vrfId"), ("gateway", "gateway"),
+    ("nameserverId", "nameserverId"), ("location", "location"),
+    ("isPool", "isPool"), ("isFull", "isFull"), ("tag", "tag"),
+]
+DETAIL_VLAN = [
+    ("id", "id"), ("number", "number"), ("name", "name"),
+    ("description", "description"), ("domainId", "domainId"),
+]
+DETAIL_DEVICE = [
+    ("id", "id"), ("hostname", "hostname"), ("ip_addr", "ip"),
+    ("type", "type"), ("vendor", "vendor"), ("model", "model"),
+    ("description", "description"), ("location", "location"),
+    ("rack", "rackId"), ("rack_start", "rackStartU"), ("rack_size", "rackSizeU"),
+]
+DETAIL_FOLDER = [
+    ("id", "id"), ("name", "name"), ("description", "description"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Text formatting helpers  (token-efficient output)
+# ---------------------------------------------------------------------------
+_MAX_COL_W = 30   # truncate list-table values to save tokens
+
+
+def _v(val: Any) -> str:
+    """Format a single value; None/empty → '-'."""
+    if val is None or val == "" or val == "None":
+        return "-"
+    return str(val).strip()
+
+
+def _tv(val: Any) -> str:
+    """Format + truncate a value for list tables."""
+    s = _v(val)
+    if len(s) > _MAX_COL_W:
+        return s[: _MAX_COL_W - 2] + ".."
+    return s
+
+
+def _fmt_table(records: List[Dict], cols: List[tuple]) -> str:
+    """Render a list of dicts as a compact pipe-separated table."""
+    if not records:
+        return "(empty)"
+    header = "|".join(h for _, h in cols)
+    rows = [header]
+    for r in records:
+        rows.append("|".join(_tv(r.get(k)) for k, _ in cols))
+    return "\n".join(rows)
+
+
+# Maximum number of results returned by search tools to prevent context overflow
+_MAX_SEARCH_RESULTS = 50
+
+
+def _fmt_page(path: str, page: int, page_size: int, cols: List[tuple]) -> str:
+    """Fetch one page and return as pipe-table + pagination footer."""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))
+    offset = (page - 1) * page_size
+
+    data = _api_request("GET", path, params={"offset": offset, "limit": page_size})
+    items = _ensure_list(data) if data else []
+
+    table = _fmt_table(items, cols)
+    parts = [f"page {page}", f"{len(items)} items"]
+    if len(items) >= page_size:
+        parts.append("has_more")
+    return f"{table}\n[{', '.join(parts)}]"
+
+
+def _fmt_detail(record: Dict, fields: List[tuple]) -> str:
+    """Render a single record using an allowlist of fields (key:value lines).
+    Only shows fields in the allowlist that have non-empty values.
+    """
+    if not record or not isinstance(record, dict):
+        return str(record) if record else "(empty)"
+    lines = []
+    for key, label in fields:
+        fv = _v(record.get(key))
+        if fv != "-":
+            lines.append(f"{label}: {fv}")
+    return "\n".join(lines)
+
+
+def _fmt_record(record: Dict) -> str:
+    """Render a dict as key:value lines. Fallback for resources without a DETAIL_ spec."""
+    if not record or not isinstance(record, dict):
+        return str(record) if record else "(empty)"
+    skip = {"editDate", "editedBy", "lastSeen", "dirtyFields", "customer_id",
+            "masterSubnetId", "permissions", "allowRequests", "showName",
+            "showVLAN", "showVRF", "showSupernetOnly", "pingSubnet",
+            "discoverSubnet", "resolveDNS", "DNSrecursive", "DNSrecords",
+            "scanAgent", "linked_subnet", "firewallAddressObject", "threshold",
+            "calculation", "device"}
+    lines = []
+    for k, v in record.items():
+        if k in skip:
+            continue
+        fv = _v(v)
+        if fv != "-":
+            lines.append(f"{k}: {fv}")
+    return "\n".join(lines)
+
+
+def _fmt_search(records: List[Dict], cols: List[tuple], term: str) -> str:
+    """Render search results as pipe-table + match count. Caps at _MAX_SEARCH_RESULTS."""
+    total = len(records)
+    truncated = total > _MAX_SEARCH_RESULTS
+    if truncated:
+        records = records[:_MAX_SEARCH_RESULTS]
+    table = _fmt_table(records, cols)
+    footer = f"[{total} matches"
+    if truncated:
+        footer += f", showing first {_MAX_SEARCH_RESULTS}"
+    footer += "]"
+    return f"{table}\n{footer}"
+
+
+def _compress_ranges(nums: List[int]) -> str:
+    """Compress a sorted list of ints into range notation: [1,2,3,5,7,8,9] → '1-3, 5, 7-9'."""
+    if not nums:
+        return "(none)"
+    ranges = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
         else:
-            result_data = response_data
-        
-        # Cache result for GET requests
-        if cache_key and method.upper() == 'GET':
-            cache.set(cache_key, result_data)
-        
-        logger.info(f"API request successful, returned {len(result_data) if isinstance(result_data, list) else 1} items")
-        return result_data
-        
-    except requests.exceptions.RequestException as request_error:
-        logger.error(f"API Request Error: {request_error}")
-        raise Exception(f"phpIPAM API request failed: {request_error}")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise
+            ranges.append(f"{start}-{prev}" if prev > start else str(start))
+            start = prev = n
+    ranges.append(f"{start}-{prev}" if prev > start else str(start))
+    return ", ".join(ranges)
 
-def _fetch_all_with_pagination(path: str, limit: int = 0) -> List[Dict[str, Any]]:
+
+# ===================================================================
+# SECTION TOOLS
+# ===================================================================
+
+@mcp.tool()
+def list_sections(page: int = 1, page_size: int = 50) -> str:
+    """List all IP address management sections.
+    Sections are top-level containers that group subnets.
+    Use this first to find the section_id needed by list_subnets.
+    Only fetch the next page if the user explicitly asks for more results.
+
+    Args:
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
     """
-    Fetch all records with pagination support.
-    First gets total count, then fetches in batches of 500.
-    """
     try:
-        # First, get total count by fetching first record
-        first_batch = _api_request("GET", path, params={"limit": 1}, use_cache=False)
-        
-        if not isinstance(first_batch, list):
-            first_batch = [first_batch] if first_batch else []
-        
-        if len(first_batch) == 0:
-            logger.info(f"No records found for path: {path}")
-            return []
-        
-        # Try to get total count from headers or estimate
-        # Since phpIPAM API might not provide total count easily,
-        # we'll fetch in batches until we get less than batch_size
-        all_records = []
-        offset = 0
-        batch_size = config.BATCH_SIZE
-        
-        logger.info(f"Starting batch fetch for {path} with batch size {batch_size}")
-        
-        while True:
-            logger.info(f"Fetching batch: offset {offset}, limit {batch_size}")
-            
-            batch = _api_request("GET", path, params={
-                "offset": offset,
-                "limit": batch_size
-            })
-            
-            if not isinstance(batch, list):
-                batch = [batch] if batch else []
-            
-            if len(batch) == 0:
-                logger.info(f"No more records found at offset {offset}")
-                break
-            
-            all_records.extend(batch)
-            logger.info(f"Fetched {len(batch)} records, total so far: {len(all_records)}")
-            
-            # If we got less than batch_size, we've reached the end
-            if len(batch) < batch_size:
-                logger.info(f"Reached end of records (got {len(batch)} < {batch_size})")
-                break
-            
-            offset += batch_size
-            
-            # Apply user-specified limit if provided
-            if limit > 0 and len(all_records) >= limit:
-                all_records = all_records[:limit]
-                logger.info(f"Applied user limit: returning {len(all_records)} records")
-                break
-        
-        logger.info(f"Total records fetched for {path}: {len(all_records)}")
-        return all_records
-        
+        return _fmt_page("sections/", page, page_size, COLS_SECTION)
     except Exception as e:
-        logger.error(f"Error in batch fetch for {path}: {e}")
-        # Fallback to single request
-        logger.info("Falling back to single request")
-        try:
-            result = _api_request("GET", path)
-            if not isinstance(result, list):
-                result = [result] if result else []
-            return result[:limit] if limit > 0 else result
-        except Exception as fallback_error:
-            logger.error(f"Fallback also failed: {fallback_error}")
-            return []
+        return f"ERROR: {e}"
 
-# MCP Tools for Folders
-@mcp.tool()
-def list_folders(limit: int = 0) -> str:
-    """List all folders in phpIPAM with batch fetching"""
-    logger.info(f"Listing folders: limit {limit}")
-    
-    try:
-        folders = _fetch_all_with_pagination("folders/", limit)
-        
-        result = {
-            "folders": folders,
-            "count": len(folders),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing folders: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
-def get_folder(folder_id: int) -> str:
-    """Get specific folder details"""
-    logger.info(f"Getting folder details for ID: {folder_id}")
-    
-    try:
-        folder = _api_request("GET", f"folders/{folder_id}/")
-        
-        result = {
-            "folder_id": folder_id,
-            "folder": folder,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error getting folder: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-@mcp.tool()
-def list_folder_sections(folder_id: int, limit: int = 0) -> str:
-    """List sections within a specific folder with batch fetching"""
-    logger.info(f"Listing sections in folder {folder_id}, limit {limit}")
-    
-    try:
-        sections = _fetch_all_with_pagination(f"folders/{folder_id}/sections/", limit)
-        
-        result = {
-            "folder_id": folder_id,
-            "sections": sections,
-            "count": len(sections),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing folder sections: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-# MCP Tools for Sections
-@mcp.tool()
-def list_sections(limit: int = 0) -> str:
-    """List all sections in phpIPAM with batch fetching"""
-    logger.info(f"Listing sections: limit {limit}")
-    
-    try:
-        sections = _fetch_all_with_pagination("sections/", limit)
-        
-        result = {
-            "sections": sections,
-            "count": len(sections),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing sections: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_section(section_id: int) -> str:
-    """Get specific section details"""
-    logger.info(f"Getting section details for ID: {section_id}")
-    
+    """Get details of one section by its ID.
+    Returns section name, description, permissions, and subnet count.
+
+    Args:
+        section_id: The numeric ID of the section (for example 1, 2, 3).
+    """
     try:
-        section = _api_request("GET", f"sections/{section_id}/")
-        
-        result = {
-            "section_id": section_id,
-            "section": section,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_detail(_api_request("GET", f"sections/{section_id}/"), DETAIL_SECTION)
     except Exception as e:
-        logger.error(f"Error getting section: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# SUBNET TOOLS
+# ===================================================================
 
 @mcp.tool()
-def list_section_subnets(section_id: int, limit: int = 0) -> str:
-    """List subnets within a specific section with batch fetching"""
-    logger.info(f"Listing subnets in section {section_id}, limit {limit}")
-    
-    try:
-        subnets = _fetch_all_with_pagination(f"sections/{section_id}/subnets/", limit)
-        
-        result = {
-            "section_id": section_id,
-            "subnets": subnets,
-            "count": len(subnets),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing section subnets: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+def list_subnets(section_id: int = 0, page: int = 1, page_size: int = 50) -> str:
+    """List subnets. Can list all subnets or filter by a specific section.
+    Returns subnet CIDR, description, VLAN ID, and gateway for each subnet.
+    Set section_id to 0 (or omit it) to list subnets from ALL sections.
+    Only fetch the next page if the user explicitly asks for more results.
 
-# MCP Tools for Subnets
-@mcp.tool()
-def list_subnets(section_id: Optional[int] = None, limit: int = 0) -> str:
-    """List subnets, optionally filtered by section with batch fetching"""
-    logger.info(f"Listing subnets: section_id {section_id}, limit {limit}")
-    
+    Args:
+        section_id: Filter by section. Use 0 to list all subnets. Default is 0.
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
     try:
-        if section_id is not None:
-            path = f"sections/{section_id}/subnets/"
-        else:
-            path = "subnets/"
-        
-        subnets = _fetch_all_with_pagination(path, limit)
-        
-        result = {
-            "subnets": subnets,
-            "count": len(subnets),
-            "query_info": {
-                "section_id": section_id,
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        path = f"sections/{section_id}/subnets/" if section_id > 0 else "subnets/"
+        return _fmt_page(path, page, page_size, COLS_SUBNET)
     except Exception as e:
-        logger.error(f"Error listing subnets: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
 def get_subnet(subnet_id: int) -> str:
-    """Get specific subnet details"""
-    logger.info(f"Getting subnet details for ID: {subnet_id}")
-    
+    """Get full details of one subnet by its ID.
+    Returns CIDR, mask, description, gateway, VLAN, nameservers, and permissions.
+
+    Args:
+        subnet_id: The numeric ID of the subnet.
+    """
     try:
-        subnet = _api_request("GET", f"subnets/{subnet_id}/")
-        
-        result = {
-            "subnet_id": subnet_id,
-            "subnet": subnet,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_detail(_api_request("GET", f"subnets/{subnet_id}/"), DETAIL_SUBNET)
     except Exception as e:
-        logger.error(f"Error getting subnet: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
 def get_subnet_usage(subnet_id: int) -> str:
-    """Get subnet usage statistics"""
-    logger.info(f"Getting subnet usage for ID: {subnet_id}")
-    
+    """Get IP address usage statistics for one subnet (used/free/total counts).
+    Use this when you only need usage numbers, not a free IP.
+    To get usage AND the next available IP, use find_free_ip instead.
+
+    Args:
+        subnet_id: The numeric ID of the subnet.
+    """
     try:
         usage = _api_request("GET", f"subnets/{subnet_id}/usage/")
-        
-        result = {
-            "subnet_id": subnet_id,
-            "usage": usage,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        if isinstance(usage, dict):
+            parts = [f"subnet_id: {subnet_id}"]
+            for k in ("used", "maxhosts", "freehosts", "freehosts_percent", "Used_percent"):
+                if k in usage:
+                    parts.append(f"{k}: {usage[k]}")
+            return "\n".join(parts)
+        return _fmt_record(usage)
     except Exception as e:
-        logger.error(f"Error getting subnet usage: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
-def search_subnet(subnet: str) -> str:
-    """Search for subnets by CIDR or partial match"""
-    logger.info(f"Searching subnet: {subnet}")
-    
+def find_free_ip(subnet_id: int = 0, cidr: str = "") -> str:
+    """Find the next available IP address in a subnet. USE THIS when the user asks for a free/available/unused IP.
+    You can specify a subnet by its ID or by CIDR. Returns usage stats + next free IP.
+    - By ID:   find_free_ip(subnet_id=5)
+    - By CIDR: find_free_ip(cidr="192.168.1.0/24")
+    - Partial: find_free_ip(cidr="10.0")  matches all 10.0.x.x subnets
+    You must provide at least one of subnet_id or cidr.
+
+    Args:
+        subnet_id: The numeric subnet ID to check. Use 0 to search by cidr instead. Default is 0.
+        cidr: Network address or CIDR to search, such as "192.168.1.0/24" or "10.0". Default is empty.
+    """
     try:
-        search_result = _api_request("GET", f"subnets/search/{subnet}/")
-        
-        # Ensure response is a list
-        if not isinstance(search_result, list):
-            search_result = [search_result] if search_result else []
-        
-        result = {
-            "search_term": subnet,
-            "subnets": search_result,
-            "count": len(search_result),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        cidr = cidr.strip()
+
+        if subnet_id <= 0 and not cidr:
+            return "ERROR: Provide subnet_id or cidr. Example: find_free_ip(subnet_id=5) or find_free_ip(cidr=\"192.168.1.0/24\")"
+
+        # Resolve subnet(s)
+        subnets: list = []
+        if subnet_id > 0:
+            sub = _api_request("GET", f"subnets/{subnet_id}/")
+            if sub:
+                subnets = [sub] if isinstance(sub, dict) else _ensure_list(sub)
+        else:
+            data = _api_request("GET", f"subnets/search/{cidr}/")
+            subnets = _ensure_list(data)
+
+        if not subnets:
+            key = f"subnet_id={subnet_id}" if subnet_id > 0 else f"cidr={cidr}"
+            return f"No subnets found for {key}"
+
+        results = []
+        for sub in subnets[:_MAX_SEARCH_RESULTS]:
+            sid = sub.get("id")
+            net = f"{sub.get('subnet')}/{sub.get('mask')}"
+            desc = _v(sub.get("description"))
+
+            # Usage stats
+            try:
+                usage = _api_request("GET", f"subnets/{sid}/usage/")
+                used = usage.get("used", "?")
+                maxh = usage.get("maxhosts", "?")
+                freeh = usage.get("freehosts", "?")
+                pct = usage.get("Used_percent", "?")
+            except Exception:
+                used = maxh = freeh = pct = "?"
+
+            # First free IP
+            try:
+                free_ip = _api_request("GET", f"subnets/{sid}/first_free/")
+            except Exception:
+                free_ip = "(full)"
+
+            results.append(
+                f"[Subnet {sid}] {net} ({desc})\n"
+                f"usage: {used}/{maxh} ({pct}%), {freeh} free\n"
+                f"first_free_ip: {free_ip}"
+            )
+
+        return "\n\n".join(results) + f"\n[{len(results)} subnets]"
     except Exception as e:
-        logger.error(f"Error searching subnet: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
-def get_free_address(subnet_id: int) -> str:
-    """Get the first free IP address in a subnet"""
-    logger.info(f"Getting first free address in subnet: {subnet_id}")
-    
+def search_subnet(cidr: str) -> str:
+    """Search for subnet records by CIDR or network address. Returns subnet ID, CIDR, VLAN, and section.
+    Use this to look up subnet details. To find a free IP, use find_free_ip instead.
+    Example inputs: "192.168.1.0/24", "10.0.0.0", "172.16".
+
+    Args:
+        cidr: The subnet CIDR or network address to search for, such as "192.168.1.0/24".
+    """
     try:
-        free_address = _api_request("GET", f"subnets/{subnet_id}/first_free/")
-        
-        result = {
-            "subnet_id": subnet_id,
-            "free_address": free_address,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        data = _ensure_list(_api_request("GET", f"subnets/search/{cidr}/"))
+        return _fmt_search(data, COLS_SUBNET, cidr)
     except Exception as e:
-        logger.error(f"Error getting free address: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
-def list_subnet_addresses(subnet_id: int, limit: int = 0) -> str:
-    """List all addresses in a specific subnet with batch fetching"""
-    logger.info(f"Listing addresses in subnet {subnet_id}, limit {limit}")
-    
-    try:
-        addresses = _fetch_all_with_pagination(f"subnets/{subnet_id}/addresses/", limit)
-        
-        result = {
-            "subnet_id": subnet_id,
-            "addresses": addresses,
-            "count": len(addresses),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing subnet addresses: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+def list_subnet_addresses(subnet_id: int, page: int = 1, page_size: int = 50) -> str:
+    """List USED IP addresses in a subnet (shows who is using each IP).
+    Returns IP, hostname, description, MAC, and status for each assigned address.
+    To find a free/available IP, use find_free_ip instead.
+    Only fetch the next page if the user explicitly asks for more results.
 
-# MCP Tools for Addresses
-@mcp.tool()
-def search_ip_address(ip_address: str) -> str:
-    """Search for a specific IP address"""
-    logger.info(f"Searching IP address: {ip_address}")
-    
+    Args:
+        subnet_id: The numeric ID of the subnet whose addresses you want to list.
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
     try:
-        search_result = _api_request("GET", f"addresses/search/{ip_address}/")
-        
-        # Ensure response is a list
-        if not isinstance(search_result, list):
-            search_result = [search_result] if search_result else []
-        
-        result = {
-            "ip_address": ip_address,
-            "matches": search_result,
-            "count": len(search_result),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_page(f"subnets/{subnet_id}/addresses/", page, page_size, COLS_ADDRESS)
     except Exception as e:
-        logger.error(f"Error searching IP address: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# ADDRESS / SEARCH TOOLS
+# ===================================================================
+
+@mcp.tool()
+def search_ip(ip_address: str) -> str:
+    """Search for a specific IP address across all subnets.
+    Returns matching records with hostname, subnet, MAC address, and status.
+    Use this when you know the IP but not which subnet it belongs to.
+
+    Args:
+        ip_address: The IP address to search for, such as "192.168.1.100" or "10.0.0.5".
+    """
+    try:
+        data = _ensure_list(_api_request("GET", f"addresses/search/{ip_address}/"))
+        return _fmt_search(data, COLS_ADDRESS, ip_address)
+    except Exception as e:
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
 def search_hostname(hostname: str) -> str:
-    """Search for addresses by hostname"""
-    logger.info(f"Searching addresses for hostname: {hostname}")
-    
-    try:
-        search_result = _api_request("GET", f"addresses/search_hostname/{hostname}/")
-        
-        # Ensure response is a list
-        if not isinstance(search_result, list):
-            search_result = [search_result] if search_result else []
-        
-        result = {
-            "hostname": hostname,
-            "addresses": search_result,
-            "count": len(search_result),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error searching hostname: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+    """Search IP address records by hostname. Supports partial match.
+    Returns all IPs whose hostname contains the search string.
+    Use this when you know the server/device name but not its IP.
 
-# MCP Tools for VLANs
-@mcp.tool()
-def list_vlans(limit: int = 0) -> str:
-    """List VLANs with batch fetching"""
-    logger.info(f"Listing VLANs: limit {limit}")
-    
+    Args:
+        hostname: Full or partial hostname to search for, such as "web-server" or "db".
+    """
     try:
-        vlans = _fetch_all_with_pagination("vlan/", limit)
-        
-        result = {
-            "vlans": vlans,
-            "count": len(vlans),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        data = _ensure_list(_api_request("GET", f"addresses/search_hostname/{hostname}/"))
+        return _fmt_search(data, COLS_ADDRESS, hostname)
     except Exception as e:
-        logger.error(f"Error listing VLANs: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# VLAN TOOLS
+# ===================================================================
+
+@mcp.tool()
+def list_vlans(page: int = 1, page_size: int = 50) -> str:
+    """List all VLANs defined in phpIPAM.
+    Returns VLAN number (802.1Q tag), name, and description for each VLAN.
+    Only fetch the next page if the user explicitly asks for more results.
+
+    Args:
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
+    try:
+        return _fmt_page("vlan/", page, page_size, COLS_VLAN)
+    except Exception as e:
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
 def get_vlan(vlan_id: int) -> str:
-    """Get specific VLAN details"""
-    logger.info(f"Getting VLAN details for ID: {vlan_id}")
-    
-    try:
-        vlan = _api_request("GET", f"vlan/{vlan_id}/")
-        
-        result = {
-            "vlan_id": vlan_id,
-            "vlan": vlan,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error getting VLAN: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+    """Get details of one VLAN by its database ID.
+    IMPORTANT: vlan_id is the database row ID, NOT the 802.1Q VLAN number.
+    Use list_vlans first to find the correct vlan_id.
 
-# MCP Tools for Racks
-@mcp.tool()
-def list_racks(limit: int = 0) -> str:
-    """List all racks in phpIPAM with batch fetching"""
-    logger.info(f"Listing racks: limit {limit}")
-    
+    Args:
+        vlan_id: The database ID of the VLAN (not the VLAN number/tag).
+    """
     try:
-        racks = _fetch_all_with_pagination("tools/racks/", limit)
-        
-        result = {
-            "racks": racks,
-            "count": len(racks),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_detail(_api_request("GET", f"vlan/{vlan_id}/"), DETAIL_VLAN)
     except Exception as e:
-        logger.error(f"Error listing racks: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# DEVICE TOOLS
+# ===================================================================
 
 @mcp.tool()
-def get_rack(rack_id: int) -> str:
-    """Get specific rack details with configuration"""
-    logger.info(f"Getting rack details for ID: {rack_id}")
-    
-    try:
-        rack = _api_request("GET", f"tools/racks/{rack_id}/")
-        
-        # Properly parse rack numbering direction
-        # Check different possible field names for numbering direction
-        numbering_top_down = True  # Default assumption
-        
-        # Check various possible field names for rack orientation/direction
-        if rack.get("hasBack") is not None:
-            # hasBack seems to be related to rear mounting support
-            has_rear_support = rack.get("hasBack") == "1"
-        else:
-            has_rear_support = False
-        
-        # Look for numbering direction fields
-        if rack.get("numberDirection") is not None:
-            # Possible field name for numbering direction
-            numbering_top_down = rack.get("numberDirection") == "0"
-        elif rack.get("numbering_direction") is not None:
-            numbering_top_down = rack.get("numbering_direction") == "top_to_bottom"
-        elif rack.get("orientation") is not None:
-            numbering_top_down = rack.get("orientation") == "0"
-        
-        result = {
-            "rack_id": rack_id,
-            "rack": rack,
-            "configuration": {
-                "name": rack.get("name"),
-                "size_units": int(rack.get("size", 42)),
-                "numbering_direction": "top_to_bottom" if numbering_top_down else "bottom_to_top",
-                "first_u_at_top": numbering_top_down,
-                "rear_mounting_support": has_rear_support,
-                "location": rack.get("location"),
-                "description": rack.get("description"),
-                "customer": rack.get("customer")
-            },
-            "raw_fields": {
-                "hasBack": rack.get("hasBack"),
-                "numberDirection": rack.get("numberDirection"),
-                "numbering_direction": rack.get("numbering_direction"),
-                "orientation": rack.get("orientation")
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error getting rack: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+def list_devices(page: int = 1, page_size: int = 50) -> str:
+    """List all network devices (switches, routers, firewalls, servers, etc.).
+    Returns hostname, IP address, type, vendor, and model for each device.
+    Only fetch the next page if the user explicitly asks for more results.
 
-@mcp.tool()
-def get_rack_devices(rack_id: int) -> str:
-    """Get all devices in a specific rack with position information"""
-    logger.info(f"Getting devices in rack: {rack_id}")
-    
+    Args:
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
     try:
-        devices = _api_request("GET", f"tools/racks/{rack_id}/devices/")
-        
-        # Ensure response is a list
-        if not isinstance(devices, list):
-            devices = [devices] if devices else []
-        
-        # Get rack info for context
-        rack_info = _api_request("GET", f"tools/racks/{rack_id}/")
-        
-        # Determine rack numbering direction
-        numbering_top_down = True  # Default
-        if rack_info.get("numberDirection") is not None:
-            numbering_top_down = rack_info.get("numberDirection") == "0"
-        elif rack_info.get("numbering_direction") is not None:
-            numbering_top_down = rack_info.get("numbering_direction") == "top_to_bottom"
-        elif rack_info.get("orientation") is not None:
-            numbering_top_down = rack_info.get("orientation") == "0"
-        
-        rack_size = int(rack_info.get("size", 42))
-        
-        # Sort devices by rack position for proper visualization
-        # If numbering is top-to-bottom, sort ascending; if bottom-to-top, sort descending
-        if numbering_top_down:
-            sorted_devices = sorted(devices, key=lambda x: int(x.get("rack_start", 0)))
-        else:
-            sorted_devices = sorted(devices, key=lambda x: int(x.get("rack_start", 0)), reverse=True)
-        
-        result = {
-            "rack_id": rack_id,
-            "rack_info": {
-                "name": rack_info.get("name"),
-                "size_units": rack_size,
-                "numbering_direction": "top_to_bottom" if numbering_top_down else "bottom_to_top",
-                "first_u_at_top": numbering_top_down,
-                "rear_mounting_support": rack_info.get("hasBack") == "1",
-                "location": rack_info.get("location"),
-                "customer": rack_info.get("customer")
-            },
-            "devices": sorted_devices,
-            "device_count": len(sorted_devices),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_page("devices/", page, page_size, COLS_DEVICE)
     except Exception as e:
-        logger.error(f"Error getting rack devices: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
 
-@mcp.tool()
-def get_rack_layout(rack_id: int) -> str:
-    """Get detailed rack layout with visual positioning information"""
-    logger.info(f"Getting rack layout for ID: {rack_id}")
-    
-    try:
-        # Get rack configuration
-        rack_info = _api_request("GET", f"tools/racks/{rack_id}/")
-        
-        # Get devices in rack
-        devices = _api_request("GET", f"tools/racks/{rack_id}/devices/")
-        
-        if not isinstance(devices, list):
-            devices = [devices] if devices else []
-        
-        rack_size = int(rack_info.get("size", 42))
-        has_rear = rack_info.get("hasBack") == "1"
-        
-        # Determine rack numbering direction properly
-        numbering_top_down = True  # Default
-        if rack_info.get("numberDirection") is not None:
-            numbering_top_down = rack_info.get("numberDirection") == "0"
-        elif rack_info.get("numbering_direction") is not None:
-            numbering_top_down = rack_info.get("numbering_direction") == "top_to_bottom"
-        elif rack_info.get("orientation") is not None:
-            numbering_top_down = rack_info.get("orientation") == "0"
-        
-        # Initialize rack layout
-        layout = {
-            "rack_info": {
-                "id": rack_id,
-                "name": rack_info.get("name"),
-                "size_units": rack_size,
-                "has_rear_mounting": has_rear,
-                "numbering_direction": "top_to_bottom" if numbering_top_down else "bottom_to_top",
-                "first_u_at_top": numbering_top_down,
-                "location": rack_info.get("location"),
-                "description": rack_info.get("description"),
-                "customer": rack_info.get("customer")
-            },
-            "occupied_units": {},
-            "free_units": [],
-            "devices": [],
-            "visual_layout": {}
-        }
-        
-        # Track occupied units
-        occupied = set()
-        
-        # Process each device
-        for device in devices:
-            start_unit = int(device.get("rack_start", 0))
-            device_size = int(device.get("rack_size", 1))
-            is_rear = device.get("rack_side") == "1"
-            
-            # Calculate visual position based on numbering direction
-            if numbering_top_down:
-                visual_start = start_unit
-                visual_end = start_unit + device_size - 1
-            else:
-                # If bottom-to-top, flip the positions
-                visual_start = rack_size - start_unit - device_size + 1
-                visual_end = rack_size - start_unit
-            
-            device_info = {
-                "id": device.get("id"),
-                "hostname": device.get("hostname"),
-                "type": device.get("type"),
-                "start_unit": start_unit,  # Logical position in database
-                "end_unit": start_unit + device_size - 1,  # Logical end position
-                "visual_start_unit": visual_start,  # Visual position for display
-                "visual_end_unit": visual_end,  # Visual end position
-                "size_units": device_size,
-                "side": "rear" if is_rear else "front",
-                "description": device.get("description")
-            }
-            
-            layout["devices"].append(device_info)
-            
-            # Mark logical units as occupied
-            for unit in range(start_unit, start_unit + device_size):
-                occupied.add(unit)
-                layout["occupied_units"][unit] = {
-                    "device_id": device.get("id"),
-                    "device_name": device.get("hostname"),
-                    "side": "rear" if is_rear else "front",
-                    "visual_unit": rack_size - unit + 1 if not numbering_top_down else unit
-                }
-        
-        # Calculate free units (logical positions)
-        layout["free_units"] = [unit for unit in range(1, rack_size + 1) if unit not in occupied]
-        
-        # Create visual layout grid for easy visualization
-        layout["visual_layout"] = {}
-        for visual_unit in range(1, rack_size + 1):
-            if numbering_top_down:
-                logical_unit = visual_unit
-            else:
-                logical_unit = rack_size - visual_unit + 1
-            
-            layout["visual_layout"][visual_unit] = {
-                "logical_unit": logical_unit,
-                "front_occupied": False,
-                "rear_occupied": False,
-                "front_device": None,
-                "rear_device": None
-            }
-            
-            if logical_unit in occupied:
-                for device in layout["devices"]:
-                    if device["start_unit"] <= logical_unit <= device["end_unit"]:
-                        if device["side"] == "front":
-                            layout["visual_layout"][visual_unit]["front_occupied"] = True
-                            layout["visual_layout"][visual_unit]["front_device"] = device["hostname"]
-                        else:
-                            layout["visual_layout"][visual_unit]["rear_occupied"] = True
-                            layout["visual_layout"][visual_unit]["rear_device"] = device["hostname"]
-        
-        layout["utilization"] = {
-            "total_units": rack_size,
-            "occupied_units": len(occupied),
-            "free_units": len(layout["free_units"]),
-            "utilization_percentage": round((len(occupied) / rack_size) * 100, 2)
-        }
-        
-        return json.dumps(layout, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error getting rack layout: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
-
-# MCP Tools for Devices
-@mcp.tool()
-def list_devices(limit: int = 0) -> str:
-    """List network devices with batch fetching"""
-    logger.info(f"Listing devices: limit {limit}")
-    
-    try:
-        devices = _fetch_all_with_pagination("devices/", limit)
-        
-        result = {
-            "devices": devices,
-            "count": len(devices),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing devices: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 def get_device(device_id: int) -> str:
-    """Get specific device details"""
-    logger.info(f"Getting device details for ID: {device_id}")
-    
+    """Get full details of one network device by its ID.
+    Returns hostname, IP, type, vendor, model, rack position, and all custom fields.
+
+    Args:
+        device_id: The numeric ID of the device.
+    """
     try:
-        device = _api_request("GET", f"devices/{device_id}/")
-        
-        result = {
-            "device_id": device_id,
-            "device": device,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_detail(_api_request("GET", f"devices/{device_id}/"), DETAIL_DEVICE)
     except Exception as e:
-        logger.error(f"Error getting device: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# RACK TOOLS
+# ===================================================================
 
 @mcp.tool()
-def list_devices_with_rack_info(limit: int = 0) -> str:
-    """List devices with their rack positioning information using batch fetching"""
-    logger.info(f"Listing devices with rack info: limit {limit}")
-    
-    try:
-        devices = _fetch_all_with_pagination("devices/", limit)
-        
-        # Rack cache for efficiency
-        rack_cache = {}
-        
-        # Enrich devices with rack information
-        enriched_devices = []
-        for device in devices:
-            enriched_device = device.copy()
-            
-            if device.get("rack"):
-                rack_id = int(device["rack"])
-                if rack_id not in rack_cache:
-                    try:
-                        rack_info = _api_request("GET", f"tools/racks/{rack_id}/")
-                        rack_cache[rack_id] = rack_info
-                    except Exception as e:
-                        logger.warning(f"Could not fetch rack {rack_id}: {e}")
-                        rack_cache[rack_id] = None
-                
-                if rack_cache[rack_id]:
-                    rack = rack_cache[rack_id]
-                    enriched_device["rack_info"] = {
-                        "id": rack_id,
-                        "name": rack.get("name"),
-                        "size_units": rack.get("size"),
-                        "has_rear": rack.get("hasBack") == "1",
-                        "location": rack.get("location"),
-                        "position": {
-                            "start_unit": device.get("rack_start"),
-                            "size_units": device.get("rack_size"),
-                            "side": "rear" if device.get("rack_side") == "1" else "front"
-                        }
-                    }
-            
-            enriched_devices.append(enriched_device)
-        
-        result = {
-            "devices": enriched_devices,
-            "count": len(enriched_devices),
-            "rack_cache_hits": len(rack_cache),
-            "query_info": {
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing devices with rack info: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+def list_racks(page: int = 1, page_size: int = 50) -> str:
+    """List all server/network racks.
+    Returns rack name, size in U (rack units), and location.
+    Only fetch the next page if the user explicitly asks for more results.
 
-# Other MCP Tools
-@mcp.tool()
-def list_address_tags() -> str:
-    """List all address tags"""
-    logger.info("Listing address tags")
-    
+    Args:
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
     try:
-        tags = _api_request("GET", "addresses/tags/")
-        
-        # Ensure response is a list
-        if not isinstance(tags, list):
-            tags = [tags] if tags else []
-        
-        result = {
-            "tags": tags,
-            "count": len(tags),
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        return _fmt_page("tools/racks/", page, page_size, COLS_RACK)
     except Exception as e:
-        logger.error(f"Error listing address tags: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+        return f"ERROR: {e}"
+
 
 @mcp.tool()
-def list_subnets_with_vlan(section_id: Optional[int] = None, limit: int = 0) -> str:
-    """List subnets with VLAN information using batch fetching"""
-    logger.info(f"Listing subnets with VLAN info: section_id {section_id}, limit {limit}")
-    
-    try:
-        # Get subnets using batch fetching
-        if section_id is not None:
-            path = f"sections/{section_id}/subnets/"
-        else:
-            path = "subnets/"
-        
-        subnets = _fetch_all_with_pagination(path, limit)
-        
-        # VLAN cache for efficiency
-        vlan_cache = {}
-        
-        # Enrich with VLAN info
-        enriched_subnets = []
-        for subnet in subnets:
-            enriched_subnet = subnet.copy()
-            
-            if subnet.get("vlanId"):
-                vlan_id = int(subnet["vlanId"])
-                if vlan_id not in vlan_cache:
-                    try:
-                        vlan_info = _api_request("GET", f"vlan/{vlan_id}/")
-                        vlan_cache[vlan_id] = vlan_info
-                    except Exception as e:
-                        logger.warning(f"Could not fetch VLAN {vlan_id}: {e}")
-                        vlan_cache[vlan_id] = None
-                
-                if vlan_cache[vlan_id]:
-                    vlan = vlan_cache[vlan_id]
-                    enriched_subnet["vlan_info"] = {
-                        "number": vlan.get("number"),
-                        "name": vlan.get("name"),
-                        "description": vlan.get("description")
-                    }
-            
-            enriched_subnets.append(enriched_subnet)
-        
-        result = {
-            "subnets": enriched_subnets,
-            "count": len(enriched_subnets),
-            "vlan_cache_hits": len(vlan_cache),
-            "query_info": {
-                "section_id": section_id,
-                "limit_requested": limit,
-                "batch_size_used": config.BATCH_SIZE,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing subnets with VLAN: {e}")
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+def get_rack(rack_id: int) -> str:
+    """Get rack details including all mounted devices and space utilization.
+    Returns rack size, device list with U positions (start_u, size_u, side),
+    used/free unit counts, and utilization percentage.
 
-# System Tools
+    Args:
+        rack_id: The numeric ID of the rack.
+    """
+    try:
+        rack = _api_request("GET", f"tools/racks/{rack_id}/")
+
+        try:
+            devices_raw = _ensure_list(
+                _api_request("GET", f"tools/racks/{rack_id}/devices/")
+            )
+        except Exception:
+            devices_raw = []
+
+        rack_size = int(rack.get("size", 42))
+        occupied = set()
+        devices = []
+
+        for d in devices_raw:
+            start = int(d.get("rack_start", 0))
+            size = int(d.get("rack_size", 1))
+            devices.append({
+                "hostname": d.get("hostname"),
+                "type": d.get("type"),
+                "start_u": start,
+                "size_u": size,
+                "end_u": start + size - 1,
+                "side": "rear" if d.get("rack_side") == "1" else "front",
+            })
+            for u in range(start, start + size):
+                occupied.add(u)
+
+        devices.sort(key=lambda x: x["start_u"])
+        free_units = sorted(u for u in range(1, rack_size + 1) if u not in occupied)
+        used = len(occupied)
+        pct = round(used / rack_size * 100, 1) if rack_size > 0 else 0
+
+        lines = [
+            "[Rack]",
+            f"id: {rack_id}",
+            f"name: {_v(rack.get('name'))}",
+            f"size_u: {rack_size}",
+            f"location: {_v(rack.get('location'))}",
+            f"description: {_v(rack.get('description'))}",
+            "",
+            f"[Devices] {len(devices)} items",
+            _fmt_table(devices, COLS_RACK_DEVICE),
+            "",
+            f"[Utilization] {used}/{rack_size} U ({pct}%)",
+            f"free_units: {_compress_ranges(free_units)}",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# FOLDER TOOLS
+# ===================================================================
+
+@mcp.tool()
+def list_folders(page: int = 1, page_size: int = 50) -> str:
+    """List all organizational folders.
+    Folders group sections for organizational purposes.
+    Only fetch the next page if the user explicitly asks for more results.
+
+    Args:
+        page: Page number starting from 1. Default is 1.
+        page_size: Number of records per page, between 1 and 500. Default is 50.
+    """
+    try:
+        return _fmt_page("folders/", page, page_size, COLS_FOLDER)
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
+def get_folder(folder_id: int) -> str:
+    """Get folder details and the list of sections it contains.
+
+    Args:
+        folder_id: The numeric ID of the folder.
+    """
+    try:
+        folder = _api_request("GET", f"folders/{folder_id}/")
+        try:
+            sections = _ensure_list(
+                _api_request("GET", f"folders/{folder_id}/sections/")
+            )
+        except Exception:
+            sections = []
+
+        lines = [
+            "[Folder]",
+            _fmt_detail(folder, DETAIL_FOLDER),
+            "",
+            f"[Sections] {len(sections)} items",
+            _fmt_table(sections, COLS_SECTION),
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# TAG TOOLS
+# ===================================================================
+
+@mcp.tool()
+def list_tags() -> str:
+    """List all IP address status tags (for example: Used, Available, Reserved, DHCP).
+    Tags indicate the current status of IP address records.
+    """
+    try:
+        data = _ensure_list(_api_request("GET", "addresses/tags/"))
+        return f"{_fmt_table(data, COLS_TAG)}\n[{len(data)} tags]"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+# ===================================================================
+# SYSTEM TOOLS
+# ===================================================================
+
 @mcp.tool()
 def health_check() -> str:
-    """Perform phpIPAM API health check"""
-    logger.info("Performing phpIPAM API health check")
-    
+    """Check if the phpIPAM API is reachable and responding.
+    Returns API response time, cache statistics, and server configuration.
+    Use this to verify the connection is working or to diagnose issues.
+    """
     try:
-        start_time = time.time()
-        
-        # Test basic API connectivity
-        test_result = _api_request("GET", "sections/", use_cache=False)
-        api_response_time = time.time() - start_time
-        
-        # Get cache statistics
-        cache_stats = cache.stats()
-        
-        result = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "api": {
-                "response_time_ms": round(api_response_time * 1000, 2),
-                "endpoint": f"{config.BASE_URL}/api/{config.APP_ID}",
-                "test_result_count": len(test_result) if isinstance(test_result, list) else 1
-            },
-            "cache": cache_stats,
-            "configuration": {
-                "timeout": config.TIMEOUT,
-                "max_retries": config.MAX_RETRIES,
-                "batch_size": config.BATCH_SIZE,
-                "ssl_verification": config.VERIFY_SSL
-            }
-        }
-        
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        t0 = time.time()
+        _api_request("GET", "sections/", use_cache=False)
+        ms = round((time.time() - t0) * 1000, 1)
+        stats = cache.stats()
+        lines = [
+            "status: healthy",
+            f"api_response_ms: {ms}",
+            f"endpoint: {config.BASE_URL}/api/{config.APP_ID}",
+            f"cache_active_keys: {stats['active_keys']}",
+            f"cache_ttl: {stats['ttl_seconds']}s",
+            f"timeout: {config.TIMEOUT}s",
+            f"max_retries: {config.MAX_RETRIES}",
+            f"ssl_verify: {config.VERIFY_SSL}",
+        ]
+        return "\n".join(lines)
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return json.dumps({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }, indent=2, ensure_ascii=False)
+        return f"status: unhealthy\nerror: {e}"
+
 
 @mcp.tool()
 def clear_cache() -> str:
-    """Clear the internal cache"""
-    logger.info("Clearing cache")
-    
-    try:
-        cache.clear()
-        return json.dumps({
-            "status": "success",
-            "message": "Cache cleared successfully",
-            "timestamp": datetime.now().isoformat()
-        }, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+    """Clear the API response cache so the next queries return fresh data.
+    Use this after making changes in phpIPAM to avoid stale results.
+    """
+    cache.clear()
+    return "status: ok\nmessage: Cache cleared"
 
-@mcp.tool()
-def cache_stats() -> str:
-    """Get cache statistics"""
-    logger.info("Getting cache stats")
-    
-    try:
-        stats = cache.stats()
-        stats["timestamp"] = datetime.now().isoformat()
-        return json.dumps(stats, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-# Main entry point
+# ===================================================================
+# MAIN
+# ===================================================================
 if __name__ == "__main__":
-    logger.info("=" * 80)
-    logger.info("phpIPAM FastMCP Server v1.2")
-    logger.info("=" * 80)
-    logger.info("Configuration Details:")
-    logger.info(f"  URL: {config.BASE_URL}")
-    logger.info(f"  App ID: {config.APP_ID}")
-    logger.info(f"  SSL Verification: {'Enabled' if config.VERIFY_SSL else 'Disabled'}")
-    logger.info(f"  Cache TTL: {config.CACHE_TTL}s")
-    logger.info(f"  Timeout: {config.TIMEOUT}s")
-    logger.info("=" * 80)
-    
-    mcp.run()
+    parser = argparse.ArgumentParser(description="phpIPAM MCP Server v2.1")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="stdio",
+        help="Transport mode (default: stdio)",
+    )
+    parser.add_argument(
+        "--host", default=None,
+        help="Host for streamable-http (default: 0.0.0.0). Overrides FASTMCP_HOST env.",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None,
+        help="Port for streamable-http (default: 8000). Overrides FASTMCP_PORT env.",
+    )
+    args = parser.parse_args()
+
+    # Override host/port in mcp.settings if provided via CLI
+    if args.host is not None:
+        mcp.settings.host = args.host
+    if args.port is not None:
+        mcp.settings.port = args.port
+
+    logger.info("=" * 60)
+    logger.info("phpIPAM FastMCP Server v2.1")
+    logger.info(f"  URL       : {config.BASE_URL}/api/{config.APP_ID}")
+    logger.info(f"  Transport : {args.transport}")
+    if args.transport == "streamable-http":
+        logger.info(f"  Listen    : http://{mcp.settings.host}:{mcp.settings.port}")
+    logger.info("=" * 60)
+
+    mcp.run(transport=args.transport)
