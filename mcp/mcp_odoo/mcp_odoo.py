@@ -1,15 +1,95 @@
 #!/usr/bin/env python3
 """
-MCP server for Odoo API – v1.5.0 Enhanced Multi-language Support
+MCP server for Odoo API – v1.7.0 Token-Saving Output Controls
 ===============================================================================
 Author: Jason Cheng (Jason Tools)
 Created: 2025-07-14
-Updated: 2025-07-16
-Version: 1.5.0
+Updated: 2026-02-10
+Version: 1.7.0
 License: MIT
 Tested: Odoo 13 Community Edition
 
 FastMCP-based Odoo integration with comprehensive business management capabilities.
+
+NEW in v1.7.0:
+- Token-saving output controls for ALL search functions:
+  - count_only=True: Return only count, no data (minimal tokens)
+  - compact=True: Return minimal essential fields only
+  - include_lines/include_moves=False: Skip line item details
+- Added product_keywords to search_purchase_orders and search_delivery_orders
+- Added keywords parameter to search_products for multi-keyword search
+- Added get_quotation_stats function for quick statistics
+- Optimized for gpt-oss:120b compatibility with clear docstrings
+
+NEW in v1.6.0:
+- Added product_keywords parameter to search_quotations:
+  - Find products whose name contains ALL specified keywords
+  - Example: product_keywords=["proxmox", "訓練"] finds "Proxmox VE 教育訓練課程"
+  - Different from product_names which finds multiple different products
+- Added docstring reminder: DO NOT translate user keywords
+
+NEW in v1.5.9:
+- Added exclude_only_products parameter to search_quotations:
+  - Exclude quotations where ALL line items match the exclude keywords
+  - Keeps quotations that have training + subscription, excludes subscription-only
+
+NEW in v1.5.8:
+- Added product_match_mode parameter to search_quotations:
+  - "all" (default): AND logic - quotation must contain ALL products
+  - "any": OR logic - quotation must contain ANY of the products
+
+NEW in v1.5.7:
+- Enhanced search_quotations with advanced filtering:
+  - product_names: Search quotations containing specified products
+  - min_amount/max_amount: Filter by total amount range
+  - Single API call for complex queries
+
+NEW in v1.5.6:
+- Added pagination support (offset parameter) to all search functions:
+  - search_quotations, search_purchase_orders, search_delivery_orders
+  - search_products, search_partners
+  - Use offset to get next batch of results (e.g., offset=10 for 2nd page)
+- Dual transport mode support:
+  - stdio (default): For Claude Desktop MCP integration
+  - streamable-http: For MCPO/OpenAI gateway integration
+  - Usage: python mcp_odoo.py --transport streamable-http --port 8001
+
+NEW in v1.5.5:
+- Added VAT/Tax ID (統一編號) support to partner management functions
+  - create_or_get_partner: Now supports vat parameter
+  - create_partner_with_contacts: Now supports vat parameter for company
+- VAT number is stored in Odoo's standard 'vat' field
+- Added quotation update functions
+  - update_quotation: Update quotation header and lines in one operation
+  - update_quotation_lines: Dedicated function for line management
+- Supports updating customer, addresses, dates, notes, and all line details
+
+NEW in v1.5.4:
+- Added partner hierarchy management using parent_id relationship
+  - create_partner_with_contacts: Create company with multiple contacts in one operation
+  - add_contact_to_partner: Add new contacts to existing companies
+- Supports contact types: 'contact', 'invoice', 'delivery', 'other'
+- Automatically establishes parent-child relationships between company and contacts
+
+NEW in v1.5.3:
+- Added quotation copy functionality with customer replacement
+  - create_or_get_partner: Create new partners or retrieve existing ones
+  - preview_quotation_copy: Preview the copy before creation with text replacements
+  - copy_quotation: Copy quotation to new customer with automatic text replacement
+- Safety feature: Requires preview and confirmation before actual copy
+- Automatically replaces old customer name in product descriptions and notes
+
+NEW in v1.5.2:
+- Fixed multiple quotation numbers search to return all matching results
+  - No longer limited by the limit parameter when searching specific quotation numbers
+  - Automatically adjusts search limit based on number of quotations requested
+  - Added debug logging for domain and search parameters
+
+NEW in v1.5.1:
+- Added support for multiple quotation numbers search in search_quotations
+  - New parameter: quotation_numbers (List[str]) for efficient bulk search
+  - Backward compatible with single quotation_number parameter
+  - Uses 'in' operator for exact matches when multiple numbers provided
 
 NEW in v1.5.0:
 - Major version milestone with complete multi-language support
@@ -160,7 +240,12 @@ import json
 import os
 import sys
 import time
+import argparse
 import xmlrpc.client
+import http.client
+import socket
+import ssl
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timedelta
 from functools import wraps
@@ -169,10 +254,75 @@ import hashlib
 import re
 import traceback
 
+
+# Custom Transport class for proxy support via HTTP CONNECT tunnel
+class ProxiedTransport(xmlrpc.client.SafeTransport):
+    """Transport class that supports HTTPS proxy via CONNECT tunnel for XML-RPC"""
+
+    def __init__(self, proxy_host, proxy_port, use_datetime=False, use_builtin_types=False):
+        super().__init__(use_datetime=use_datetime, use_builtin_types=use_builtin_types)
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
+
+    def make_connection(self, host):
+        # Parse host:port
+        if ':' in host:
+            target_host, target_port = host.split(':')
+            target_port = int(target_port)
+        else:
+            target_host = host
+            target_port = 443
+
+        # Create socket connection to proxy
+        sock = socket.create_connection((self.proxy_host, self.proxy_port), timeout=30)
+
+        # Send CONNECT request
+        connect_req = f"CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n\r\n"
+        sock.sendall(connect_req.encode('utf-8'))
+
+        # Read proxy response
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(1024)
+            if not chunk:
+                raise Exception("Proxy connection closed")
+            response += chunk
+
+        # Check if proxy accepted the connection
+        status_line = response.split(b"\r\n")[0].decode('utf-8')
+        if "200" not in status_line:
+            raise Exception(f"Proxy CONNECT failed: {status_line}")
+
+        # Wrap socket with SSL
+        context = ssl.create_default_context()
+        ssl_sock = context.wrap_socket(sock, server_hostname=target_host)
+
+        # Create HTTPS connection using the tunneled socket
+        connection = http.client.HTTPSConnection(target_host, target_port)
+        connection.sock = ssl_sock
+
+        # Store as tuple (host, connection) for parent class close() method
+        self._connection = (host, connection)
+
+        return connection
+
+
+class ProxiedHTTPTransport(xmlrpc.client.Transport):
+    """Transport class that supports HTTP proxy for non-SSL XML-RPC connections"""
+
+    def __init__(self, proxy_host, proxy_port, use_datetime=False, use_builtin_types=False):
+        super().__init__(use_datetime=use_datetime, use_builtin_types=use_builtin_types)
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
+
+    def make_connection(self, host):
+        # For HTTP, connect directly through proxy
+        return http.client.HTTPConnection(self.proxy_host, self.proxy_port)
+
 from mcp.server.fastmcp import FastMCP
 
 # Version information
-__version__ = "1.5.0"
+__version__ = "1.7.0"
 __author__ = "Jason Cheng (Jason Tools)"
 
 # Configure logging
@@ -250,6 +400,10 @@ class Config:
         self.validate()
     
     def validate(self):
+        # Skip validation if showing help
+        if '--help' in sys.argv or '-h' in sys.argv:
+            return
+
         required_vars = [self.ODOO_URL, self.DATABASE, self.USERNAME, self.PASSWORD]
         if not all(required_vars):
             logger.error("Missing required configuration: ODOO_URL, DATABASE, USERNAME, PASSWORD")
@@ -337,36 +491,60 @@ class OdooConnection:
         self.version_info = {}
         self.model_fields_cache = {}
         self.user_lang = None  # Store user language
-        
+
+        # Get proxy URL from environment (for Claude Desktop sandbox bypass)
+        self.proxy_url = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+        self.proxy_host = None
+        self.proxy_port = None
+        if self.proxy_url:
+            parsed = urlparse(self.proxy_url)
+            self.proxy_host = parsed.hostname
+            self.proxy_port = parsed.port or 8080
+            logger.info(f"Using proxy: {self.proxy_host}:{self.proxy_port}")
+
         self._connect()
         self._detect_version()
         self._initialize_field_cache()
         self._get_user_language()  # Get user language after connection
-    
+
+    def _get_transport(self):
+        """Get appropriate transport based on URL scheme and proxy settings"""
+        if not self.proxy_host:
+            # No proxy, use default transport
+            return None
+        if self.url.startswith('https://'):
+            return ProxiedTransport(self.proxy_host, self.proxy_port)
+        else:
+            return ProxiedHTTPTransport(self.proxy_host, self.proxy_port)
+
     def _connect(self):
         """Establish connection to Odoo"""
         try:
+            # Get transport with proxy support
+            transport = self._get_transport()
+
             # Authentication
-            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common')
+            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common', transport=transport)
             self.uid = common.authenticate(self.db, self.username, self.password, {})
-            
+
             if not self.uid:
                 raise Exception("Authentication failed")
-            
+
             # Model connection
-            self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object')
+            self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object', transport=transport)
             self.connected = True
-            
+
             logger.info(f"Successfully connected to Odoo as UID: {self.uid}")
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Odoo: {e}")
             raise e
-    
+
     def _detect_version(self):
         """Detect Odoo version and capabilities"""
         try:
-            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common')
+            transport = self._get_transport()
+            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common', transport=transport)
             version_info = common.version()
             
             self.version_info = {
@@ -648,8 +826,10 @@ class OdooConnection:
             logger.error(f"Odoo API call failed: {model}.{method} - {e}")
             raise e
 
-# Global Odoo connection
-odoo = OdooConnection()
+# Global Odoo connection (skip if showing help)
+odoo = None
+if '--help' not in sys.argv and '-h' not in sys.argv:
+    odoo = OdooConnection()
 
 # Create FastMCP server
 mcp = FastMCP("Odoo")
@@ -853,10 +1033,10 @@ def _translate_purchase_state(state: str, is_english: bool = False) -> str:
 
 @mcp.tool()
 def get_odoo_system_info() -> str:
-    """Get Odoo system information including version and capabilities
-    
+    """Get Odoo system information including version, connection status, and server capabilities.
+
     Returns:
-        JSON string with Odoo system information
+        JSON with: server_version, database, connected_user, cached_models, mcp_version
     """
     logger.info("Getting Odoo system information")
     
@@ -901,7 +1081,7 @@ def get_odoo_system_info() -> str:
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def get_sale_order_fields() -> str:
     """Get available fields for sale.order model to check compatibility
     
@@ -935,7 +1115,7 @@ def get_sale_order_fields() -> str:
         logger.error(f"Error getting sale.order fields: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def health_check() -> str:
     """Perform health check on Odoo connection and cache system
     
@@ -1007,7 +1187,7 @@ def health_check() -> str:
             "timestamp": datetime.now().isoformat()
         }, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def odoo_raw_call(model: str, method: str, args: Optional[List] = None, kwargs: Optional[Dict] = None) -> str:
     """Execute raw Odoo API call
     
@@ -1037,40 +1217,93 @@ def odoo_raw_call(model: str, method: str, args: Optional[List] = None, kwargs: 
 
 @mcp.tool()
 def search_quotations(partner_name: Optional[str] = None, quotation_number: Optional[str] = None,
+                     quotation_numbers: Optional[List[str]] = None,
                      state: Optional[str] = None, date_from: Optional[str] = None,
                      date_to: Optional[str] = None, product_name: Optional[str] = None,
+                     product_keywords: Optional[List[str]] = None,
+                     product_names: Optional[List[str]] = None,
+                     product_match_mode: str = "all",
+                     exclude_only_products: Optional[List[str]] = None,
+                     min_amount: Optional[float] = None, max_amount: Optional[float] = None,
                      description_contains: Optional[str] = None, global_search: Optional[str] = None,
-                     limit: int = 10) -> str:
-    """Search quotations with complete field information and language/currency support
-    
-    v1.4.9: Enhanced to support multi-language product names based on ODOO_DEFAULT_LANGUAGE
-    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
-            for better partial matching support
-    
+                     limit: int = 10, offset: int = 0,
+                     compact: bool = False, include_lines: bool = True, count_only: bool = False) -> str:
+    """Search Odoo quotations/sales orders with flexible filters.
+
+    IMPORTANT: Use the EXACT keywords from user input. DO NOT translate.
+    If user says "教育訓練", use "教育訓練" not "training".
+    If user says "proxmox 訓練", use ["proxmox", "訓練"] not ["proxmox", "training"].
+
+    WHEN TO USE THIS FUNCTION:
+    - Finding quotations by customer, product, amount, date, or any combination
+    - Finding products whose name contains multiple keywords (e.g., "Proxmox 教育訓練")
+    - Complex queries like "quotations with training but not only subscriptions"
+    - Amount-based filtering like "quotations over 100,000"
+
+    OUTPUT CONTROL (use these to reduce response size):
+    - count_only=True: Only return count, no data (fastest, minimal tokens)
+    - compact=True: Return minimal fields only (id, name, customer, amount, state, date)
+    - include_lines=False: Skip line items detail (saves ~50% tokens)
+
     Args:
-        partner_name: Customer name filter (optional) - supports partial matching
-        quotation_number: Quotation number filter (optional)
-        state: State filter (draft, sent, sale, done, cancel) (optional)
-        date_from: Start date filter (YYYY-MM-DD) (optional)
-        date_to: End date filter (YYYY-MM-DD) (optional)
-        product_name: Product/service name filter (searches in quotation lines) (optional)
-        description_contains: Search in quotation notes/descriptions (optional)
-        global_search: Search across ALL quotation fields including client_order_ref, origin, etc. (optional)
-        limit: Maximum number of quotations to return (default: 10)
-    
+        partner_name: Customer name (partial match supported)
+        quotation_number: Single quotation number (e.g., 'S00123')
+        quotation_numbers: List of quotation numbers for bulk search
+        state: Filter by state - draft/sent/sale/done/cancel
+        date_from: Start date filter (YYYY-MM-DD)
+        date_to: End date filter (YYYY-MM-DD)
+        product_name: Filter by single product/service name in lines (single keyword)
+        product_keywords: Find products whose name contains ALL these keywords.
+                          Example: ["proxmox", "訓練"] finds "Proxmox VE 教育訓練課程"
+        product_names: Find quotations containing multiple DIFFERENT products.
+                       Use with product_match_mode. Example: ["graylog", "librenms"]
+        product_match_mode: How to match product_names - "all" (AND) or "any" (OR).
+        exclude_only_products: Exclude quotations where ALL lines match these keywords.
+        min_amount: Minimum total amount filter
+        max_amount: Maximum total amount filter
+        description_contains: Search in quotation notes
+        global_search: Search across all fields
+        limit: Max results (default: 10)
+        offset: Skip first N results for pagination (default: 0)
+        compact: Return minimal fields only (default: False)
+        include_lines: Include line items detail (default: True, set False to save tokens)
+        count_only: Only return count, no quotation data (default: False)
+
     Returns:
-        JSON string with quotation data including customer language/currency settings and direct URLs
+        JSON with quotations list (or count if count_only=True)
+
+    EXAMPLES:
+        # Quick count of matching quotations
+        search_quotations(product_keywords=["proxmox", "訓練"], count_only=True)
+
+        # Compact list without line details (saves tokens)
+        search_quotations(partner_name="ABC", compact=True, include_lines=False)
+
+        # Full details for specific quotations
+        search_quotations(quotation_numbers=["S00123", "S00124"])
     """
-    logger.info(f"Searching quotations: partner={partner_name}, product={product_name}, global={global_search}")
-    
+    logger.info(f"Searching quotations: partner={partner_name}, product={product_name}, keywords={product_keywords}, products={product_names}, min_amount={min_amount}, max_amount={max_amount}, global={global_search}")
+
     try:
         # Build domain filters
         domain = []
-        
+
         if partner_name:
             # Use OR to search in both name and display_name for better matching
             domain.extend(['|', ['partner_id.name', 'ilike', partner_name], ['partner_id.display_name', 'ilike', partner_name]])
-        if quotation_number:
+
+        # Handle quotation number(s) search
+        if quotation_numbers:
+            # Multiple quotation numbers provided
+            if len(quotation_numbers) == 1:
+                # Single item in list
+                domain.append(['name', 'ilike', quotation_numbers[0]])
+            else:
+                # Multiple items - use 'in' operator for exact matches
+                domain.append(['name', 'in', quotation_numbers])
+                logger.info(f"Searching for {len(quotation_numbers)} specific quotation numbers: {quotation_numbers[:5]}... (showing first 5)")
+        elif quotation_number:
+            # Single quotation number provided (backward compatibility)
             domain.append(['name', 'ilike', quotation_number])
         if state:
             domain.append(['state', '=', state])
@@ -1080,6 +1313,14 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
             domain.append(['date_order', '<=', date_to])
         if description_contains:
             domain.append(['note', 'ilike', description_contains])
+
+        # Amount filtering
+        if min_amount is not None:
+            domain.append(['amount_total', '>=', min_amount])
+            logger.info(f"Filtering by min_amount >= {min_amount}")
+        if max_amount is not None:
+            domain.append(['amount_total', '<=', max_amount])
+            logger.info(f"Filtering by max_amount <= {max_amount}")
         
         # Global search across multiple fields (simplified approach)
         quotation_ids_from_global = []
@@ -1120,7 +1361,89 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
             except Exception as e:
                 logger.warning(f"Global search failed: {e}")
         
-        # If searching by product/service name, we need to search in quotation lines first
+        # If searching by product_keywords (single product with multiple keywords in name)
+        quotation_ids_from_keywords = None  # None means not filtered, [] means no results
+        if product_keywords and len(product_keywords) > 0:
+            try:
+                logger.info(f"Searching for products containing ALL keywords: {product_keywords}")
+
+                # Get all lines first, then filter in Python for multi-keyword match
+                # Start with the first keyword to narrow down
+                first_keyword = product_keywords[0]
+                line_domain = [
+                    '|',
+                    ['product_id.name', 'ilike', first_keyword],
+                    ['name', 'ilike', first_keyword]
+                ]
+                matching_lines = _cached_odoo_call(
+                    'sale.order.line', 'search_read', [line_domain],
+                    {'fields': ['order_id', 'name', 'product_id'], 'limit': 5000}
+                )
+
+                # Filter lines where ALL keywords are present
+                quotation_ids_from_keywords = set()
+                for line in matching_lines:
+                    line_name = (line.get('name') or '').lower()
+                    product_name_str = ''
+                    if line.get('product_id'):
+                        product_name_str = (line['product_id'][1] if isinstance(line['product_id'], list) else '').lower()
+
+                    combined_text = f"{line_name} {product_name_str}"
+
+                    # Check if ALL keywords are present
+                    if all(kw.lower() in combined_text for kw in product_keywords):
+                        if line.get('order_id'):
+                            quotation_ids_from_keywords.add(line['order_id'][0])
+
+                quotation_ids_from_keywords = list(quotation_ids_from_keywords)
+                logger.info(f"Found {len(quotation_ids_from_keywords)} quotations with products matching ALL keywords: {product_keywords}")
+
+            except Exception as e:
+                logger.warning(f"Error searching product keywords: {e}")
+                quotation_ids_from_keywords = []
+
+        # If searching by multiple product names, find intersection (AND) or union (OR)
+        quotation_ids_from_multi_products = None  # None means not filtered, [] means no results
+        if product_names and len(product_names) > 0:
+            try:
+                match_mode = product_match_mode.lower() if product_match_mode else "all"
+                if match_mode not in ("all", "any"):
+                    match_mode = "all"
+
+                logger.info(f"Searching for quotations containing {match_mode.upper()} of products: {product_names}")
+                product_id_sets = []
+
+                for pname in product_names:
+                    line_domain = [
+                        '|',
+                        ['product_id.name', 'ilike', pname],
+                        ['name', 'ilike', pname]
+                    ]
+                    matching_lines = _cached_odoo_call(
+                        'sale.order.line', 'search_read', [line_domain],
+                        {'fields': ['order_id'], 'limit': 5000}
+                    )
+                    order_ids = set([line['order_id'][0] for line in matching_lines if line.get('order_id')])
+                    logger.info(f"  - Product '{pname}': found in {len(order_ids)} quotations")
+                    product_id_sets.append(order_ids)
+
+                if product_id_sets:
+                    if match_mode == "all":
+                        # AND logic: intersection of all sets
+                        quotation_ids_from_multi_products = list(set.intersection(*product_id_sets))
+                        logger.info(f"Intersection (AND): {len(quotation_ids_from_multi_products)} quotations contain ALL products")
+                    else:
+                        # OR logic: union of all sets
+                        quotation_ids_from_multi_products = list(set.union(*product_id_sets))
+                        logger.info(f"Union (OR): {len(quotation_ids_from_multi_products)} quotations contain ANY product")
+                else:
+                    quotation_ids_from_multi_products = []
+
+            except Exception as e:
+                logger.warning(f"Error searching multiple products: {e}")
+                quotation_ids_from_multi_products = []
+
+        # If searching by single product/service name, we need to search in quotation lines first
         quotation_ids_from_lines = []
         if product_name or global_search:
             try:
@@ -1128,44 +1451,80 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                 line_domain = []
                 if product_name:
                     line_domain = [
-                        '|', 
+                        '|',
                         ['product_id.name', 'ilike', product_name],
                         ['name', 'ilike', product_name]  # This includes service descriptions
                     ]
                 elif global_search:
                     line_domain = [
-                        '|', 
+                        '|',
                         ['product_id.name', 'ilike', global_search],
                         ['name', 'ilike', global_search]  # This includes service descriptions
                     ]
-                
+
                 if line_domain:
                     line_fields = ['order_id', 'product_id', 'name']
                     matching_lines = _cached_odoo_call(
                         'sale.order.line', 'search_read', [line_domain],
                         {'fields': line_fields, 'limit': 1000}  # Get more lines to find all matching orders
                     )
-                    
+
                     # Extract unique order IDs
                     quotation_ids_from_lines = list(set([line['order_id'][0] for line in matching_lines if line.get('order_id')]))
                     search_term = product_name or global_search
                     logger.info(f"Found {len(quotation_ids_from_lines)} quotations with product/service: {search_term}")
-                        
+
             except Exception as e:
                 logger.warning(f"Error searching quotation lines: {e}")
-        
-        # Combine all found quotation IDs
+
+        # Combine all found quotation IDs (priority: keywords > multi-products > global > single)
         all_found_ids = []
-        if global_search:
+        if quotation_ids_from_keywords is not None:
+            # Product keywords search takes highest priority
+            all_found_ids = quotation_ids_from_keywords
+        elif quotation_ids_from_multi_products is not None:
+            # Multi-product AND/OR search
+            all_found_ids = quotation_ids_from_multi_products
+        elif global_search:
             all_found_ids.extend(quotation_ids_from_global)
             all_found_ids.extend(quotation_ids_from_lines)
             all_found_ids = list(set(all_found_ids))  # Remove duplicates
         elif product_name:
             all_found_ids = quotation_ids_from_lines
-        
+
         # Add ID filter to domain if we found specific quotations
         if all_found_ids:
             domain.append(['id', 'in', all_found_ids])
+        elif product_keywords and len(product_keywords) > 0:
+            # No quotations found with products matching all keywords
+            logger.info(f"No quotations found with products matching ALL keywords: {product_keywords}")
+            return json.dumps({
+                "quotations": [],
+                "summary": {
+                    "total_found": 0,
+                    "message": f"No quotations found with products containing ALL of: {', '.join(product_keywords)}"
+                },
+                "query_info": {
+                    "product_keywords_filter": product_keywords,
+                    "search_method": "product_keywords_search",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        elif product_names and len(product_names) > 0:
+            # No quotations found containing ALL specified products
+            logger.info(f"No quotations found containing ALL products: {product_names}")
+            return json.dumps({
+                "quotations": [],
+                "summary": {
+                    "total_found": 0,
+                    "message": f"No quotations found containing ALL of: {', '.join(product_names)}"
+                },
+                "query_info": {
+                    "product_names_filter": product_names,
+                    "search_method": "multi_product_and_search",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
         elif product_name and not global_search:
             # No matching products found for specific product search, return empty result
             logger.info(f"No quotations found containing product/service: {product_name}")
@@ -1181,13 +1540,22 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                     "timestamp": datetime.now().isoformat()
                 }
             }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
-        
+
+        # Log the final domain for debugging
+        logger.info(f"Final search domain: {domain}")
+
         # Get quotations using version-compatible fields
         available_fields = odoo.get_version_compatible_fields('sale.order', 'standard')
-        
-        # Increase limit if we're doing a product/global search to ensure we get all relevant results
-        search_limit = min(limit * 10, 1000) if (product_name or global_search) else limit
-        
+
+        # Increase limit if we're doing a product/global search or multiple quotation numbers search
+        # For multiple quotation numbers, we want to get ALL matching results
+        if quotation_numbers and len(quotation_numbers) > 1:
+            search_limit = len(quotation_numbers) * 2  # Allow some buffer for potential duplicates
+        else:
+            # Increase limit more if we need to filter by exclude_only_products
+            multiplier = 20 if exclude_only_products else 10
+            search_limit = min(limit * multiplier, 2000) if (product_name or product_keywords or product_names or global_search or exclude_only_products) else limit
+
         quotations = _cached_odoo_call(
             'sale.order', 'search_read', [domain],
             {
@@ -1196,158 +1564,191 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
                 'order': 'date_order desc'
             }
         )
-        
-        # If we searched by product/global and got more results than requested, limit them
-        if (product_name or global_search) and len(quotations) > limit:
-            quotations = quotations[:limit]
-        
-        # Enrich each quotation with customer language/currency details, line items, and URLs
+
+        # Apply exclude_only_products filter: remove quotations where ALL lines match exclude keywords
+        if exclude_only_products and len(exclude_only_products) > 0:
+            logger.info(f"Applying exclude_only_products filter: {exclude_only_products}")
+            filtered_quotations = []
+            excluded_count = 0
+
+            for quote in quotations:
+                try:
+                    # Get all lines for this quotation
+                    quote_lines = _cached_odoo_call(
+                        'sale.order.line', 'search_read',
+                        [[['order_id', '=', quote['id']]]],
+                        {'fields': ['name', 'product_id'], 'limit': 100}
+                    )
+
+                    if not quote_lines:
+                        # No lines, keep the quotation
+                        filtered_quotations.append(quote)
+                        continue
+
+                    # Check if ALL lines match any of the exclude keywords
+                    all_lines_match_exclude = True
+                    for line in quote_lines:
+                        line_name = (line.get('name') or '').lower()
+                        product_name_str = ''
+                        if line.get('product_id'):
+                            product_name_str = (line['product_id'][1] if isinstance(line['product_id'], list) else '').lower()
+
+                        line_text = f"{line_name} {product_name_str}"
+
+                        # Check if this line matches any exclude keyword
+                        line_matches_exclude = any(
+                            excl.lower() in line_text
+                            for excl in exclude_only_products
+                        )
+
+                        if not line_matches_exclude:
+                            # This line does NOT match any exclude keyword
+                            # So the quotation has at least one non-excluded product
+                            all_lines_match_exclude = False
+                            break
+
+                    if all_lines_match_exclude:
+                        # All lines match exclude keywords, skip this quotation
+                        excluded_count += 1
+                    else:
+                        # At least one line is not in exclude list, keep this quotation
+                        filtered_quotations.append(quote)
+
+                except Exception as e:
+                    logger.warning(f"Error checking lines for quotation {quote['id']}: {e}")
+                    filtered_quotations.append(quote)  # Keep on error
+
+            logger.info(f"Excluded {excluded_count} quotations that only contained excluded products")
+            quotations = filtered_quotations
+
+        # Apply offset and limit for pagination
+        # But don't paginate if we're searching for specific quotation numbers
+        if not (quotation_numbers and len(quotation_numbers) > 1):
+            quotations = quotations[offset:offset + limit]
+
+        # Handle count_only mode - return just the count
+        if count_only:
+            return json.dumps({
+                "count": len(quotations),
+                "query_info": {
+                    "mode": "count_only",
+                    "filters_applied": {
+                        "partner_name": partner_name,
+                        "product_keywords": product_keywords,
+                        "product_names": product_names,
+                        "min_amount": min_amount,
+                        "max_amount": max_amount,
+                        "state": state,
+                        "date_from": date_from,
+                        "date_to": date_to
+                    },
+                    "timestamp": datetime.now().isoformat()
+                }
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Enrich each quotation
         enriched_quotations = []
-        
+
         for quote in quotations:
-            enriched_quote = quote.copy()
-            
-            # Generate direct URL to quotation
-            enriched_quote['odoo_url'] = _generate_quotation_url(quote['id'])
-            enriched_quote['url_description'] = f"點擊直接開啟報價單 {quote.get('name', quote['id'])}"
-            
-            # Get customer details
-            if quote.get('partner_id'):
-                partner_details = _get_partner_details(quote['partner_id'][0])
-                enriched_quote['customer_details'] = partner_details
-                
-                # Add customer URL
-                enriched_quote['customer_url'] = _generate_partner_url(quote['partner_id'][0])
-                enriched_quote['customer_url_description'] = f"點擊直接開啟客戶 {quote['partner_id'][1]}"
-                
-                # Determine display language
-                is_english = _is_english_customer(partner_details.get('lang', ''))
-                enriched_quote['display_language'] = 'en' if is_english else 'zh'
-                
-                # Get currency information
-                currency_code = _get_currency_code(quote.get('currency_id', []))
-                enriched_quote['currency_code'] = currency_code
-                
-                # Format amounts with currency
-                amount_fields = ['amount_untaxed', 'amount_tax', 'amount_total']
-                for field in amount_fields:
-                    if quote.get(field) is not None:
-                        enriched_quote[f'{field}_formatted'] = f"{quote[field]} {currency_code}"
-            
-            # Get quotation lines for service/product details (always include for better analysis)
-            try:
-                line_fields = odoo.get_version_compatible_fields('sale.order.line', 'standard')
-                quote_lines = _cached_odoo_call(
-                    'sale.order.line', 'search_read',
-                    [[['order_id', '=', quote['id']]]],
-                    {'fields': line_fields, 'order': 'sequence'}
-                )
-                
-                
-                # Format line information
-                services_products = []
-                for line in quote_lines:
-                    # Use the 'name' field which contains the product description
-                    # This is what appears in the quotation line, not the product master name
-                    product_name = line.get('name', '')
-                    if product_name:
-                        # Get first line of description if multi-line
-                        product_name = product_name.split('\n')[0].strip()
-                    
-                    line_info = {
-                        'sequence': line.get('sequence', 0),
-                        'product_name': product_name,  # Using line description as product name
-                        'description': line.get('name', ''),  # Full description
-                        'product_id': line.get('product_id', [None, ''])[0] if line.get('product_id') else None,
-                        'product_ref': line.get('product_id', [None, ''])[1] if line.get('product_id') else '',
-                        'quantity': line.get('product_uom_qty', 1),
-                        'unit_price': line.get('price_unit', 0),
-                        'subtotal': line.get('price_subtotal', 0)
-                    }
-                    services_products.append(line_info)
-                
-                enriched_quote['services_products'] = services_products
-                enriched_quote['line_count'] = len(services_products)
-                
-            except Exception as e:
-                logger.warning(f"Failed to get lines for quotation {quote['id']}: {e}")
-                enriched_quote['services_products'] = []
+            # Compact mode: minimal fields only
+            if compact:
+                enriched_quote = {
+                    'id': quote.get('id'),
+                    'name': quote.get('name'),
+                    'customer': quote.get('partner_id', [None, ''])[1] if quote.get('partner_id') else '',
+                    'amount_total': quote.get('amount_total', 0),
+                    'state': quote.get('state'),
+                    'date': quote.get('date_order', '')[:10] if quote.get('date_order') else '',
+                    'odoo_url': _generate_quotation_url(quote['id'])
+                }
+            else:
+                # Full mode
+                enriched_quote = quote.copy()
+                enriched_quote['odoo_url'] = _generate_quotation_url(quote['id'])
+                enriched_quote['url_description'] = f"點擊直接開啟報價單 {quote.get('name', quote['id'])}"
+
+                if quote.get('partner_id'):
+                    partner_details = _get_partner_details(quote['partner_id'][0])
+                    enriched_quote['customer_details'] = partner_details
+                    enriched_quote['customer_url'] = _generate_partner_url(quote['partner_id'][0])
+
+                    currency_code = _get_currency_code(quote.get('currency_id', []))
+                    enriched_quote['currency_code'] = currency_code
+
+                    for field in ['amount_untaxed', 'amount_tax', 'amount_total']:
+                        if quote.get(field) is not None:
+                            enriched_quote[f'{field}_formatted'] = f"{quote[field]} {currency_code}"
+
+            # Get quotation lines (skip if include_lines=False)
+            if include_lines and not compact:
+                try:
+                    line_fields = odoo.get_version_compatible_fields('sale.order.line', 'standard')
+                    quote_lines = _cached_odoo_call(
+                        'sale.order.line', 'search_read',
+                        [[['order_id', '=', quote['id']]]],
+                        {'fields': line_fields, 'order': 'sequence'}
+                    )
+
+                    services_products = []
+                    for line in quote_lines:
+                        line_product_name = line.get('name', '')
+                        if line_product_name:
+                            line_product_name = line_product_name.split('\n')[0].strip()
+
+                        line_info = {
+                            'product_name': line_product_name,
+                            'quantity': line.get('product_uom_qty', 1),
+                            'unit_price': line.get('price_unit', 0),
+                            'subtotal': line.get('price_subtotal', 0)
+                        }
+                        services_products.append(line_info)
+
+                    enriched_quote['lines'] = services_products
+                    enriched_quote['line_count'] = len(services_products)
+
+                except Exception as e:
+                    logger.warning(f"Failed to get lines for quotation {quote['id']}: {e}")
+                    enriched_quote['lines'] = []
+                    enriched_quote['line_count'] = 0
+            elif not compact:
                 enriched_quote['line_count'] = 0
-            
-            # Format dates (only include fields that exist)
-            date_fields = ['date_order', 'validity_date', 'create_date', 'write_date']
-            for field in date_fields:
-                if quote.get(field):
-                    enriched_quote[f'{field}_formatted'] = _format_datetime(quote[field])
-            
+                enriched_quote['lines_skipped'] = True
+
             enriched_quotations.append(enriched_quote)
         
-        # Calculate summary statistics
+        # Build result based on compact mode
         total_found = len(enriched_quotations)
-        currency_breakdown = {}
-        state_breakdown = {}
-        
-        for quote in enriched_quotations:
-            # Currency statistics
-            currency = quote.get('currency_code', 'Unknown')
-            currency_breakdown[currency] = currency_breakdown.get(currency, 0) + 1
-            
-            # State statistics
-            state = quote.get('state', 'unknown')
-            state_breakdown[state] = state_breakdown.get(state, 0) + 1
-        
-        # Determine search scope message
-        search_scope_parts = []
-        if global_search:
-            search_scope_parts.append(f"Global search for '{global_search}' across all quotation fields and line items")
-        if product_name:
-            search_scope_parts.append(f"Product/service search for '{product_name}'")
-        if description_contains:
-            search_scope_parts.append(f"Description search for '{description_contains}'")
-        if not any([global_search, product_name, description_contains]):
-            search_scope_parts.append("Standard quotation search")
-        
-        result = {
-            "quotations": enriched_quotations,
-            "summary": {
-                "total_found": total_found,
-                "currency_breakdown": currency_breakdown,
-                "state_breakdown": state_breakdown,
-                "search_scope": " + ".join(search_scope_parts),
-                "urls_included": True,
-                "url_base": config.ODOO_URL
-            },
-            "search_fields_covered": {
-                "quotation_header": [
-                    "name (quotation number)",
-                    "note (description)", 
-                    "client_order_ref (customer order ref)",
-                    "origin (source document)",
-                    "partner_id.name (customer name)",
-                    "user_id.name (salesperson)"
-                ] if global_search else ["Limited to specific filters"],
-                "quotation_lines": [
-                    "product_id.name (product name)",
-                    "name (line description/service details)"
-                ] if (product_name or global_search) else ["Not searched"]
-            },
-            "query_info": {
-                "partner_name_filter": partner_name,
-                "quotation_number_filter": quotation_number,
-                "state_filter": state,
-                "date_from": date_from,
-                "date_to": date_to,
-                "product_name_filter": product_name,
-                "description_filter": description_contains,
-                "global_search_filter": global_search,
-                "limit": limit,
-                "actual_search_limit": search_limit if (product_name or global_search) else limit,
-                "odoo_version": odoo.version_info.get('major_version', 'Unknown'),
-                "fields_used": len(available_fields),
-                "search_method": "global_search" if global_search else ("product_line_search" if product_name else "standard_search"),
-                "timestamp": datetime.now().isoformat()
+
+        if compact:
+            # Compact result - minimal metadata
+            result = {
+                "quotations": enriched_quotations,
+                "total": total_found,
+                "mode": "compact"
             }
-        }
+        else:
+            # Full result with statistics
+            state_breakdown = {}
+            for quote in enriched_quotations:
+                st = quote.get('state', 'unknown')
+                state_breakdown[st] = state_breakdown.get(st, 0) + 1
+
+            result = {
+                "quotations": enriched_quotations,
+                "summary": {
+                    "total_found": total_found,
+                    "state_breakdown": state_breakdown,
+                    "include_lines": include_lines
+                },
+                "query_info": {
+                    "product_keywords": product_keywords,
+                    "product_names": product_names,
+                    "min_amount": min_amount,
+                    "max_amount": max_amount,
+                    "exclude_only_products": exclude_only_products,
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
         
         return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
     except Exception as e:
@@ -1355,17 +1756,111 @@ def search_quotations(partner_name: Optional[str] = None, quotation_number: Opti
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
-    """Get detailed quotation information with line items and customer language settings
-    
-    v1.4.9: Enhanced to support multi-language product names based on ODOO_DEFAULT_LANGUAGE
-    
+def get_quotation_stats(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        partner_name: Optional[str] = None, state: Optional[str] = None) -> str:
+    """Get statistical summary of quotations/sales orders.
+
+    Use this for quick statistics without fetching full quotation data.
+    Much faster and uses fewer tokens than search_quotations.
+
     Args:
-        quotation_id: Quotation ID
-        include_lines: Include quotation line items (default: True)
-    
+        date_from: Start date filter (YYYY-MM-DD)
+        date_to: End date filter (YYYY-MM-DD)
+        partner_name: Filter by customer name
+        state: Filter by state - draft/sent/sale/done/cancel
+
     Returns:
-        JSON string with complete quotation details including direct URL
+        JSON with statistics: count by state, total amounts, date range summary
+    """
+    logger.info(f"Getting quotation stats: date_from={date_from}, date_to={date_to}")
+
+    try:
+        # Build domain filters
+        domain = []
+
+        if partner_name:
+            domain.extend(['|', ['partner_id.name', 'ilike', partner_name],
+                          ['partner_id.display_name', 'ilike', partner_name]])
+        if state:
+            domain.append(['state', '=', state])
+        if date_from:
+            domain.append(['date_order', '>=', date_from])
+        if date_to:
+            domain.append(['date_order', '<=', date_to])
+
+        # Fetch minimal fields needed for statistics
+        quotations = _cached_odoo_call(
+            'sale.order', 'search_read', [domain],
+            {'fields': ['id', 'state', 'amount_total', 'currency_id', 'date_order'],
+             'limit': 10000, 'order': 'date_order desc'}
+        )
+
+        # Calculate statistics
+        state_counts = {}
+        state_amounts = {}
+        currency_totals = {}
+        dates = []
+
+        for q in quotations:
+            st = q.get('state', 'unknown')
+            state_counts[st] = state_counts.get(st, 0) + 1
+            state_amounts[st] = state_amounts.get(st, 0) + (q.get('amount_total', 0) or 0)
+
+            currency = q.get('currency_id', [None, 'TWD'])[1] if q.get('currency_id') else 'TWD'
+            if currency not in currency_totals:
+                currency_totals[currency] = {'count': 0, 'total': 0}
+            currency_totals[currency]['count'] += 1
+            currency_totals[currency]['total'] += (q.get('amount_total', 0) or 0)
+
+            if q.get('date_order'):
+                dates.append(q['date_order'][:10])
+
+        # State translations
+        state_names = {
+            'draft': '報價單 (Draft)',
+            'sent': '已發送報價 (Sent)',
+            'sale': '銷售訂單 (Sales Order)',
+            'done': '已完成 (Done)',
+            'cancel': '已取消 (Cancelled)'
+        }
+
+        result = {
+            "statistics": {
+                "total_count": len(quotations),
+                "by_state": {state_names.get(k, k): {'count': v, 'total_amount': state_amounts.get(k, 0)}
+                            for k, v in state_counts.items()},
+                "by_currency": currency_totals,
+                "date_range": {
+                    "earliest": min(dates) if dates else None,
+                    "latest": max(dates) if dates else None
+                }
+            },
+            "query_info": {
+                "date_from": date_from,
+                "date_to": date_to,
+                "partner_name": partner_name,
+                "state": state,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+
+        return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+    except Exception as e:
+        logger.error(f"Error getting quotation stats: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+@mcp.tool()
+def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
+    """Get detailed quotation/sales order information by ID.
+
+    Args:
+        quotation_id: The quotation ID (integer)
+        include_lines: Include line items with product details (default: True)
+
+    Returns:
+        JSON with: header info, customer details, line items (product, qty, price, subtotal),
+        totals, currency, payment terms, and direct Odoo URL
     """
     logger.info(f"Getting quotation details for ID: {quotation_id}")
     
@@ -1520,26 +2015,40 @@ def get_quotation_details(quotation_id: int, include_lines: bool = True) -> str:
 def search_purchase_orders(partner_name: Optional[str] = None, po_number: Optional[str] = None,
                           state: Optional[str] = None, date_from: Optional[str] = None,
                           date_to: Optional[str] = None, product_name: Optional[str] = None,
+                          product_keywords: Optional[List[str]] = None,
+                          min_amount: Optional[float] = None, max_amount: Optional[float] = None,
                           notes_contains: Optional[str] = None, global_search: Optional[str] = None,
-                          limit: int = 10) -> str:
-    """Search purchase orders with complete field information and supplier details
-    
-    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
-            for better partial matching support
-    
+                          limit: int = 10, offset: int = 0,
+                          compact: bool = False, include_lines: bool = True, count_only: bool = False) -> str:
+    """Search Odoo purchase orders with flexible filters.
+
+    IMPORTANT: Use the EXACT keywords from user input. DO NOT translate.
+
+    OUTPUT CONTROL (use these to reduce response size):
+    - count_only=True: Only return count, no data
+    - compact=True: Return minimal fields only
+    - include_lines=False: Skip line items detail
+
     Args:
-        partner_name: Supplier name filter (optional) - supports partial matching
-        po_number: Purchase order number filter (optional)
-        state: State filter (draft, sent, to approve, purchase, done, cancel) (optional)
-        date_from: Start date filter (YYYY-MM-DD) (optional)
-        date_to: End date filter (YYYY-MM-DD) (optional)
-        product_name: Product name filter (searches in purchase order lines) (optional)
-        notes_contains: Search in purchase order notes (optional)
-        global_search: Search across ALL purchase order fields (optional)
-        limit: Maximum number of purchase orders to return (default: 10)
-    
+        partner_name: Supplier/vendor name (partial match supported)
+        po_number: Purchase order number (e.g., 'P00123')
+        state: Filter by state - draft/sent/to approve/purchase/done/cancel
+        date_from: Start date filter (YYYY-MM-DD)
+        date_to: End date filter (YYYY-MM-DD)
+        product_name: Filter by single product name in lines
+        product_keywords: Find products whose name contains ALL these keywords
+        min_amount: Minimum total amount filter
+        max_amount: Maximum total amount filter
+        notes_contains: Search in PO notes
+        global_search: Search across all fields
+        limit: Max results (default: 10)
+        offset: Skip first N results for pagination (default: 0)
+        compact: Return minimal fields only (default: False)
+        include_lines: Include line items detail (default: True)
+        count_only: Only return count (default: False)
+
     Returns:
-        JSON string with purchase order data including supplier details and direct URLs
+        JSON with purchase orders list (or count if count_only=True)
     """
     logger.info(f"Searching purchase orders: partner={partner_name}, product={product_name}, global={global_search}")
     
@@ -1560,7 +2069,13 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
             domain.append(['date_order', '<=', date_to])
         if notes_contains:
             domain.append(['notes', 'ilike', notes_contains])
-        
+
+        # Amount filtering
+        if min_amount is not None:
+            domain.append(['amount_total', '>=', min_amount])
+        if max_amount is not None:
+            domain.append(['amount_total', '<=', max_amount])
+
         # Global search across multiple fields
         po_ids_from_global = []
         if global_search:
@@ -1599,6 +2114,34 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
             except Exception as e:
                 logger.warning(f"Global search failed: {e}")
         
+        # Search by product_keywords (single product with multiple keywords)
+        po_ids_from_keywords = None
+        if product_keywords and len(product_keywords) > 0:
+            try:
+                first_keyword = product_keywords[0]
+                line_domain = [
+                    '|',
+                    ['product_id.name', 'ilike', first_keyword],
+                    ['name', 'ilike', first_keyword]
+                ]
+                matching_lines = _cached_odoo_call(
+                    'purchase.order.line', 'search_read', [line_domain],
+                    {'fields': ['order_id', 'name', 'product_id'], 'limit': 5000}
+                )
+                po_ids_from_keywords = set()
+                for line in matching_lines:
+                    line_name = (line.get('name') or '').lower()
+                    product_name_str = (line['product_id'][1] if line.get('product_id') and isinstance(line['product_id'], list) else '').lower()
+                    combined_text = f"{line_name} {product_name_str}"
+                    if all(kw.lower() in combined_text for kw in product_keywords):
+                        if line.get('order_id'):
+                            po_ids_from_keywords.add(line['order_id'][0])
+                po_ids_from_keywords = list(po_ids_from_keywords)
+                logger.info(f"Found {len(po_ids_from_keywords)} POs with products matching keywords: {product_keywords}")
+            except Exception as e:
+                logger.warning(f"Error searching product keywords: {e}")
+                po_ids_from_keywords = []
+
         # Search by product name in purchase order lines
         po_ids_from_lines = []
         if product_name or global_search:
@@ -1606,35 +2149,35 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
                 line_domain = []
                 if product_name:
                     line_domain = [
-                        '|', 
+                        '|',
                         ['product_id.name', 'ilike', product_name],
                         ['name', 'ilike', product_name]
                     ]
                 elif global_search:
                     line_domain = [
-                        '|', 
+                        '|',
                         ['product_id.name', 'ilike', global_search],
                         ['name', 'ilike', global_search]
                     ]
-                
+
                 if line_domain:
                     line_fields = ['order_id', 'product_id', 'name']
                     matching_lines = _cached_odoo_call(
                         'purchase.order.line', 'search_read', [line_domain],
                         {'fields': line_fields, 'limit': 1000}
                     )
-                    
-                    # Extract unique order IDs
                     po_ids_from_lines = list(set([line['order_id'][0] for line in matching_lines if line.get('order_id')]))
                     search_term = product_name or global_search
                     logger.info(f"Found {len(po_ids_from_lines)} purchase orders with product: {search_term}")
-                        
+
             except Exception as e:
                 logger.warning(f"Error searching purchase order lines: {e}")
-        
+
         # Combine all found PO IDs
         all_found_ids = []
-        if global_search:
+        if po_ids_from_keywords is not None:
+            all_found_ids = po_ids_from_keywords
+        elif global_search:
             all_found_ids.extend(po_ids_from_global)
             all_found_ids.extend(po_ids_from_lines)
             all_found_ids = list(set(all_found_ids))
@@ -1674,86 +2217,71 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
             }
         )
         
-        # Limit results if we searched by product/global
-        if (product_name or global_search) and len(purchase_orders) > limit:
-            purchase_orders = purchase_orders[:limit]
-        
-        # Enrich each purchase order with supplier details and URLs
+        # Apply offset and limit for pagination
+        purchase_orders = purchase_orders[offset:offset + limit]
+
+        # Handle count_only mode
+        if count_only:
+            return json.dumps({
+                "count": len(purchase_orders),
+                "query_info": {"mode": "count_only", "timestamp": datetime.now().isoformat()}
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+        # Enrich each purchase order
         enriched_pos = []
-        
+
         for po in purchase_orders:
-            enriched_po = po.copy()
-            
-            # Generate direct URL to purchase order
-            enriched_po['odoo_url'] = _generate_purchase_order_url(po['id'])
-            enriched_po['url_description'] = f"點擊直接開啟採購單 {po.get('name', po['id'])}"
-            
-            # Get supplier details
-            if po.get('partner_id'):
-                partner_details = _get_partner_details(po['partner_id'][0])
-                enriched_po['supplier_details'] = partner_details
-                
-                # Add supplier URL
-                enriched_po['supplier_url'] = _generate_partner_url(po['partner_id'][0])
-                enriched_po['supplier_url_description'] = f"點擊直接開啟供應商 {po['partner_id'][1]}"
-                
-                # Determine display language
-                is_english = _is_english_customer(partner_details.get('lang', ''))
-                enriched_po['display_language'] = 'en' if is_english else 'zh'
-                
-                # Get currency information
-                currency_code = _get_currency_code(po.get('currency_id', []))
-                enriched_po['currency_code'] = currency_code
-                
-                # Format amounts with currency
-                amount_fields = ['amount_untaxed', 'amount_tax', 'amount_total']
-                for field in amount_fields:
-                    if po.get(field) is not None:
-                        enriched_po[f'{field}_formatted'] = f"{po[field]} {currency_code}"
-                
-                # Translate state
-                enriched_po['state_translated'] = _translate_purchase_state(po.get('state', ''), is_english)
-            
-            # Get purchase order lines for product details
-            try:
-                line_fields = odoo.get_version_compatible_fields('purchase.order.line', 'standard')
-                po_lines = _cached_odoo_call(
-                    'purchase.order.line', 'search_read',
-                    [[['order_id', '=', po['id']]]],
-                    {'fields': line_fields, 'order': 'sequence'}
-                )
-                
-                # Format line information
-                products = []
-                for line in po_lines:
-                    # Use the 'name' field which contains the product description
-                    product_name = line.get('name', '')
-                    if product_name:
-                        # Get first line of description if multi-line
-                        product_name = product_name.split('\n')[0].strip()
-                    
-                    line_info = {
-                        'sequence': line.get('sequence', 0),
-                        'product_name': product_name,  # Using line description as product name
-                        'description': line.get('name', ''),  # Full description
-                        'product_id': line.get('product_id', [None, ''])[0] if line.get('product_id') else None,
-                        'product_ref': line.get('product_id', [None, ''])[1] if line.get('product_id') else '',
-                        'quantity': line.get('product_qty', 1),
-                        'qty_received': line.get('qty_received', 0),
-                        'qty_invoiced': line.get('qty_invoiced', 0),
-                        'unit_price': line.get('price_unit', 0),
-                        'subtotal': line.get('price_subtotal', 0),
-                        'planned_date': _format_datetime(line.get('date_planned', ''))
-                    }
-                    products.append(line_info)
-                
-                enriched_po['products'] = products
-                enriched_po['line_count'] = len(products)
-                
-            except Exception as e:
-                logger.warning(f"Failed to get lines for purchase order {po['id']}: {e}")
-                enriched_po['products'] = []
-                enriched_po['line_count'] = 0
+            if compact:
+                enriched_po = {
+                    'id': po.get('id'),
+                    'name': po.get('name'),
+                    'supplier': po.get('partner_id', [None, ''])[1] if po.get('partner_id') else '',
+                    'amount_total': po.get('amount_total', 0),
+                    'state': po.get('state'),
+                    'date': po.get('date_order', '')[:10] if po.get('date_order') else '',
+                    'odoo_url': _generate_purchase_order_url(po['id'])
+                }
+            else:
+                enriched_po = po.copy()
+                enriched_po['odoo_url'] = _generate_purchase_order_url(po['id'])
+
+                if po.get('partner_id'):
+                    partner_details = _get_partner_details(po['partner_id'][0])
+                    enriched_po['supplier_details'] = partner_details
+                    currency_code = _get_currency_code(po.get('currency_id', []))
+                    enriched_po['currency_code'] = currency_code
+
+            # Get purchase order lines (skip if include_lines=False or compact)
+            if include_lines and not compact:
+                try:
+                    line_fields = odoo.get_version_compatible_fields('purchase.order.line', 'standard')
+                    po_lines = _cached_odoo_call(
+                        'purchase.order.line', 'search_read',
+                        [[['order_id', '=', po['id']]]],
+                        {'fields': line_fields, 'order': 'sequence'}
+                    )
+
+                    products = []
+                    for line in po_lines:
+                        line_product_name = line.get('name', '')
+                        if line_product_name:
+                            line_product_name = line_product_name.split('\n')[0].strip()
+
+                        line_info = {
+                            'product_name': line_product_name,
+                            'quantity': line.get('product_qty', 1),
+                            'unit_price': line.get('price_unit', 0),
+                            'subtotal': line.get('price_subtotal', 0)
+                        }
+                        products.append(line_info)
+
+                    enriched_po['products'] = products
+                    enriched_po['line_count'] = len(products)
+
+                except Exception as e:
+                    logger.warning(f"Failed to get lines for purchase order {po['id']}: {e}")
+                    enriched_po['products'] = []
+                    enriched_po['line_count'] = 0
             
             # Format dates
             date_fields = ['date_order', 'date_planned', 'create_date', 'write_date']
@@ -1843,14 +2371,15 @@ def search_purchase_orders(partner_name: Optional[str] = None, po_number: Option
 
 @mcp.tool()
 def get_purchase_order_details(po_id: int, include_lines: bool = True) -> str:
-    """Get detailed purchase order information with line items and supplier details
-    
+    """Get detailed purchase order information by ID.
+
     Args:
-        po_id: Purchase order ID
-        include_lines: Include purchase order line items (default: True)
-    
+        po_id: The purchase order ID (integer)
+        include_lines: Include line items with product details (default: True)
+
     Returns:
-        JSON string with complete purchase order details including direct URL
+        JSON with: header info, supplier details, line items (product, qty, price, subtotal),
+        totals, currency, expected delivery date, and direct Odoo URL
     """
     logger.info(f"Getting purchase order details for ID: {po_id}")
     
@@ -2008,27 +2537,39 @@ def get_purchase_order_details(po_id: int, include_lines: bool = True) -> str:
 def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: Optional[str] = None,
                           state: Optional[str] = None, picking_type: Optional[str] = None,
                           date_from: Optional[str] = None, date_to: Optional[str] = None,
-                          product_name: Optional[str] = None, origin_filter: Optional[str] = None,
-                          global_search: Optional[str] = None, limit: int = 10) -> str:
-    """Search delivery orders (stock pickings) with complete information and tracking details
-    
-    v1.3.1: Enhanced partner name search to include both 'name' and 'display_name' fields
-            for better partial matching support
-    
+                          product_name: Optional[str] = None,
+                          product_keywords: Optional[List[str]] = None,
+                          origin_filter: Optional[str] = None,
+                          global_search: Optional[str] = None, limit: int = 10, offset: int = 0,
+                          compact: bool = False, include_moves: bool = True, count_only: bool = False) -> str:
+    """Search Odoo delivery orders (stock pickings) with flexible filters.
+
+    IMPORTANT: Use the EXACT keywords from user input. DO NOT translate.
+
+    OUTPUT CONTROL (use these to reduce response size):
+    - count_only=True: Only return count, no data
+    - compact=True: Return minimal fields only
+    - include_moves=False: Skip stock moves detail
+
     Args:
-        partner_name: Customer/Partner name filter (optional) - supports partial matching
-        delivery_number: Delivery order number filter (optional)
-        state: State filter (draft, waiting, confirmed, assigned, done, cancel) (optional)
-        picking_type: Picking type filter (e.g., 'Delivery Orders', 'Receipts') (optional)
-        date_from: Start date filter (YYYY-MM-DD) (optional)
-        date_to: End date filter (YYYY-MM-DD) (optional)
-        product_name: Product name filter (searches in stock moves) (optional)
-        origin_filter: Origin document filter (e.g., SO001, PO001) (optional)
-        global_search: Search across ALL delivery order fields (optional)
-        limit: Maximum number of delivery orders to return (default: 10)
-    
+        partner_name: Customer/partner name (partial match supported)
+        delivery_number: Delivery order number (e.g., 'WH/OUT/00123')
+        state: Filter by state - draft/waiting/confirmed/assigned/done/cancel
+        picking_type: Filter by type - 'Delivery Orders', 'Receipts', etc.
+        date_from: Start date filter (YYYY-MM-DD)
+        date_to: End date filter (YYYY-MM-DD)
+        product_name: Filter by single product name in moves
+        product_keywords: Find products whose name contains ALL these keywords
+        origin_filter: Filter by source document (e.g., 'S00123', 'P00456')
+        global_search: Search across all fields
+        limit: Max results (default: 10)
+        offset: Skip first N results for pagination (default: 0)
+        compact: Return minimal fields only (default: False)
+        include_moves: Include stock moves detail (default: True)
+        count_only: Only return count (default: False)
+
     Returns:
-        JSON string with delivery order data including tracking information and direct URLs
+        JSON with delivery orders list (or count if count_only=True)
     """
     logger.info(f"Searching delivery orders: partner={partner_name}, product={product_name}, global={global_search}")
     
@@ -2083,6 +2624,34 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
             except Exception as e:
                 logger.warning(f"Global search failed: {e}")
         
+        # Search by product_keywords (single product with multiple keywords)
+        delivery_ids_from_keywords = None
+        if product_keywords and len(product_keywords) > 0:
+            try:
+                first_keyword = product_keywords[0]
+                move_domain = [
+                    '|',
+                    ['product_id.name', 'ilike', first_keyword],
+                    ['name', 'ilike', first_keyword]
+                ]
+                matching_moves = _cached_odoo_call(
+                    'stock.move', 'search_read', [move_domain],
+                    {'fields': ['picking_id', 'name', 'product_id'], 'limit': 5000}
+                )
+                delivery_ids_from_keywords = set()
+                for move in matching_moves:
+                    move_name = (move.get('name') or '').lower()
+                    product_name_str = (move['product_id'][1] if move.get('product_id') and isinstance(move['product_id'], list) else '').lower()
+                    combined_text = f"{move_name} {product_name_str}"
+                    if all(kw.lower() in combined_text for kw in product_keywords):
+                        if move.get('picking_id'):
+                            delivery_ids_from_keywords.add(move['picking_id'][0])
+                delivery_ids_from_keywords = list(delivery_ids_from_keywords)
+                logger.info(f"Found {len(delivery_ids_from_keywords)} deliveries with products matching keywords: {product_keywords}")
+            except Exception as e:
+                logger.warning(f"Error searching product keywords: {e}")
+                delivery_ids_from_keywords = []
+
         # Search by product name in stock moves
         delivery_ids_from_moves = []
         if product_name or global_search:
@@ -2118,7 +2687,9 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
         
         # Combine all found delivery IDs
         all_found_ids = []
-        if global_search:
+        if delivery_ids_from_keywords is not None:
+            all_found_ids = delivery_ids_from_keywords
+        elif global_search:
             all_found_ids.extend(delivery_ids_from_global)
             all_found_ids.extend(delivery_ids_from_moves)
             all_found_ids = list(set(all_found_ids))
@@ -2158,116 +2729,138 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
             }
         )
         
-        # Limit results if we searched by product/global
-        if (product_name or global_search) and len(delivery_orders) > limit:
-            delivery_orders = delivery_orders[:limit]
-        
+        # Apply offset and limit for pagination
+        delivery_orders = delivery_orders[offset:offset + limit]
+
+        # Handle count_only mode
+        if count_only:
+            return json.dumps({
+                "count": len(delivery_orders),
+                "query_info": {"mode": "count_only", "timestamp": datetime.now().isoformat()}
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
         # Enrich each delivery order with partner details and URLs
         enriched_deliveries = []
-        
+
         for delivery in delivery_orders:
-            enriched_delivery = delivery.copy()
+            if compact:
+                enriched_delivery = {
+                    'id': delivery.get('id'),
+                    'name': delivery.get('name'),
+                    'partner': delivery.get('partner_id', [None, ''])[1] if delivery.get('partner_id') else '',
+                    'state': delivery.get('state'),
+                    'picking_type': delivery.get('picking_type_id', [None, ''])[1] if delivery.get('picking_type_id') else '',
+                    'scheduled_date': delivery.get('scheduled_date', '')[:10] if delivery.get('scheduled_date') else '',
+                    'origin': delivery.get('origin', ''),
+                    'odoo_url': _generate_delivery_order_url(delivery['id'])
+                }
+            else:
+                enriched_delivery = delivery.copy()
             
-            # Generate direct URL to delivery order
-            enriched_delivery['odoo_url'] = _generate_delivery_order_url(delivery['id'])
-            enriched_delivery['url_description'] = f"點擊直接開啟出貨單 {delivery.get('name', delivery['id'])}"
-            
-            # Get partner details
-            if delivery.get('partner_id'):
-                partner_details = _get_partner_details(delivery['partner_id'][0])
-                enriched_delivery['partner_details'] = partner_details
-                
-                # Add partner URL
-                enriched_delivery['partner_url'] = _generate_partner_url(delivery['partner_id'][0])
-                enriched_delivery['partner_url_description'] = f"點擊直接開啟客戶 {delivery['partner_id'][1]}"
-                
-                # Determine display language
-                is_english = _is_english_customer(partner_details.get('lang', ''))
-                enriched_delivery['display_language'] = 'en' if is_english else 'zh'
-                
-                # Translate state
-                enriched_delivery['state_translated'] = _translate_delivery_state(delivery.get('state', ''), is_english)
-            
-            # Get picking type details
-            if delivery.get('picking_type_id'):
-                enriched_delivery['picking_type_name'] = delivery['picking_type_id'][1]
-            
-            # Get location details
-            if delivery.get('location_id'):
-                enriched_delivery['source_location'] = delivery['location_id'][1]
-            if delivery.get('location_dest_id'):
-                enriched_delivery['destination_location'] = delivery['location_dest_id'][1]
-            
-            # Get related sale order or purchase order URLs
-            if delivery.get('origin'):
-                origin = delivery['origin']
-                # Try to detect if it's a sale order or purchase order
-                if origin.startswith('SO') or 'sale' in origin.lower():
-                    try:
-                        # Search for related sale order
-                        so_search = _cached_odoo_call(
-                            'sale.order', 'search', [['name', '=', origin]], {'limit': 1}
-                        )
-                        if so_search:
-                            enriched_delivery['related_sale_order_url'] = _generate_quotation_url(so_search[0])
-                    except:
-                        pass
-                elif origin.startswith('PO') or 'purchase' in origin.lower():
-                    try:
-                        # Search for related purchase order
-                        po_search = _cached_odoo_call(
-                            'purchase.order', 'search', [['name', '=', origin]], {'limit': 1}
-                        )
-                        if po_search:
-                            enriched_delivery['related_purchase_order_url'] = _generate_purchase_order_url(po_search[0])
-                    except:
-                        pass
-            
-            # Get stock moves for product details
-            try:
-                move_fields = odoo.get_version_compatible_fields('stock.move', 'standard')
-                stock_moves = _cached_odoo_call(
-                    'stock.move', 'search_read',
-                    [[['picking_id', '=', delivery['id']]]],
-                    {'fields': move_fields, 'order': 'name'}
-                )
-                
-                # Format move information
-                products_moved = []
-                for move in stock_moves:
-                    # Use the 'name' field which contains the product description/move name
-                    product_name = move.get('name', '')
-                    if product_name:
-                        # Get first line of description if multi-line
-                        product_name = product_name.split('\n')[0].strip()
-                    
-                    move_info = {
-                        'product_name': product_name,  # Using move name/description as product name
-                        'description': move.get('name', ''),  # Full description
-                        'product_id': move.get('product_id', [None, ''])[0] if move.get('product_id') else None,
-                        'product_ref': move.get('product_id', [None, ''])[1] if move.get('product_id') else '',
-                        'quantity_expected': move.get('product_uom_qty', 0),
-                        'quantity_done': move.get('quantity_done', 0),
-                        'unit_of_measure': move.get('product_uom', [None, 'Unit'])[1] if move.get('product_uom') else 'Unit',
-                        'state': move.get('state', ''),
-                        'date_expected': _format_datetime(move.get('date', '')),
-                        'date_deadline': _format_datetime(move.get('date_deadline', ''))
-                    }
-                    products_moved.append(move_info)
-                
-                enriched_delivery['products_moved'] = products_moved
-                enriched_delivery['move_count'] = len(products_moved)
-                
-            except Exception as e:
-                logger.warning(f"Failed to get moves for delivery {delivery['id']}: {e}")
-                enriched_delivery['products_moved'] = []
-                enriched_delivery['move_count'] = 0
-            
-            # Format dates
-            date_fields = ['scheduled_date', 'date_done', 'create_date', 'write_date']
-            for field in date_fields:
-                if delivery.get(field):
-                    enriched_delivery[f'{field}_formatted'] = _format_datetime(delivery[field])
+            # Skip detailed enrichment for compact mode
+            if not compact:
+                # Generate direct URL to delivery order
+                enriched_delivery['odoo_url'] = _generate_delivery_order_url(delivery['id'])
+                enriched_delivery['url_description'] = f"點擊直接開啟出貨單 {delivery.get('name', delivery['id'])}"
+
+                # Get partner details
+                if delivery.get('partner_id'):
+                    partner_details = _get_partner_details(delivery['partner_id'][0])
+                    enriched_delivery['partner_details'] = partner_details
+
+                    # Add partner URL
+                    enriched_delivery['partner_url'] = _generate_partner_url(delivery['partner_id'][0])
+                    enriched_delivery['partner_url_description'] = f"點擊直接開啟客戶 {delivery['partner_id'][1]}"
+
+                    # Determine display language
+                    is_english = _is_english_customer(partner_details.get('lang', ''))
+                    enriched_delivery['display_language'] = 'en' if is_english else 'zh'
+
+                    # Translate state
+                    enriched_delivery['state_translated'] = _translate_delivery_state(delivery.get('state', ''), is_english)
+
+                # Get picking type details
+                if delivery.get('picking_type_id'):
+                    enriched_delivery['picking_type_name'] = delivery['picking_type_id'][1]
+
+                # Get location details
+                if delivery.get('location_id'):
+                    enriched_delivery['source_location'] = delivery['location_id'][1]
+                if delivery.get('location_dest_id'):
+                    enriched_delivery['destination_location'] = delivery['location_dest_id'][1]
+
+                # Get related sale order or purchase order URLs
+                if delivery.get('origin'):
+                    origin = delivery['origin']
+                    # Try to detect if it's a sale order or purchase order
+                    if origin.startswith('SO') or 'sale' in origin.lower():
+                        try:
+                            # Search for related sale order
+                            so_search = _cached_odoo_call(
+                                'sale.order', 'search', [['name', '=', origin]], {'limit': 1}
+                            )
+                            if so_search:
+                                enriched_delivery['related_sale_order_url'] = _generate_quotation_url(so_search[0])
+                        except:
+                            pass
+                    elif origin.startswith('PO') or 'purchase' in origin.lower():
+                        try:
+                            # Search for related purchase order
+                            po_search = _cached_odoo_call(
+                                'purchase.order', 'search', [['name', '=', origin]], {'limit': 1}
+                            )
+                            if po_search:
+                                enriched_delivery['related_purchase_order_url'] = _generate_purchase_order_url(po_search[0])
+                        except:
+                            pass
+
+            # Get stock moves for product details (skip if include_moves=False or compact)
+            if include_moves and not compact:
+                try:
+                    move_fields = odoo.get_version_compatible_fields('stock.move', 'standard')
+                    stock_moves = _cached_odoo_call(
+                        'stock.move', 'search_read',
+                        [[['picking_id', '=', delivery['id']]]],
+                        {'fields': move_fields, 'order': 'name'}
+                    )
+
+                    # Format move information
+                    products_moved = []
+                    for move in stock_moves:
+                        # Use the 'name' field which contains the product description/move name
+                        move_product_name = move.get('name', '')
+                        if move_product_name:
+                            # Get first line of description if multi-line
+                            move_product_name = move_product_name.split('\n')[0].strip()
+
+                        move_info = {
+                            'product_name': move_product_name,
+                            'description': move.get('name', ''),
+                            'product_id': move.get('product_id', [None, ''])[0] if move.get('product_id') else None,
+                            'product_ref': move.get('product_id', [None, ''])[1] if move.get('product_id') else '',
+                            'quantity_expected': move.get('product_uom_qty', 0),
+                            'quantity_done': move.get('quantity_done', 0),
+                            'unit_of_measure': move.get('product_uom', [None, 'Unit'])[1] if move.get('product_uom') else 'Unit',
+                            'state': move.get('state', ''),
+                            'date_expected': _format_datetime(move.get('date', '')),
+                            'date_deadline': _format_datetime(move.get('date_deadline', ''))
+                        }
+                        products_moved.append(move_info)
+
+                    enriched_delivery['products_moved'] = products_moved
+                    enriched_delivery['move_count'] = len(products_moved)
+
+                except Exception as e:
+                    logger.warning(f"Failed to get moves for delivery {delivery['id']}: {e}")
+                    enriched_delivery['products_moved'] = []
+                    enriched_delivery['move_count'] = 0
+
+            # Format dates (skip for compact mode)
+            if not compact:
+                date_fields = ['scheduled_date', 'date_done', 'create_date', 'write_date']
+                for field in date_fields:
+                    if delivery.get(field):
+                        enriched_delivery[f'{field}_formatted'] = _format_datetime(delivery[field])
             
             enriched_deliveries.append(enriched_delivery)
         
@@ -2351,14 +2944,15 @@ def search_delivery_orders(partner_name: Optional[str] = None, delivery_number: 
 
 @mcp.tool()
 def get_delivery_order_details(delivery_id: int, include_moves: bool = True) -> str:
-    """Get detailed delivery order information with stock moves and tracking details
-    
+    """Get detailed delivery order (stock picking) information by ID.
+
     Args:
-        delivery_id: Delivery order (stock picking) ID
+        delivery_id: The delivery order ID (integer)
         include_moves: Include stock move details (default: True)
-    
+
     Returns:
-        JSON string with complete delivery order details including direct URL
+        JSON with: header info, partner details, stock moves (product, qty demanded/done),
+        tracking info, scheduled date, and direct Odoo URL
     """
     logger.info(f"Getting delivery order details for ID: {delivery_id}")
     
@@ -2541,7 +3135,7 @@ def get_delivery_order_details(delivery_id: int, include_moves: bool = True) -> 
 
 
 
-@mcp.tool()
+# @mcp.tool()  # Disabled - duplicate of search_products
 def search_products_v2(name: Optional[str] = None, category_name: Optional[str] = None,
                       product_type: Optional[str] = None, default_code: Optional[str] = None,
                       barcode: Optional[str] = None, active_only: bool = True,
@@ -2784,37 +3378,41 @@ def search_products_v2(name: Optional[str] = None, category_name: Optional[str] 
 
 @mcp.tool()
 def search_products(name: Optional[str] = None, category_name: Optional[str] = None,
+                   keywords: Optional[List[str]] = None,
                    product_type: Optional[str] = None, default_code: Optional[str] = None,
                    barcode: Optional[str] = None, active_only: bool = True,
                    sale_ok: Optional[bool] = None, purchase_ok: Optional[bool] = None,
                    min_price: Optional[float] = None, max_price: Optional[float] = None,
-                   limit: int = 50, skip_cache: bool = False) -> str:
-    """Search products with comprehensive filters and stock information
-    
-    v1.4.0: New function for product search with multiple filter options
-    v1.4.1: Fixed name search to properly use ilike operator for case-insensitive matching
-    v1.4.2: Added skip_cache option and improved search to find all matching products
-    v1.4.3: Simplified domain construction to fix search issues
-    v1.4.4: Fixed product name display to remove variant/copy text
-    
-    NOTE: For multi-language search support, please use search_products_v2() instead
-    
+                   limit: int = 20, offset: int = 0, skip_cache: bool = False,
+                   compact: bool = False, count_only: bool = False) -> str:
+    """Search Odoo products with comprehensive filters.
+
+    IMPORTANT: Use the EXACT keywords from user input. DO NOT translate.
+
+    OUTPUT CONTROL (use these to reduce response size):
+    - count_only=True: Only return count, no data
+    - compact=True: Return minimal fields only
+
     Args:
-        name: Product name filter (partial matching supported)
+        name: Product name (partial match, case-insensitive)
         category_name: Product category name filter
-        product_type: Product type filter ('consu', 'service', 'product')
+        keywords: Find products whose name contains ALL these keywords (AND logic)
+        product_type: Type filter - 'consu' (consumable), 'service', 'product' (storable)
         default_code: Internal reference/SKU filter
         barcode: Barcode filter
-        active_only: Only show active products (default: True)
+        active_only: Only active products (default: True)
         sale_ok: Filter products that can be sold
         purchase_ok: Filter products that can be purchased
         min_price: Minimum sale price filter
         max_price: Maximum sale price filter
-        limit: Maximum number of products to return (default: 50)
-        skip_cache: Skip cache and fetch fresh data (default: False)
-    
+        limit: Max results (default: 20)
+        offset: Skip first N results for pagination (default: 0)
+        skip_cache: Force fresh data from Odoo (default: False)
+        compact: Return minimal fields only (default: False)
+        count_only: Only return count (default: False)
+
     Returns:
-        JSON string with product data including stock levels and URLs
+        JSON with products list (or count if count_only=True)
     """
     logger.info(f"Searching products: name={name}, category={category_name}, type={product_type}")
     
@@ -2853,7 +3451,38 @@ def search_products(name: Optional[str] = None, category_name: Optional[str] = N
         
         if max_price is not None:
             domain.append(['list_price', '<=', max_price])
-        
+
+        # Handle keywords search (find products whose name contains ALL keywords)
+        product_ids_from_keywords = None
+        if keywords and len(keywords) > 0:
+            try:
+                first_keyword = keywords[0]
+                keyword_domain = [['name', 'ilike', first_keyword]]
+                if active_only:
+                    keyword_domain.append(['active', '=', True])
+                matching_products = _cached_odoo_call(
+                    'product.product', 'search_read', [keyword_domain],
+                    {'fields': ['id', 'name'], 'limit': 5000}
+                )
+                product_ids_from_keywords = []
+                for prod in matching_products:
+                    prod_name = (prod.get('name') or '').lower()
+                    if all(kw.lower() in prod_name for kw in keywords):
+                        product_ids_from_keywords.append(prod['id'])
+                logger.info(f"Found {len(product_ids_from_keywords)} products matching keywords: {keywords}")
+                if product_ids_from_keywords:
+                    domain.append(['id', 'in', product_ids_from_keywords])
+                else:
+                    # No products match all keywords
+                    return json.dumps({
+                        "products": [],
+                        "count": 0,
+                        "summary": {"message": f"No products found matching all keywords: {keywords}"},
+                        "query_info": {"keywords": keywords, "timestamp": datetime.now().isoformat()}
+                    }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+            except Exception as e:
+                logger.warning(f"Error searching keywords: {e}")
+
         # Get products using version-compatible fields
         available_fields = odoo.get_version_compatible_fields('product.product', 'standard')
         
@@ -2886,11 +3515,36 @@ def search_products(name: Optional[str] = None, category_name: Optional[str] = N
         
         # Log the actual number of products found
         logger.info(f"Found {len(products)} products matching criteria")
-        
+
+        # Apply offset and limit for pagination early
+        total_found = len(products)
+        products = products[offset:offset + limit]
+
+        # Handle count_only mode
+        if count_only:
+            return json.dumps({
+                "count": total_found,
+                "query_info": {"mode": "count_only", "timestamp": datetime.now().isoformat()}
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
         # Enrich product data
         enriched_products = []
-        
+
         for product in products:
+            if compact:
+                enriched_product = {
+                    'id': product.get('id'),
+                    'name': product.get('name'),
+                    'default_code': product.get('default_code', ''),
+                    'type': product.get('type'),
+                    'list_price': product.get('list_price', 0),
+                    'category': product.get('categ_id', [None, ''])[1] if product.get('categ_id') else '',
+                    'qty_available': product.get('qty_available', 0),
+                    'odoo_url': _generate_product_url(product['id'])
+                }
+                enriched_products.append(enriched_product)
+                continue
+
             enriched_product = product.copy()
             
             # v1.4.4: Use 'name' field instead of 'display_name' to avoid variant/copy text
@@ -2941,13 +3595,8 @@ def search_products(name: Optional[str] = None, category_name: Optional[str] = N
             }
             
             enriched_products.append(enriched_product)
-        
-        # v1.4.2: Apply the requested limit after enriching all products
-        if len(enriched_products) > limit:
-            enriched_products = enriched_products[:limit]
-        
+
         # Calculate summary
-        total_found = len(products)  # Total found before limiting
         displayed_count = len(enriched_products)  # Count after limiting
         category_breakdown = {}
         type_breakdown = {}
@@ -2992,16 +3641,15 @@ def search_products(name: Optional[str] = None, category_name: Optional[str] = N
 
 @mcp.tool()
 def get_product_details(product_id: int, include_stock_by_location: bool = False) -> str:
-    """Get detailed information about a specific product
-    
-    v1.4.0: New function for retrieving comprehensive product details
-    
+    """Get detailed product information by ID.
+
     Args:
-        product_id: The product ID to retrieve
-        include_stock_by_location: Include stock levels by warehouse/location (default: False)
-    
+        product_id: The product ID (integer)
+        include_stock_by_location: Include stock levels breakdown by warehouse/location (default: False)
+
     Returns:
-        JSON string with detailed product information
+        JSON with: product info (name, code, type, category), prices (sale/cost),
+        stock quantities, unit of measure, variants info, and direct Odoo URL
     """
     logger.info(f"Getting product details for ID: {product_id}")
     
@@ -3176,18 +3824,17 @@ def get_product_details(product_id: int, include_stock_by_location: bool = False
 @mcp.tool()
 def get_product_stock(product_id: Optional[int] = None, product_name: Optional[str] = None,
                      warehouse_id: Optional[int] = None, location_id: Optional[int] = None) -> str:
-    """Get real-time stock levels for products
-    
-    v1.4.0: New function for retrieving product stock information
-    
+    """Get real-time stock levels for products.
+
     Args:
-        product_id: Specific product ID (optional)
-        product_name: Product name to search (optional)
-        warehouse_id: Filter by specific warehouse (optional)
-        location_id: Filter by specific location (optional)
-    
+        product_id: Specific product ID (optional, use this OR product_name)
+        product_name: Product name to search (optional, returns multiple matches)
+        warehouse_id: Filter by specific warehouse ID (optional)
+        location_id: Filter by specific stock location ID (optional)
+
     Returns:
-        JSON string with stock level information
+        JSON with: product info, total stock quantity, reserved quantity,
+        available quantity, and breakdown by location/warehouse if applicable
     """
     logger.info(f"Getting product stock: id={product_id}, name={product_name}")
     
@@ -3355,22 +4002,29 @@ def get_product_stock(product_id: Optional[int] = None, product_name: Optional[s
 @mcp.tool()
 def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = None,
                    is_supplier: Optional[bool] = None, email: Optional[str] = None,
-                   phone: Optional[str] = None, limit: int = 100) -> str:
-    """Search contacts/customers/suppliers with complete information
-    
-    v1.3.1: Enhanced name search to include both 'name' and 'display_name' fields
-            for better partial matching support
-    
+                   phone: Optional[str] = None, limit: int = 20, offset: int = 0,
+                   compact: bool = False, count_only: bool = False) -> str:
+    """Search Odoo contacts/customers/suppliers (res.partner).
+
+    IMPORTANT: Use the EXACT keywords from user input. DO NOT translate.
+
+    OUTPUT CONTROL (use these to reduce response size):
+    - count_only=True: Only return count, no data
+    - compact=True: Return minimal fields only
+
     Args:
-        name: Contact name filter (optional) - supports partial matching
-        is_customer: Filter for customers only (optional) - if None, includes all
-        is_supplier: Filter for suppliers only (optional) - if None, includes all
-        email: Email filter (optional)
-        phone: Phone number filter (optional)
-        limit: Maximum number of contacts to return (default: 100, 0 = all)
-    
+        name: Partner name (partial match, searches both name and display_name)
+        is_customer: Filter customers only (True) or exclude (False), None=all
+        is_supplier: Filter suppliers only (True) or exclude (False), None=all
+        email: Email address filter (partial match)
+        phone: Phone/mobile number filter (partial match)
+        limit: Max results (default: 20, use 0 for unlimited)
+        offset: Skip first N results for pagination (default: 0)
+        compact: Return minimal fields only (default: False)
+        count_only: Only return count (default: False)
+
     Returns:
-        JSON string with contact data including language/currency settings and URLs
+        JSON with partners list (or count if count_only=True)
     """
     logger.info(f"Searching partners: name={name}, customer={is_customer}, supplier={is_supplier}, limit={limit}")
     
@@ -3395,25 +4049,48 @@ def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = No
         # Get partners using compatible fields
         partner_fields = odoo.get_version_compatible_fields('res.partner', 'standard')
         
-        # Set search kwargs
+        # Set search kwargs with pagination support
         search_kwargs = {'fields': partner_fields}
         if limit > 0:
             search_kwargs['limit'] = limit
-        
+        if offset > 0:
+            search_kwargs['offset'] = offset
+
         partners = _cached_odoo_call(
             'res.partner', 'search_read', [domain], search_kwargs
         )
-        
+
+        # Handle count_only mode
+        if count_only:
+            return json.dumps({
+                "count": len(partners),
+                "query_info": {"mode": "count_only", "timestamp": datetime.now().isoformat()}
+            }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
         # Enrich partner data with URLs
         enriched_partners = []
-        
+
         for partner in partners:
+            if compact:
+                enriched_partner = {
+                    'id': partner.get('id'),
+                    'name': partner.get('name'),
+                    'email': partner.get('email', ''),
+                    'phone': partner.get('phone', ''),
+                    'is_company': partner.get('is_company', False),
+                    'customer_rank': partner.get('customer_rank', 0),
+                    'supplier_rank': partner.get('supplier_rank', 0),
+                    'odoo_url': _generate_partner_url(partner['id'])
+                }
+                enriched_partners.append(enriched_partner)
+                continue
+
             enriched_partner = partner.copy()
-            
+
             # Generate partner URL
             enriched_partner['odoo_url'] = _generate_partner_url(partner['id'])
             enriched_partner['url_description'] = f"點擊直接開啟聯絡人 {partner.get('name', partner['id'])}"
-            
+
             # Format address
             address_parts = []
             if partner.get('street'):
@@ -3422,13 +4099,13 @@ def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = No
                 address_parts.append(partner['city'])
             if partner.get('country_id'):
                 address_parts.append(partner['country_id'][1])
-            
+
             enriched_partner['formatted_address'] = ', '.join(address_parts) if address_parts else 'No address'
-            
+
             # Language and currency settings
             partner_lang = partner.get('lang', 'zh_TW')
             enriched_partner['is_english_customer'] = _is_english_customer(partner_lang)
-            
+
             enriched_partners.append(enriched_partner)
         
         # Calculate statistics
@@ -3466,7 +4143,7 @@ def search_partners(name: Optional[str] = None, is_customer: Optional[bool] = No
         logger.error(f"Error searching partners: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled - use search_partners instead
 def get_all_partners(limit: int = 0, include_companies: bool = True, 
                     include_individuals: bool = True) -> str:
     """Get all partners/contacts in the system
@@ -3565,7 +4242,7 @@ def get_all_partners(limit: int = 0, include_companies: bool = True,
         logger.error(f"Error getting all partners: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def get_partner_statistics() -> str:
     """Get comprehensive partner statistics and counts
     
@@ -3627,7 +4304,7 @@ def get_partner_statistics() -> str:
         logger.error(f"Error getting partner statistics: {e}")
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def get_partner_language_currency(partner_id: int) -> str:
     """Get detailed language and currency settings for a specific partner
     
@@ -3698,7 +4375,7 @@ def get_partner_language_currency(partner_id: int) -> str:
 
 # ───────────────────────── User Language Management ─────────────────────────
 
-@mcp.tool()
+# @mcp.tool()  # Disabled to reduce tool count
 def get_current_user_language() -> str:
     """Get the current MCP user's language setting
     
@@ -3754,9 +4431,1121 @@ def get_current_user_language() -> str:
             "timestamp": datetime.now().isoformat()
         }, indent=2, ensure_ascii=False)
 
-# ───────────────────────── Cache Management ─────────────────────────
+# ───────────────────────── Partner Management ─────────────────────────
 
 @mcp.tool()
+def create_or_get_partner(partner_name: str, is_company: bool = True,
+                         is_customer: bool = True, is_supplier: bool = False,
+                         vat: Optional[str] = None, phone: Optional[str] = None,
+                         email: Optional[str] = None, street: Optional[str] = None,
+                         city: Optional[str] = None, country_code: Optional[str] = "TW") -> str:
+    """Create a new partner or retrieve existing one by exact name match.
+
+    Args:
+        partner_name: Partner/company name (required, exact match for lookup)
+        is_company: True for company, False for individual (default: True)
+        is_customer: Mark as customer (default: True)
+        is_supplier: Mark as supplier (default: False)
+        vat: VAT/Tax ID number - 統一編號 for Taiwan (optional)
+        phone: Phone number (optional)
+        email: Email address (optional)
+        street: Street address (optional)
+        city: City name (optional)
+        country_code: ISO country code (default: "TW" for Taiwan)
+
+    Returns:
+        JSON with: status ('existing' or 'created'), partner ID, name, and details
+    """
+    logger.info(f"Creating or getting partner: {partner_name}")
+    
+    try:
+        # First, search for existing partner with exact name
+        existing_partners = _cached_odoo_call(
+            'res.partner', 'search_read',
+            [[['name', '=', partner_name]]],
+            {'fields': ['id', 'name', 'is_company', 'customer_rank', 'supplier_rank'], 'limit': 1}
+        )
+        
+        if existing_partners:
+            # Partner already exists
+            partner = existing_partners[0]
+            logger.info(f"Found existing partner: {partner['id']} - {partner['name']}")
+            
+            return json.dumps({
+                "status": "existing",
+                "partner": {
+                    "id": partner['id'],
+                    "name": partner['name'],
+                    "is_company": partner.get('is_company', False),
+                    "is_customer": partner.get('customer_rank', 0) > 0,
+                    "is_supplier": partner.get('supplier_rank', 0) > 0
+                },
+                "message": f"Partner '{partner_name}' already exists"
+            }, indent=2, ensure_ascii=False)
+        
+        # Create new partner
+        partner_data = {
+            'name': partner_name,
+            'is_company': is_company,
+            'customer_rank': 1 if is_customer else 0,
+            'supplier_rank': 1 if is_supplier else 0,
+        }
+        
+        # Add optional fields
+        if vat:
+            partner_data['vat'] = vat
+        if phone:
+            partner_data['phone'] = phone
+        if email:
+            partner_data['email'] = email
+        if street:
+            partner_data['street'] = street
+        if city:
+            partner_data['city'] = city
+            
+        # Get country ID
+        if country_code:
+            countries = _cached_odoo_call(
+                'res.country', 'search_read',
+                [[['code', '=', country_code.upper()]]],
+                {'fields': ['id'], 'limit': 1}
+            )
+            if countries:
+                partner_data['country_id'] = countries[0]['id']
+        
+        # Create the partner
+        partner_id = odoo.execute_kw(
+            'res.partner', 'create', [partner_data]
+        )
+        
+        logger.info(f"Created new partner: {partner_id} - {partner_name}")
+        
+        # Clear cache to ensure fresh data
+        cache.clear()
+        
+        return json.dumps({
+            "status": "created",
+            "partner": {
+                "id": partner_id,
+                "name": partner_name,
+                "is_company": is_company,
+                "is_customer": is_customer,
+                "is_supplier": is_supplier,
+                "url": _generate_partner_url(partner_id)
+            },
+            "message": f"Successfully created new partner '{partner_name}'"
+        }, indent=2, ensure_ascii=False)
+        
+    except Exception as e:
+        logger.error(f"Error creating/getting partner: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled - use create_or_get_partner instead
+def create_partner_with_contacts(company_name: str, contacts: List[Dict[str, str]], 
+                                 is_customer: bool = True, is_supplier: bool = False,
+                                 vat: Optional[str] = None, company_phone: Optional[str] = None, 
+                                 company_email: Optional[str] = None, company_street: Optional[str] = None, 
+                                 company_city: Optional[str] = None, country_code: Optional[str] = "TW") -> str:
+    """Create a new company partner with multiple contacts
+    
+    v1.5.4: New function to create company with contacts in one operation
+    
+    Args:
+        company_name: Company name (required)
+        contacts: List of contacts, each with 'name' (required), 'function', 'phone', 'mobile', 'email'
+        is_customer: Whether this is a customer (default: True)
+        is_supplier: Whether this is a supplier (default: False)
+        vat: VAT/Tax ID number (統一編號) (optional)
+        company_phone: Company main phone (optional)
+        company_email: Company main email (optional)
+        company_street: Company street address (optional)
+        company_city: Company city (optional)
+        country_code: Country code (default: "TW" for Taiwan)
+    
+    Returns:
+        JSON string with created company and contacts information
+        
+    Example contacts parameter:
+    [
+        {"name": "John Doe", "function": "CEO", "email": "john@company.com", "phone": "123456"},
+        {"name": "Jane Smith", "function": "Sales Manager", "email": "jane@company.com", "mobile": "098765"}
+    ]
+    """
+    logger.info(f"Creating company with contacts: {company_name}")
+    
+    try:
+        # First check if company already exists
+        existing_companies = _cached_odoo_call(
+            'res.partner', 'search_read',
+            [[['name', '=', company_name], ['is_company', '=', True]]],
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        if existing_companies:
+            return json.dumps({
+                "error": "Company already exists",
+                "existing_company": {
+                    "id": existing_companies[0]['id'],
+                    "name": existing_companies[0]['name']
+                },
+                "message": f"Company '{company_name}' already exists. Use add_contact_to_partner to add new contacts."
+            }, indent=2, ensure_ascii=False)
+        
+        # Create the company
+        company_data = {
+            'name': company_name,
+            'is_company': True,
+            'customer_rank': 1 if is_customer else 0,
+            'supplier_rank': 1 if is_supplier else 0,
+        }
+        
+        # Add optional company fields
+        if vat:
+            company_data['vat'] = vat
+        if company_phone:
+            company_data['phone'] = company_phone
+        if company_email:
+            company_data['email'] = company_email
+        if company_street:
+            company_data['street'] = company_street
+        if company_city:
+            company_data['city'] = company_city
+            
+        # Get country ID
+        if country_code:
+            countries = _cached_odoo_call(
+                'res.country', 'search_read',
+                [[['code', '=', country_code.upper()]]],
+                {'fields': ['id'], 'limit': 1}
+            )
+            if countries:
+                company_data['country_id'] = countries[0]['id']
+        
+        # Create the company
+        company_id = odoo.execute_kw(
+            'res.partner', 'create', [company_data]
+        )
+        
+        logger.info(f"Created company: {company_id} - {company_name}")
+        
+        # Create contacts
+        created_contacts = []
+        for contact in contacts:
+            if not contact.get('name'):
+                logger.warning(f"Skipping contact without name")
+                continue
+                
+            contact_data = {
+                'name': contact['name'],
+                'parent_id': company_id,  # This establishes the parent-child relationship
+                'is_company': False,
+                'type': 'contact',  # Type can be 'contact', 'invoice', 'delivery', 'other'
+            }
+            
+            # Add optional contact fields
+            if contact.get('function'):
+                contact_data['function'] = contact['function']  # Job position
+            if contact.get('email'):
+                contact_data['email'] = contact['email']
+            if contact.get('phone'):
+                contact_data['phone'] = contact['phone']
+            if contact.get('mobile'):
+                contact_data['mobile'] = contact['mobile']
+            
+            # Inherit some fields from parent if not specified
+            if country_code and 'country_id' in company_data:
+                contact_data['country_id'] = company_data['country_id']
+            
+            # Create the contact
+            contact_id = odoo.execute_kw(
+                'res.partner', 'create', [contact_data]
+            )
+            
+            created_contacts.append({
+                'id': contact_id,
+                'name': contact['name'],
+                'function': contact.get('function', ''),
+                'email': contact.get('email', ''),
+                'phone': contact.get('phone', ''),
+                'mobile': contact.get('mobile', ''),
+                'url': _generate_partner_url(contact_id)
+            })
+            
+            logger.info(f"Created contact: {contact_id} - {contact['name']}")
+        
+        # Clear cache
+        cache.clear()
+        
+        result = {
+            "status": "success",
+            "company": {
+                "id": company_id,
+                "name": company_name,
+                "is_customer": is_customer,
+                "is_supplier": is_supplier,
+                "url": _generate_partner_url(company_id)
+            },
+            "contacts": created_contacts,
+            "summary": {
+                "total_contacts_created": len(created_contacts),
+                "message": f"Successfully created company '{company_name}' with {len(created_contacts)} contact(s)"
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
+        
+    except Exception as e:
+        logger.error(f"Error creating company with contacts: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled to reduce tool count
+def add_contact_to_partner(parent_partner_id: int, contact_name: str,
+                          function: Optional[str] = None, email: Optional[str] = None,
+                          phone: Optional[str] = None, mobile: Optional[str] = None,
+                          contact_type: str = "contact") -> str:
+    """Add a contact to an existing partner (company)
+    
+    v1.5.4: New function to add contacts to existing partners
+    
+    Args:
+        parent_partner_id: ID of the parent partner (company)
+        contact_name: Contact person's name (required)
+        function: Job position/function (optional)
+        email: Contact email (optional)
+        phone: Contact phone (optional)
+        mobile: Contact mobile (optional)
+        contact_type: Type of contact - 'contact', 'invoice', 'delivery', 'other' (default: 'contact')
+    
+    Returns:
+        JSON string with created contact information
+    """
+    logger.info(f"Adding contact to partner {parent_partner_id}: {contact_name}")
+    
+    try:
+        # First verify the parent partner exists and is a company
+        parent_partner = _cached_odoo_call(
+            'res.partner', 'read', [parent_partner_id],
+            {'fields': ['id', 'name', 'is_company']}
+        )
+        
+        if not parent_partner:
+            return json.dumps({
+                "error": "Parent partner not found",
+                "parent_partner_id": parent_partner_id
+            }, indent=2, ensure_ascii=False)
+        
+        parent_data = parent_partner[0]
+        
+        # Check if contact already exists
+        existing_contacts = _cached_odoo_call(
+            'res.partner', 'search_read',
+            [[['name', '=', contact_name], ['parent_id', '=', parent_partner_id]]],
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        if existing_contacts:
+            return json.dumps({
+                "error": "Contact already exists",
+                "existing_contact": {
+                    "id": existing_contacts[0]['id'],
+                    "name": existing_contacts[0]['name'],
+                    "parent_company": parent_data['name']
+                }
+            }, indent=2, ensure_ascii=False)
+        
+        # Create the contact
+        contact_data = {
+            'name': contact_name,
+            'parent_id': parent_partner_id,
+            'is_company': False,
+            'type': contact_type,
+        }
+        
+        # Add optional fields
+        if function:
+            contact_data['function'] = function
+        if email:
+            contact_data['email'] = email
+        if phone:
+            contact_data['phone'] = phone
+        if mobile:
+            contact_data['mobile'] = mobile
+        
+        # Create the contact
+        contact_id = odoo.execute_kw(
+            'res.partner', 'create', [contact_data]
+        )
+        
+        logger.info(f"Created contact: {contact_id} - {contact_name} under company {parent_data['name']}")
+        
+        # Clear cache
+        cache.clear()
+        
+        # Get all contacts of this company for summary
+        all_contacts = _cached_odoo_call(
+            'res.partner', 'search_read',
+            [[['parent_id', '=', parent_partner_id]]],
+            {'fields': ['id', 'name', 'function', 'email', 'phone', 'mobile'], 'limit': 100}
+        )
+        
+        result = {
+            "status": "success",
+            "parent_company": {
+                "id": parent_partner_id,
+                "name": parent_data['name'],
+                "is_company": parent_data.get('is_company', False),
+                "url": _generate_partner_url(parent_partner_id)
+            },
+            "new_contact": {
+                "id": contact_id,
+                "name": contact_name,
+                "function": function or "",
+                "email": email or "",
+                "phone": phone or "",
+                "mobile": mobile or "",
+                "type": contact_type,
+                "url": _generate_partner_url(contact_id)
+            },
+            "all_company_contacts": [
+                {
+                    "id": c['id'],
+                    "name": c['name'],
+                    "function": c.get('function', ''),
+                    "email": c.get('email', ''),
+                    "phone": c.get('phone', ''),
+                    "mobile": c.get('mobile', '')
+                } for c in all_contacts
+            ],
+            "summary": {
+                "total_contacts": len(all_contacts),
+                "message": f"Successfully added contact '{contact_name}' to company '{parent_data['name']}'"
+            }
+        }
+        
+        return json.dumps(result, indent=2, ensure_ascii=False)
+        
+    except Exception as e:
+        logger.error(f"Error adding contact to partner: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled to reduce tool count
+def preview_quotation_copy(source_quotation_id: int, new_partner_name: str,
+                          replace_customer_name_in_text: bool = True) -> str:
+    """Preview what a quotation copy would look like with a new customer
+    
+    v1.5.3: New function to preview quotation copy before creation
+    
+    Args:
+        source_quotation_id: ID of the quotation to copy
+        new_partner_name: Name of the new customer
+        replace_customer_name_in_text: Whether to replace old customer name in text fields (default: True)
+    
+    Returns:
+        JSON string with preview of the quotation copy
+    """
+    logger.info(f"Previewing quotation copy: {source_quotation_id} -> {new_partner_name}")
+    
+    try:
+        # Get source quotation details
+        source_quote = _cached_odoo_call(
+            'sale.order', 'read', [source_quotation_id],
+            {}
+        )
+        
+        if not source_quote:
+            return json.dumps({"error": "Source quotation not found"}, indent=2, ensure_ascii=False)
+        
+        source_data = source_quote[0]
+        
+        # Get original customer name
+        original_customer_name = source_data.get('partner_id', [None, 'Unknown'])[1] if source_data.get('partner_id') else 'Unknown'
+        
+        # Check if new partner exists
+        new_partners = _cached_odoo_call(
+            'res.partner', 'search_read',
+            [[['name', '=', new_partner_name]]],
+            {'fields': ['id', 'name'], 'limit': 1}
+        )
+        
+        new_partner_exists = len(new_partners) > 0
+        new_partner_id = new_partners[0]['id'] if new_partner_exists else None
+        
+        # Get quotation lines
+        lines = _cached_odoo_call(
+            'sale.order.line', 'search_read',
+            [[['order_id', '=', source_quotation_id]]],
+            {'order': 'sequence'}
+        )
+        
+        # Preview data
+        preview_data = {
+            "source_quotation": {
+                "id": source_quotation_id,
+                "name": source_data.get('name', ''),
+                "original_customer": original_customer_name,
+                "date_order": source_data.get('date_order', ''),
+                "amount_total": source_data.get('amount_total', 0),
+                "currency": source_data.get('currency_id', [None, 'TWD'])[1] if source_data.get('currency_id') else 'TWD'
+            },
+            "new_quotation_preview": {
+                "name": "[TO BE GENERATED]",
+                "new_customer": new_partner_name,
+                "customer_exists": new_partner_exists,
+                "customer_id": new_partner_id,
+                "date_order": datetime.now().strftime('%Y-%m-%d'),
+                "validity_date": source_data.get('validity_date', ''),
+                "payment_term": source_data.get('payment_term_id', [None, ''])[1] if source_data.get('payment_term_id') else '',
+                "notes": source_data.get('note', ''),
+                "amount_total": source_data.get('amount_total', 0),
+                "currency": source_data.get('currency_id', [None, 'TWD'])[1] if source_data.get('currency_id') else 'TWD'
+            },
+            "lines_preview": [],
+            "text_replacements": []
+        }
+        
+        # Process lines
+        for line in lines:
+            line_preview = {
+                "sequence": line.get('sequence', 0),
+                "product": line.get('product_id', [None, ''])[1] if line.get('product_id') else 'Service',
+                "description": line.get('name', ''),
+                "quantity": line.get('product_uom_qty', 0),
+                "unit_price": line.get('price_unit', 0),
+                "subtotal": line.get('price_subtotal', 0)
+            }
+            
+            # Check if description contains customer name
+            if replace_customer_name_in_text and line.get('name', '') and original_customer_name in line['name']:
+                new_description = line['name'].replace(original_customer_name, new_partner_name)
+                line_preview['new_description'] = new_description
+                preview_data['text_replacements'].append({
+                    "field": f"Line {line.get('sequence', 0)} description",
+                    "original": line['name'][:100] + "..." if len(line['name']) > 100 else line['name'],
+                    "new": new_description[:100] + "..." if len(new_description) > 100 else new_description
+                })
+            
+            preview_data['lines_preview'].append(line_preview)
+        
+        # Check notes field
+        if replace_customer_name_in_text and source_data.get('note') and original_customer_name in source_data['note']:
+            new_note = source_data['note'].replace(original_customer_name, new_partner_name)
+            preview_data['new_quotation_preview']['new_notes'] = new_note
+            preview_data['text_replacements'].append({
+                "field": "Quotation notes",
+                "original": source_data['note'][:100] + "..." if len(source_data['note']) > 100 else source_data['note'],
+                "new": new_note[:100] + "..." if len(new_note) > 100 else new_note
+            })
+        
+        # Summary
+        preview_data['summary'] = {
+            "action_required": "not_exists" if not new_partner_exists else "exists",
+            "customer_action": f"Will create new customer '{new_partner_name}'" if not new_partner_exists else f"Will use existing customer '{new_partner_name}'",
+            "total_lines": len(lines),
+            "text_replacements_count": len(preview_data['text_replacements']),
+            "confirmation_required": True,
+            "instructions": "Review the preview above. Use copy_quotation with confirm=True to create the copy."
+        }
+        
+        return json.dumps(preview_data, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error previewing quotation copy: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled to reduce tool count
+def copy_quotation(source_quotation_id: int, new_partner_name: str,
+                  replace_customer_name_in_text: bool = True,
+                  confirm: bool = False) -> str:
+    """Copy a quotation to a new customer
+    
+    v1.5.3: New function to copy quotations with customer replacement
+    
+    Args:
+        source_quotation_id: ID of the quotation to copy
+        new_partner_name: Name of the new customer
+        replace_customer_name_in_text: Whether to replace old customer name in text fields (default: True)
+        confirm: Must be True to actually create the copy (safety check)
+    
+    Returns:
+        JSON string with the new quotation information
+    """
+    logger.info(f"Copying quotation: {source_quotation_id} -> {new_partner_name} (confirm={confirm})")
+    
+    if not confirm:
+        return json.dumps({
+            "error": "Confirmation required",
+            "message": "Please preview the copy first with preview_quotation_copy, then set confirm=True to create the copy"
+        }, indent=2, ensure_ascii=False)
+    
+    try:
+        # Get source quotation
+        source_quote = _cached_odoo_call(
+            'sale.order', 'read', [source_quotation_id],
+            {}
+        )
+        
+        if not source_quote:
+            return json.dumps({"error": "Source quotation not found"}, indent=2, ensure_ascii=False)
+        
+        source_data = source_quote[0]
+        original_customer_name = source_data.get('partner_id', [None, 'Unknown'])[1] if source_data.get('partner_id') else 'Unknown'
+        
+        # Get or create partner
+        partner_result = json.loads(create_or_get_partner(new_partner_name))
+        if 'error' in partner_result:
+            return json.dumps(partner_result, indent=2, ensure_ascii=False)
+        
+        new_partner_id = partner_result['partner']['id']
+        
+        # Use Odoo's copy method
+        new_quote_id = odoo.execute_kw(
+            'sale.order', 'copy', [source_quotation_id],
+            {'default': {'partner_id': new_partner_id}}
+        )
+        
+        logger.info(f"Created quotation copy: {new_quote_id}")
+        
+        # If we need to replace customer names in text
+        if replace_customer_name_in_text:
+            # Get the new quotation's lines
+            new_lines = odoo.execute_kw(
+                'sale.order.line', 'search_read',
+                [[['order_id', '=', new_quote_id]]],
+                {'fields': ['id', 'name']}
+            )
+            
+            # Update line descriptions
+            for line in new_lines:
+                if line.get('name') and original_customer_name in line['name']:
+                    new_description = line['name'].replace(original_customer_name, new_partner_name)
+                    odoo.execute_kw(
+                        'sale.order.line', 'write',
+                        [[line['id']], {'name': new_description}]
+                    )
+                    logger.info(f"Updated line {line['id']} description")
+            
+            # Update notes if needed
+            new_quote_data = odoo.execute_kw(
+                'sale.order', 'read', [new_quote_id],
+                {'fields': ['note']}
+            )
+            
+            if new_quote_data and new_quote_data[0].get('note') and original_customer_name in new_quote_data[0]['note']:
+                new_note = new_quote_data[0]['note'].replace(original_customer_name, new_partner_name)
+                odoo.execute_kw(
+                    'sale.order', 'write',
+                    [[new_quote_id], {'note': new_note}]
+                )
+                logger.info("Updated quotation notes")
+        
+        # Clear cache
+        cache.clear()
+        
+        # Get final quotation details
+        final_quote = odoo.execute_kw(
+            'sale.order', 'read', [new_quote_id],
+            {}
+        )
+        
+        if final_quote:
+            result = {
+                "status": "success",
+                "original_quotation": {
+                    "id": source_quotation_id,
+                    "name": source_data.get('name', ''),
+                    "customer": original_customer_name
+                },
+                "new_quotation": {
+                    "id": new_quote_id,
+                    "name": final_quote[0].get('name', ''),
+                    "customer": new_partner_name,
+                    "customer_id": new_partner_id,
+                    "state": final_quote[0].get('state', 'draft'),
+                    "date_order": final_quote[0].get('date_order', ''),
+                    "amount_total": final_quote[0].get('amount_total', 0),
+                    "currency": final_quote[0].get('currency_id', [None, 'TWD'])[1] if final_quote[0].get('currency_id') else 'TWD',
+                    "url": _generate_quotation_url(new_quote_id)
+                },
+                "message": f"Successfully copied quotation to new customer '{new_partner_name}'"
+            }
+            
+            return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        else:
+            return json.dumps({
+                "error": "Failed to retrieve new quotation details",
+                "new_quotation_id": new_quote_id
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error(f"Error copying quotation: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled to reduce tool count
+def update_quotation(quotation_id: int, 
+                    partner_id: Optional[int] = None,
+                    partner_invoice_id: Optional[int] = None,
+                    partner_shipping_id: Optional[int] = None,
+                    validity_date: Optional[str] = None,
+                    date_order: Optional[str] = None,
+                    note: Optional[str] = None,
+                    payment_term_id: Optional[int] = None,
+                    user_id: Optional[int] = None,
+                    team_id: Optional[int] = None,
+                    client_order_ref: Optional[str] = None,
+                    fiscal_position_id: Optional[int] = None,
+                    update_lines: Optional[List[Dict]] = None) -> str:
+    """Update quotation header and optionally its lines
+    
+    v1.5.5: New function to update quotations
+    
+    Args:
+        quotation_id: ID of the quotation to update (required)
+        partner_id: Customer ID (optional)
+        partner_invoice_id: Invoice address ID (optional)
+        partner_shipping_id: Delivery address ID (optional)
+        validity_date: Expiration date YYYY-MM-DD (optional)
+        date_order: Order date YYYY-MM-DD (optional)
+        note: Internal notes (optional)
+        payment_term_id: Payment terms ID (optional)
+        user_id: Salesperson ID (optional)
+        team_id: Sales team ID (optional)
+        client_order_ref: Customer reference (optional)
+        fiscal_position_id: Fiscal position ID (optional)
+        update_lines: List of line updates (optional)
+            Each line dict can contain:
+            - line_id: ID of line to update (required for update)
+            - action: 'update', 'create', or 'delete'
+            - product_id: Product ID
+            - name: Description
+            - product_uom_qty: Quantity
+            - price_unit: Unit price
+            - discount: Discount percentage
+            - tax_id: List of tax IDs
+    
+    Returns:
+        JSON string with update result
+    """
+    logger.info(f"Updating quotation: {quotation_id}")
+    
+    try:
+        # First check if quotation exists
+        quotations = _cached_odoo_call(
+            'sale.order', 'search_read',
+            [[['id', '=', quotation_id]]],
+            {'fields': ['id', 'name', 'state'], 'limit': 1}
+        )
+        
+        if not quotations:
+            return json.dumps({
+                "error": "Quotation not found",
+                "quotation_id": quotation_id
+            }, indent=2, ensure_ascii=False)
+        
+        quotation = quotations[0]
+        
+        # Check if quotation is in editable state
+        if quotation.get('state') not in ['draft', 'sent']:
+            return json.dumps({
+                "error": "Cannot modify quotation",
+                "reason": f"Quotation is in '{quotation.get('state')}' state. Only 'draft' and 'sent' quotations can be modified.",
+                "quotation_id": quotation_id,
+                "quotation_name": quotation.get('name')
+            }, indent=2, ensure_ascii=False)
+        
+        # Prepare update data for header
+        update_data = {}
+        
+        if partner_id is not None:
+            update_data['partner_id'] = partner_id
+        if partner_invoice_id is not None:
+            update_data['partner_invoice_id'] = partner_invoice_id
+        if partner_shipping_id is not None:
+            update_data['partner_shipping_id'] = partner_shipping_id
+        if validity_date is not None:
+            update_data['validity_date'] = validity_date
+        if date_order is not None:
+            update_data['date_order'] = date_order
+        if note is not None:
+            update_data['note'] = note
+        if payment_term_id is not None:
+            update_data['payment_term_id'] = payment_term_id
+        if user_id is not None:
+            update_data['user_id'] = user_id
+        if team_id is not None:
+            update_data['team_id'] = team_id
+        if client_order_ref is not None:
+            update_data['client_order_ref'] = client_order_ref
+        if fiscal_position_id is not None:
+            update_data['fiscal_position_id'] = fiscal_position_id
+        
+        # Update quotation header if there's data to update
+        if update_data:
+            odoo.execute_kw(
+                'sale.order', 'write',
+                [[quotation_id], update_data]
+            )
+            logger.info(f"Updated quotation header: {update_data}")
+        
+        # Handle line updates
+        line_results = []
+        if update_lines:
+            for line_update in update_lines:
+                action = line_update.get('action', 'update')
+                
+                if action == 'delete' and line_update.get('line_id'):
+                    # Delete line
+                    try:
+                        odoo.execute_kw(
+                            'sale.order.line', 'unlink',
+                            [[line_update['line_id']]]
+                        )
+                        line_results.append({
+                            'action': 'deleted',
+                            'line_id': line_update['line_id'],
+                            'status': 'success'
+                        })
+                    except Exception as e:
+                        line_results.append({
+                            'action': 'delete',
+                            'line_id': line_update['line_id'],
+                            'status': 'error',
+                            'error': str(e)
+                        })
+                        
+                elif action == 'create':
+                    # Create new line
+                    line_data = {
+                        'order_id': quotation_id,
+                        'product_id': line_update.get('product_id'),
+                        'name': line_update.get('name', ''),
+                        'product_uom_qty': line_update.get('product_uom_qty', 1),
+                        'price_unit': line_update.get('price_unit', 0),
+                    }
+                    
+                    if 'discount' in line_update:
+                        line_data['discount'] = line_update['discount']
+                    if 'tax_id' in line_update:
+                        line_data['tax_id'] = [(6, 0, line_update['tax_id'])]
+                    
+                    try:
+                        new_line_id = odoo.execute_kw(
+                            'sale.order.line', 'create',
+                            [line_data]
+                        )
+                        line_results.append({
+                            'action': 'created',
+                            'line_id': new_line_id,
+                            'status': 'success'
+                        })
+                    except Exception as e:
+                        line_results.append({
+                            'action': 'create',
+                            'status': 'error',
+                            'error': str(e)
+                        })
+                        
+                elif action == 'update' and line_update.get('line_id'):
+                    # Update existing line
+                    line_data = {}
+                    
+                    if 'product_id' in line_update:
+                        line_data['product_id'] = line_update['product_id']
+                    if 'name' in line_update:
+                        line_data['name'] = line_update['name']
+                    if 'product_uom_qty' in line_update:
+                        line_data['product_uom_qty'] = line_update['product_uom_qty']
+                    if 'price_unit' in line_update:
+                        line_data['price_unit'] = line_update['price_unit']
+                    if 'discount' in line_update:
+                        line_data['discount'] = line_update['discount']
+                    if 'tax_id' in line_update:
+                        line_data['tax_id'] = [(6, 0, line_update['tax_id'])]
+                    
+                    if line_data:
+                        try:
+                            odoo.execute_kw(
+                                'sale.order.line', 'write',
+                                [[line_update['line_id']], line_data]
+                            )
+                            line_results.append({
+                                'action': 'updated',
+                                'line_id': line_update['line_id'],
+                                'status': 'success',
+                                'updated_fields': list(line_data.keys())
+                            })
+                        except Exception as e:
+                            line_results.append({
+                                'action': 'update',
+                                'line_id': line_update['line_id'],
+                                'status': 'error',
+                                'error': str(e)
+                            })
+        
+        # Clear cache
+        cache.clear()
+        
+        # Get updated quotation details
+        updated_quote = odoo.execute_kw(
+            'sale.order', 'read', [quotation_id],
+            {}
+        )
+        
+        if updated_quote:
+            result = {
+                "status": "success",
+                "quotation": {
+                    "id": quotation_id,
+                    "name": updated_quote[0].get('name'),
+                    "state": updated_quote[0].get('state'),
+                    "partner_id": updated_quote[0].get('partner_id'),
+                    "amount_total": updated_quote[0].get('amount_total'),
+                    "url": _generate_quotation_url(quotation_id)
+                },
+                "updates": {
+                    "header_fields_updated": list(update_data.keys()) if update_data else [],
+                    "lines_updated": line_results
+                },
+                "message": f"Successfully updated quotation {updated_quote[0].get('name')}"
+            }
+            
+            return json.dumps(result, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        else:
+            return json.dumps({
+                "status": "partial_success",
+                "message": "Updates applied but could not retrieve final quotation state",
+                "updates": {
+                    "header_fields_updated": list(update_data.keys()) if update_data else [],
+                    "lines_updated": line_results
+                }
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error(f"Error updating quotation: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# @mcp.tool()  # Disabled to reduce tool count
+def update_quotation_lines(quotation_id: int, line_updates: List[Dict]) -> str:
+    """Update, create or delete quotation lines
+    
+    v1.5.5: Dedicated function for managing quotation lines
+    
+    Args:
+        quotation_id: ID of the quotation (required)
+        line_updates: List of line operations (required)
+            Each dict must contain:
+            - action: 'create', 'update', or 'delete'
+            - For 'update' and 'delete': line_id (required)
+            - For 'create' and 'update': 
+                - product_id: Product ID
+                - name: Line description
+                - product_uom_qty: Quantity
+                - price_unit: Unit price
+                - discount: Discount percentage (optional)
+                - sequence: Line sequence (optional)
+    
+    Returns:
+        JSON string with update results
+        
+    Example:
+    [
+        {"action": "update", "line_id": 123, "product_uom_qty": 5, "price_unit": 100},
+        {"action": "create", "product_id": 456, "name": "New Product", "product_uom_qty": 2, "price_unit": 50},
+        {"action": "delete", "line_id": 789}
+    ]
+    """
+    logger.info(f"Updating quotation lines for: {quotation_id}")
+    
+    try:
+        # Verify quotation exists and is editable
+        quotations = _cached_odoo_call(
+            'sale.order', 'search_read',
+            [[['id', '=', quotation_id]]],
+            {'fields': ['id', 'name', 'state'], 'limit': 1}
+        )
+        
+        if not quotations:
+            return json.dumps({
+                "error": "Quotation not found",
+                "quotation_id": quotation_id
+            }, indent=2, ensure_ascii=False)
+        
+        quotation = quotations[0]
+        
+        if quotation.get('state') not in ['draft', 'sent']:
+            return json.dumps({
+                "error": "Cannot modify quotation lines",
+                "reason": f"Quotation is in '{quotation.get('state')}' state",
+                "quotation_id": quotation_id
+            }, indent=2, ensure_ascii=False)
+        
+        # Process line updates
+        results = []
+        for line_update in line_updates:
+            action = line_update.get('action')
+            
+            if action == 'delete':
+                line_id = line_update.get('line_id')
+                if not line_id:
+                    results.append({
+                        'action': 'delete',
+                        'status': 'error',
+                        'error': 'line_id is required for delete action'
+                    })
+                    continue
+                    
+                try:
+                    odoo.execute_kw(
+                        'sale.order.line', 'unlink',
+                        [[line_id]]
+                    )
+                    results.append({
+                        'action': 'deleted',
+                        'line_id': line_id,
+                        'status': 'success'
+                    })
+                except Exception as e:
+                    results.append({
+                        'action': 'delete',
+                        'line_id': line_id,
+                        'status': 'error',
+                        'error': str(e)
+                    })
+                    
+            elif action == 'create':
+                line_data = {
+                    'order_id': quotation_id,
+                    'product_id': line_update.get('product_id'),
+                    'name': line_update.get('name', ''),
+                    'product_uom_qty': line_update.get('product_uom_qty', 1),
+                    'price_unit': line_update.get('price_unit', 0),
+                }
+                
+                if 'discount' in line_update:
+                    line_data['discount'] = line_update['discount']
+                if 'sequence' in line_update:
+                    line_data['sequence'] = line_update['sequence']
+                
+                try:
+                    new_line_id = odoo.execute_kw(
+                        'sale.order.line', 'create',
+                        [line_data]
+                    )
+                    results.append({
+                        'action': 'created',
+                        'line_id': new_line_id,
+                        'status': 'success'
+                    })
+                except Exception as e:
+                    results.append({
+                        'action': 'create',
+                        'status': 'error',
+                        'error': str(e),
+                        'data': line_data
+                    })
+                    
+            elif action == 'update':
+                line_id = line_update.get('line_id')
+                if not line_id:
+                    results.append({
+                        'action': 'update',
+                        'status': 'error',
+                        'error': 'line_id is required for update action'
+                    })
+                    continue
+                
+                line_data = {}
+                if 'product_id' in line_update:
+                    line_data['product_id'] = line_update['product_id']
+                if 'name' in line_update:
+                    line_data['name'] = line_update['name']
+                if 'product_uom_qty' in line_update:
+                    line_data['product_uom_qty'] = line_update['product_uom_qty']
+                if 'price_unit' in line_update:
+                    line_data['price_unit'] = line_update['price_unit']
+                if 'discount' in line_update:
+                    line_data['discount'] = line_update['discount']
+                if 'sequence' in line_update:
+                    line_data['sequence'] = line_update['sequence']
+                
+                if line_data:
+                    try:
+                        odoo.execute_kw(
+                            'sale.order.line', 'write',
+                            [[line_id], line_data]
+                        )
+                        results.append({
+                            'action': 'updated',
+                            'line_id': line_id,
+                            'status': 'success',
+                            'updated_fields': list(line_data.keys())
+                        })
+                    except Exception as e:
+                        results.append({
+                            'action': 'update',
+                            'line_id': line_id,
+                            'status': 'error',
+                            'error': str(e)
+                        })
+                else:
+                    results.append({
+                        'action': 'update',
+                        'line_id': line_id,
+                        'status': 'skipped',
+                        'reason': 'No fields to update'
+                    })
+                    
+            else:
+                results.append({
+                    'action': action,
+                    'status': 'error',
+                    'error': f"Unknown action: {action}. Use 'create', 'update', or 'delete'"
+                })
+        
+        # Clear cache
+        cache.clear()
+        
+        # Get updated quotation totals
+        updated_quote = odoo.execute_kw(
+            'sale.order', 'read', [quotation_id],
+            {'fields': ['name', 'amount_untaxed', 'amount_tax', 'amount_total']}
+        )
+        
+        if updated_quote:
+            summary = {
+                "quotation_id": quotation_id,
+                "quotation_name": updated_quote[0].get('name'),
+                "new_totals": {
+                    "untaxed": updated_quote[0].get('amount_untaxed', 0),
+                    "tax": updated_quote[0].get('amount_tax', 0),
+                    "total": updated_quote[0].get('amount_total', 0)
+                }
+            }
+        else:
+            summary = {"quotation_id": quotation_id}
+        
+        # Count results
+        success_count = len([r for r in results if r['status'] == 'success'])
+        error_count = len([r for r in results if r['status'] == 'error'])
+        
+        return json.dumps({
+            "status": "completed",
+            "summary": summary,
+            "statistics": {
+                "total_operations": len(results),
+                "successful": success_count,
+                "errors": error_count
+            },
+            "results": results,
+            "message": f"Processed {len(results)} line operations: {success_count} successful, {error_count} errors"
+        }, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+        
+    except Exception as e:
+        logger.error(f"Error updating quotation lines: {e}")
+        return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
+
+# ───────────────────────── Cache Management ─────────────────────────
+
+# @mcp.tool()  # Disabled - debug tool
 def clear_cache() -> str:
     """Clear the internal cache
     
@@ -3775,7 +5564,7 @@ def clear_cache() -> str:
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2, ensure_ascii=False)
 
-@mcp.tool()
+# @mcp.tool()  # Disabled - debug tool
 def cache_stats() -> str:
     """Get cache statistics
     
@@ -3793,7 +5582,8 @@ def cache_stats() -> str:
 
 # ───────────────────────── Main Entry Point ─────────────────────────
 
-if __name__ == "__main__":
+def print_startup_info():
+    """Print startup information and available features"""
     logger.info("=" * 80)
     logger.info(f"Odoo FastMCP Server v{__version__} - Multi-language Support - Tested on Odoo 13 Community Edition")
     logger.info(f"Author: {__author__}")
@@ -3804,129 +5594,69 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     logger.info("Core Features:")
     logger.info("  ✓ Complete quotation management with all fields")
-    logger.info("  ✓ Complete purchase order management (NEW in v1.3)")
-    logger.info("  ✓ Complete delivery order management (NEW in v1.3)")
+    logger.info("  ✓ Complete purchase order management")
+    logger.info("  ✓ Complete delivery order management")
     logger.info("  ✓ Direct URL links to all record pages")
-    logger.info("  ✓ Multi-language support (English/Chinese) based on settings")
+    logger.info("  ✓ Multi-language support (English/Chinese)")
     logger.info("  ✓ Multi-currency support with proper currency display")
     logger.info("  ✓ Enhanced contact/customer/supplier management")
-    logger.info("  ✓ Comprehensive search and filtering capabilities")
+    logger.info("  ✓ Comprehensive search and filtering with pagination")
     logger.info("  ✓ Intelligent caching with configurable TTL")
-    logger.info("  ✓ Enhanced error handling and retry logic")
-    logger.info("  ✓ Performance monitoring and health checks")
-    logger.info("=" * 80)
-    logger.info("Available Tools:")
-    logger.info("  • get_odoo_system_info() - Odoo system and version information")
-    logger.info("  • get_sale_order_fields() - Check available sale.order fields")
-    logger.info("  • health_check() - Odoo connectivity and system status")
-    logger.info("  • odoo_raw_call() - Raw Odoo API calls")
-    logger.info("")
-    logger.info("  Sales Management:")
-    logger.info("  • search_quotations() - Search quotations with URLs and language/currency support")
-    logger.info("  • get_quotation_details() - Complete quotation details with URLs and line items")
-    logger.info("")
-    logger.info("  Purchase Management (NEW in v1.3):")
-    logger.info("  • search_purchase_orders() - Search purchase orders with supplier details")
-    logger.info("  • get_purchase_order_details() - Complete purchase order details with line items")
-    logger.info("")
-    logger.info("  Delivery Management (NEW in v1.3):")
-    logger.info("  • search_delivery_orders() - Search delivery orders with tracking information")
-    logger.info("  • get_delivery_order_details() - Complete delivery order details with stock moves")
-    logger.info("")
-    logger.info("  Product Management (NEW in v1.4.7):")
-    logger.info("  • search_products_v2() - Multi-language product search with translation support")
-    logger.info("  • get_product_details() - Complete product details with stock information")
-    logger.info("  • get_product_stock() - Real-time stock levels across warehouses")
-    logger.info("")
-    logger.info("  Contact Management:")
-    logger.info("  • search_partners() - Search contacts/customers/suppliers with URLs")
-    logger.info("  • get_all_partners() - Get all partners in the system with URLs")
-    logger.info("  • get_partner_statistics() - Comprehensive partner statistics")
-    logger.info("  • get_partner_language_currency() - Customer language/currency settings with URL")
-    logger.info("")
-    logger.info("  Language Management (NEW in v1.4.7):")
-    logger.info("  • get_current_user_language() - Check current language settings")
-    logger.info("")
-    logger.info("  System Management:")
-    logger.info("  • clear_cache() - Clear internal cache")
-    logger.info("  • cache_stats() - Cache statistics")
     logger.info("=" * 80)
     logger.info(f"Configuration: Cache TTL={config.CACHE_TTL}s, Timeout={config.TIMEOUT}s")
-    logger.info(f"Max Retries={config.MAX_RETRIES}")
     logger.info(f"Base URL for links: {config.ODOO_URL}")
     logger.info("=" * 80)
-    logger.info("NEW Features in v1.3.0:")
-    logger.info("  ✓ Complete Purchase Orders (採購單) management")
-    logger.info("    - Search purchase orders with supplier filtering")
-    logger.info("    - Detailed purchase order information with line items")
-    logger.info("    - Purchase order state translation (中/英)")
-    logger.info("    - Direct URL links to purchase orders and suppliers")
-    logger.info("")
-    logger.info("  ✓ Complete Delivery Orders (出貨單) management")
-    logger.info("    - Search delivery orders with tracking information")
-    logger.info("    - Detailed delivery order information with stock moves")
-    logger.info("    - Delivery state translation (中/英)")
-    logger.info("    - Integration with related sale/purchase orders")
-    logger.info("    - Carrier tracking and logistics information")
-    logger.info("")
-    logger.info("  ✓ Enhanced search capabilities")
-    logger.info("    - Global search across all fields")
-    logger.info("    - Product-based search in line items/stock moves")
-    logger.info("    - Date range filtering")
-    logger.info("    - State and status filtering")
-    logger.info("")
-    logger.info("  ✓ Comprehensive URL generation")
-    logger.info("    - Purchase orders, delivery orders, and related records")
-    logger.info("    - Cross-module navigation (SO->Delivery, PO->Receipt)")
-    logger.info("    - Partner/supplier quick access")
-    logger.info("=" * 80)
-    logger.info("URL Patterns:")
-    logger.info(f"  • Quotations: {config.ODOO_URL}/web#id={{ID}}&model=sale.order&view_type=form")
-    logger.info(f"  • Purchase Orders: {config.ODOO_URL}/web#id={{ID}}&model=purchase.order&view_type=form")
-    logger.info(f"  • Delivery Orders: {config.ODOO_URL}/web#id={{ID}}&model=stock.picking&view_type=form")
-    logger.info(f"  • Partners: {config.ODOO_URL}/web#id={{ID}}&model=res.partner&view_type=form")
-    logger.info("=" * 80)
-    logger.info("Search Capabilities:")
-    logger.info("  • Sales: Search quotations by customer, product, description, dates")
-    logger.info("  • Purchase: Search POs by supplier, product, notes, dates, states")
-    logger.info("  • Delivery: Search deliveries by partner, product, tracking, origin")
-    logger.info("  • Global: Search across all fields in headers and line items")
-    logger.info("  • Partners: Search contacts by name, email, phone, type")
-    logger.info("=" * 80)
-    logger.info("Multi-language Support:")
-    logger.info("  • Automatic language detection from partner settings")
-    logger.info("  • State translations (Draft/草稿, Done/已完成, etc.)")
-    logger.info("  • Bilingual URL descriptions (Chinese)")
-    logger.info("  • Currency formatting with proper symbols")
-    logger.info("=" * 80)
-    logger.info("Data Models Supported:")
-    logger.info("  • sale.order + sale.order.line (Quotations/Sales Orders)")
-    logger.info("  • purchase.order + purchase.order.line (Purchase Orders)")
-    logger.info("  • stock.picking + stock.move (Delivery Orders/Stock Transfers)")
-    logger.info("  • res.partner (Contacts/Customers/Suppliers)")
-    logger.info("  • Cross-model relationships and navigation")
-    logger.info("=" * 80)
-    logger.info("MCP Configuration Example:")
-    logger.info('  "odoo": {')
-    logger.info('    "command": "python",')
-    logger.info('    "args": ["/path/to/mcp_odoo.py"],')
-    logger.info('    "env": {')
-    logger.info('      "ODOO_URL": "http://localhost:8069",')
-    logger.info('      "ODOO_DATABASE": "mydb",')
-    logger.info('      "ODOO_USERNAME": "admin",')
-    logger.info('      "ODOO_PASSWORD": "password",')
-    logger.info('      "ODOO_DEFAULT_LANGUAGE": "zh_TW"  # Optional: Set default language')
-    logger.info('    }')
-    logger.info('  }')
-    logger.info("")
-    logger.info("Language Configuration Options:")
-    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'zh_TW' for 繁體中文")
-    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'zh_CN' for 简体中文")
-    logger.info("  • ODOO_DEFAULT_LANGUAGE: 'en_US' for English")
-    logger.info("  • Or leave unset to use user's Odoo language preference")
-    logger.info("=" * 80)
-    logger.info("Ready to serve MCP requests!")
-    logger.info("Connect via Claude Desktop to start using all features.")
-    logger.info("=" * 80)
-    
-    mcp.run()
+
+
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='Odoo MCP Server - supports stdio and streamable-http transports',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with stdio (default, for Claude Desktop)
+  python mcp_odoo.py
+
+  # Run with streamable-http (for MCPO/OpenAI gateway)
+  python mcp_odoo.py --transport streamable-http --port 8001
+
+  # Run HTTP on custom host/port
+  python mcp_odoo.py --transport streamable-http --host 0.0.0.0 --port 9000
+        """
+    )
+    parser.add_argument(
+        '--transport', '-t',
+        choices=['stdio', 'streamable-http'],
+        default='stdio',
+        help='Transport mode: stdio (default) or streamable-http'
+    )
+    parser.add_argument(
+        '--host', '-H',
+        default='127.0.0.1',
+        help='Host to bind for streamable-http (default: 127.0.0.1)'
+    )
+    parser.add_argument(
+        '--port', '-p',
+        type=int,
+        default=8001,
+        help='Port to bind for streamable-http (default: 8001)'
+    )
+
+    args = parser.parse_args()
+
+    # Print startup info
+    print_startup_info()
+
+    # Run with selected transport
+    if args.transport == 'stdio':
+        logger.info("Transport: stdio (for Claude Desktop)")
+        logger.info("Ready to serve MCP requests!")
+        logger.info("=" * 80)
+        mcp.run()
+    else:
+        logger.info(f"Transport: streamable-http")
+        logger.info(f"Listening on: http://{args.host}:{args.port}")
+        logger.info("Ready to serve MCP requests!")
+        logger.info("=" * 80)
+        mcp.run(transport='streamable-http', host=args.host, port=args.port)
