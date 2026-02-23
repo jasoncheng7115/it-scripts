@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP server for Wazuh SIEM API - v1.2.0
+MCP server for Wazuh SIEM API - v1.3.0
 ===============================================================================
 Author: Jason Cheng (co-created with Claude Code)
 Created: 2025-01-23
@@ -85,14 +85,18 @@ python3 mcp_wazuh.py --transport streamable-http --host 0.0.0.0 --port 8000 \
 python3 mcp_wazuh.py --help
 
 Changelog:
+  v1.3.0 - Tool naming & docstring optimization for 120B model compatibility
+    - Renamed all tools: removed get_wazuh_/search_wazuh_ prefixes for shorter, clearer names
+    - Rewrote all docstrings: natural language descriptions, clear Args/Returns, one Example per tool
+    - Updated version to 1.3.0
   v1.2.0 - Token optimization
     - Added _compact_json() helper: compact JSON output + strip None values (~30-40% token saving)
     - Trimmed all tool docstrings for 120B model compatibility
     - Removed redundant tools: get_wazuh_critical_vulnerabilities
-      (use get_wazuh_vulnerability_summary with severity_filter="Critical")
+      (use vulnerability_summary with severity_filter="Critical")
       and get_wazuh_manager_error_logs
-      (use search_wazuh_manager_logs with level_filter="error")
-    - Deduplicated aggregation query in get_wazuh_agents_with_alerts
+      (use search_manager_logs with level_filter="error")
+    - Deduplicated aggregation query in agents_with_alerts
     - 19 tools → 17 tools
   v1.1.0 - Transport support
     - Added --transport flag: stdio (default) and streamable-http
@@ -359,7 +363,7 @@ def setup_http_sessions():
     manager_http_session = requests.Session()
     manager_http_session.headers.update({
         "Content-Type": "application/json",
-        "User-Agent": "wazuh-mcp-server/1.2.0"
+        "User-Agent": "wazuh-mcp-server/1.3.0"
     })
     manager_http_session.verify = wazuh_config.use_ssl
 
@@ -368,7 +372,7 @@ def setup_http_sessions():
     indexer_http_session.auth = (wazuh_config.indexer_user, wazuh_config.indexer_pass)
     indexer_http_session.headers.update({
         "Content-Type": "application/json",
-        "User-Agent": "wazuh-mcp-server/1.2.0"
+        "User-Agent": "wazuh-mcp-server/1.3.0"
     })
     indexer_http_session.verify = wazuh_config.use_ssl
 
@@ -532,58 +536,63 @@ def normalize_agent_identifier(agent_id_input: str) -> str:
 # ─────────────────── Alert Monitoring Tools ───────────────────
 
 @mcp_server.tool()
-def get_wazuh_alert_summary(max_results: int = 300,
-                           offset: int = 0,
-                           min_level: Optional[int] = None,
-                           max_level: Optional[int] = None,
-                           time_range_hours: Optional[int] = None,
-                           agent_name: Optional[str] = None,
-                           agent_id: Optional[str] = None,
-                           agent_ip: Optional[str] = None,
-                           rule_id: Optional[str] = None,
-                           rule_group: Optional[str] = None,
-                           rule_description: Optional[str] = None,
-                           mitre_technique: Optional[str] = None,
-                           mitre_tactic: Optional[str] = None,
-                           min_cvss_score: Optional[float] = None,
-                           cve_id: Optional[str] = None,
-                           source_ip: Optional[str] = None,
-                           destination_ip: Optional[str] = None,
-                           user: Optional[str] = None,
-                           process_name: Optional[str] = None,
-                           file_path: Optional[str] = None) -> str:
-    """Retrieve security alerts with filtering, pagination, and IoC extraction.
+def alert_summary(max_results: int = 300,
+                  offset: int = 0,
+                  min_level: Optional[int] = None,
+                  max_level: Optional[int] = None,
+                  time_range_hours: Optional[int] = None,
+                  agent_name: Optional[str] = None,
+                  agent_id: Optional[str] = None,
+                  agent_ip: Optional[str] = None,
+                  rule_id: Optional[str] = None,
+                  rule_group: Optional[str] = None,
+                  rule_description: Optional[str] = None,
+                  mitre_technique: Optional[str] = None,
+                  mitre_tactic: Optional[str] = None,
+                  min_cvss_score: Optional[float] = None,
+                  cve_id: Optional[str] = None,
+                  source_ip: Optional[str] = None,
+                  destination_ip: Optional[str] = None,
+                  user: Optional[str] = None,
+                  process_name: Optional[str] = None,
+                  file_path: Optional[str] = None) -> str:
+    """Retrieve security alerts with full details and IoC (Indicators of Compromise) extraction.
 
-    Supports filtering by severity, time, agent, rule, MITRE ATT&CK, CVE, network, and system fields.
-    Use pagination (offset/max_results) when has_more=true in response.
-    For statistics only (no alert details), prefer get_wazuh_alert_statistics instead.
+    Use this to view complete alert content (timestamp, rule, agent, IoC, etc.).
+    If you only need counts and distribution, use alert_statistics instead.
+    Supports pagination: when has_more=true, use offset=next_offset for the next page.
 
     Args:
-        max_results: Alerts per page (default 300, max 10000).
-        offset: Skip N alerts for pagination (default 0). Use response pagination.next_offset.
+        max_results: Alerts per page, default 300, max 10000.
+        offset: Pagination offset, default 0. Use response pagination.next_offset for next page.
         min_level: Min alert level 0-15. Levels: 0-3=low, 4-7=medium, 8-11=high, 12-15=critical.
         max_level: Max alert level 0-15.
-        time_range_hours: Look back N hours (e.g. 24, 72, 168).
+        time_range_hours: Hours to look back. Example: 24=1 day, 72=3 days, 168=1 week.
         agent_name: Filter by agent hostname.
-        agent_id: Filter by agent ID (e.g. "001").
+        agent_id: Filter by agent ID (e.g. "001"), auto-padded to 3 digits.
         agent_ip: Filter by agent IP.
-        rule_id: Exact rule ID (e.g. "5710").
+        rule_id: Exact match rule ID (e.g. "5710").
         rule_group: Partial match, case-insensitive (e.g. "authentication", "jason" finds "jason_tools_ioc").
         rule_description: Partial match, case-insensitive (e.g. "IoC", "brute force").
-        mitre_technique: MITRE technique ID (e.g. "T1078").
-        mitre_tactic: MITRE tactic (e.g. "Initial Access").
-        min_cvss_score: Min CVSS score (e.g. 7.0).
+        mitre_technique: MITRE ATT&CK technique ID (e.g. "T1078").
+        mitre_tactic: MITRE ATT&CK tactic (e.g. "Initial Access").
+        min_cvss_score: Minimum CVSS score (e.g. 7.0).
         cve_id: CVE ID (e.g. "CVE-2021-44228").
-        source_ip: Source IP filter.
-        destination_ip: Destination IP filter.
-        user: Username filter.
-        process_name: Process name filter.
-        file_path: File path filter.
+        source_ip: Filter by source IP.
+        destination_ip: Filter by destination IP.
+        user: Filter by username.
+        process_name: Filter by process name.
+        file_path: Filter by file path.
 
     Returns:
-        JSON: {status, pagination:{offset,page_size,returned_count,total_matches,has_more,next_offset},
-        alerts:[{alert_id,timestamp,agent_name,agent_id,severity_level,rule_id,rule_groups,description,
-        ioc:{source_ip,destination_ip,md5_hash,sha256_hash,url,domain,process_name,mitre_attack,...}}]}
+        JSON object containing:
+        - status: request status
+        - pagination: paging info (offset, page_size, returned_count, total_matches, has_more, next_offset)
+        - alerts: list of alerts, each with alert_id, timestamp, agent_name, agent_id, severity_level,
+          rule_id, rule_groups, description, and ioc (source_ip, hash, URL, domain, MITRE mapping, etc.)
+
+    Example:
+        alert_summary(time_range_hours=24, min_level=8)
     """
     logger.info(f"Fetching alert summary (max={max_results}, offset={offset}, filters={{level:{min_level}-{max_level}, "
                 f"time:{time_range_hours}h, agent:{agent_name or agent_id}, rule:{rule_id or rule_group}, cvss:{min_cvss_score}}})")
@@ -880,25 +889,33 @@ def get_wazuh_alert_summary(max_results: int = 300,
         })
 
 @mcp_server.tool()
-def get_wazuh_alert_statistics(time_range_hours: Optional[int] = 24,
-                               agent_name: Optional[str] = None,
-                               agent_id: Optional[str] = None,
-                               rule_group: Optional[str] = None,
-                               rule_id: Optional[str] = None,
-                               rule_description: Optional[str] = None) -> str:
-    """Lightweight alert statistics (counts/distribution only, no alert details). Use this before get_wazuh_alert_summary to check volume.
+def alert_statistics(time_range_hours: Optional[int] = 24,
+                     agent_name: Optional[str] = None,
+                     agent_id: Optional[str] = None,
+                     rule_group: Optional[str] = None,
+                     rule_id: Optional[str] = None,
+                     rule_description: Optional[str] = None) -> str:
+    """Get alert statistics summary (counts and distribution only, no alert details).
+
+    Use this to quickly check alert volume and severity breakdown before using alert_summary for details.
 
     Args:
-        time_range_hours: Hours to look back (default 24). E.g. 72=3 days, 168=week.
+        time_range_hours: Hours to look back, default 24. Example: 72=3 days, 168=1 week.
         agent_name: Filter by agent hostname.
-        agent_id: Filter by agent ID (e.g. "031"). Auto-padded to 3 digits.
-        rule_group: Partial match, case-insensitive (e.g. "jason" finds "jason_tools_ioc").
-        rule_id: Exact rule ID (e.g. "5715").
-        rule_description: Partial match, case-insensitive (e.g. "IoC", "brute force").
+        agent_id: Filter by agent ID (e.g. "031"), auto-padded to 3 digits.
+        rule_group: Partial match, case-insensitive (e.g. "authentication").
+        rule_id: Exact match rule ID (e.g. "5715").
+        rule_description: Partial match, case-insensitive (e.g. "brute force").
 
     Returns:
-        JSON: {status, time_range_hours, total_alerts, severity_distribution:{critical_emergency_12_15,high_8_11,medium_4_7,low_0_3},
-        top_agents:[{agent_name,alert_count}], top_rules:[{rule_id,description,trigger_count}]}
+        JSON object containing:
+        - total_alerts: total alert count
+        - severity_distribution: count and percentage for each severity level
+        - top_agents: top 10 agents by alert count
+        - top_rules: top 10 rules by trigger count
+
+    Example:
+        alert_statistics(time_range_hours=24)
     """
     logger.info(f"Fetching alert statistics (time={time_range_hours}h, agent_name={agent_name}, agent_id={agent_id}, "
                 f"rule_group={rule_group}, rule_id={rule_id}, rule_description={rule_description})")
@@ -1083,19 +1100,25 @@ def get_wazuh_alert_statistics(time_range_hours: Optional[int] = 24,
         })
 
 @mcp_server.tool()
-def get_wazuh_agents_with_alerts(min_level: Optional[int] = None,
-                                time_range_hours: Optional[int] = None,
-                                max_agents: int = 100) -> str:
-    """List agents grouped by alert count, with severity and most recent alert info.
+def agents_with_alerts(min_level: Optional[int] = None,
+                       time_range_hours: Optional[int] = None,
+                       max_agents: int = 100) -> str:
+    """List agents ranked by alert count, with severity and most recent alert info.
+
+    Use this to quickly find which hosts have the most alerts.
 
     Args:
         min_level: Min alert level 0-15. Levels: 0-3=low, 4-7=medium, 8-11=high, 12-15=critical.
         time_range_hours: Hours to look back (e.g. 24, 72, 168). Omit for all history.
-        max_agents: Max agents to return (default 100), sorted by alert count desc.
+        max_agents: Max agents to return, default 100, sorted by alert count descending.
 
     Returns:
-        JSON: {status, total_agents, agents:[{agent_name, agent_id, alert_count, max_severity_level,
-        most_recent_alert:{timestamp, description, level}}]}
+        JSON object containing:
+        - total_agents: number of agents found
+        - agents: each with agent_name, agent_id, alert_count, max_severity_level, most_recent_alert
+
+    Example:
+        agents_with_alerts(time_range_hours=24, min_level=8)
     """
     logger.info(f"Analyzing agents with alerts (min_level={min_level}, "
                 f"time_range={time_range_hours}h)")
@@ -1222,23 +1245,29 @@ def get_wazuh_agents_with_alerts(min_level: Optional[int] = None,
 # ─────────────────── Security Rules Tools ───────────────────
 
 @mcp_server.tool()
-def get_wazuh_rules_summary(max_results: int = 300,
-                           offset: int = 0,
-                           min_level: Optional[int] = None,
-                           rule_group: Optional[str] = None,
-                           rule_file: Optional[str] = None) -> str:
-    """Search Wazuh detection rules. Supports pagination. Includes compliance mappings (GDPR, HIPAA, PCI-DSS, NIST).
+def rules_summary(max_results: int = 300,
+                  offset: int = 0,
+                  min_level: Optional[int] = None,
+                  rule_group: Optional[str] = None,
+                  rule_file: Optional[str] = None) -> str:
+    """Search Wazuh detection rules with compliance mappings (GDPR, HIPAA, PCI-DSS, NIST).
+
+    Supports pagination and multiple filters.
 
     Args:
-        max_results: Rules per page (default 300).
-        offset: Pagination offset (default 0).
+        max_results: Rules per page, default 300.
+        offset: Pagination offset, default 0.
         min_level: Min severity level 0-15. Levels: 0-3=low, 4-7=medium, 8-11=high, 12-15=critical.
-        rule_group: Exact group name filter (e.g. "authentication", "web", "syscheck", "vulnerability-detector", "firewall").
+        rule_group: Exact group name (e.g. "authentication", "web", "syscheck", "vulnerability-detector", "firewall").
         rule_file: Filter by rule filename (e.g. "0095-sshd_rules.xml").
 
     Returns:
-        JSON: {status, pagination:{offset,page_size,returned_count,total_matches,has_more,next_offset},
-        rules:[{rule_id, severity_level, severity_category, description, groups, filename, status, compliance}]}
+        JSON object containing:
+        - pagination: paging info
+        - rules: list of rules, each with rule_id, severity_level, severity_category, description, groups, filename, status, compliance
+
+    Example:
+        rules_summary(min_level=8, rule_group="authentication")
     """
     logger.info(f"Fetching rules (max={max_results}, offset={offset}, level={min_level}, group={rule_group})")
 
@@ -1334,23 +1363,31 @@ def get_wazuh_rules_summary(max_results: int = 300,
 # ─────────────────── Vulnerability Assessment Tools ───────────────────
 
 @mcp_server.tool()
-def get_wazuh_vulnerability_summary(agent_identifier: str,
-                                   max_results: int = 500,
-                                   offset: int = 0,
-                                   severity_filter: Optional[str] = None,
-                                   cve_filter: Optional[str] = None) -> str:
-    """Get vulnerability scan results (CVEs) for a specific agent. Supports pagination. Use severity_filter="Critical" for critical-only.
+def vulnerability_summary(agent_identifier: str,
+                          max_results: int = 500,
+                          offset: int = 0,
+                          severity_filter: Optional[str] = None,
+                          cve_filter: Optional[str] = None) -> str:
+    """Get vulnerability scan results (CVE list) for a specific agent.
+
+    Use list_agents first to get agent_id, then query vulnerabilities with this tool.
+    Use severity_filter="Critical" to see critical vulnerabilities only.
 
     Args:
-        agent_identifier: Agent ID (REQUIRED). Format: "0"=Manager, "1" or "001". Auto-padded to 3 digits.
-        max_results: Vulnerabilities per page (default 500).
-        offset: Pagination offset (default 0).
+        agent_identifier: Agent ID (required). Format: "0"=Manager, "1" or "001", auto-padded to 3 digits.
+        max_results: Vulnerabilities per page, default 500.
+        offset: Pagination offset, default 0.
         severity_filter: Exact match: "Low", "Medium", "High", or "Critical" (case-sensitive).
-        cve_filter: CVE ID search (e.g. "CVE-2021-44228"). Partial match supported.
+        cve_filter: CVE ID search (e.g. "CVE-2021-44228"), partial match supported.
 
     Returns:
-        JSON: {status, agent_id, pagination:{offset,page_size,returned_count,total_matches,has_more,next_offset},
-        vulnerabilities:[{cve_id, severity, title, description, published_date, cvss_scores, package_name, package_version}]}
+        JSON object containing:
+        - agent_id: queried agent ID
+        - pagination: paging info
+        - vulnerabilities: list of CVEs, each with cve_id, severity, title, description, cvss_scores, package_name, package_version
+
+    Example:
+        vulnerability_summary(agent_identifier="001", severity_filter="Critical")
     """
     logger.info(f"Fetching vulnerabilities for agent {agent_identifier} (max={max_results}, offset={offset})")
 
@@ -1494,24 +1531,31 @@ def get_wazuh_vulnerability_summary(agent_identifier: str,
 # ─────────────────── Agent Management Tools ───────────────────
 
 @mcp_server.tool()
-def get_wazuh_agents(max_results: int = 300, status_filter: str = "active",
-                    name_filter: Optional[str] = None, ip_filter: Optional[str] = None,
-                    group_filter: Optional[str] = None, os_filter: Optional[str] = None,
-                    version_filter: Optional[str] = None) -> str:
-    """List Wazuh monitored agents/servers. Use this first to get agent_id for other agent-specific tools. Agent "000" is always the Manager.
+def list_agents(max_results: int = 300, status_filter: str = "active",
+                name_filter: Optional[str] = None, ip_filter: Optional[str] = None,
+                group_filter: Optional[str] = None, os_filter: Optional[str] = None,
+                version_filter: Optional[str] = None) -> str:
+    """List all Wazuh monitored agents (hosts/servers).
+
+    Use this first to get agent_id, then query agent-specific details with other tools.
+    Agent "000" is always the Manager itself.
 
     Args:
-        max_results: Max agents (default 300).
-        status_filter: "active" (default), "disconnected", "pending", "never_connected", or "all".
-        name_filter: Partial hostname match (e.g. "web" matches "web-server-01").
+        max_results: Max agents to return, default 300.
+        status_filter: Status filter, default "active". Options: "active", "disconnected", "pending", "never_connected", "all".
+        name_filter: Partial hostname match (e.g. "web" finds "web-server-01").
         ip_filter: Exact IP match (e.g. "192.168.1.100").
-        group_filter: Exact group name (e.g. "production").
+        group_filter: Exact group name match (e.g. "production").
         os_filter: OS platform partial match (e.g. "ubuntu", "windows", "centos").
-        version_filter: Wazuh agent version (e.g. "4.7.0").
+        version_filter: Wazuh agent version filter (e.g. "4.7.0").
 
     Returns:
-        JSON: {status, total_count, agents:[{agent_id, agent_name, status, ip_address, os_info, agent_version,
-        groups, last_keepalive, node}]}
+        JSON object containing:
+        - total_count: number of agents found
+        - agents: list of agents, each with agent_id, agent_name, status, ip_address, os_info, agent_version, groups, last_keepalive
+
+    Example:
+        list_agents(status_filter="active")
     """
     logger.info(f"Fetching agents (max={max_results}, status={status_filter})")
 
@@ -1597,17 +1641,23 @@ def get_wazuh_agents(max_results: int = 300, status_filter: str = "active",
         })
 
 @mcp_server.tool()
-def get_wazuh_agent_processes(agent_identifier: str, max_results: int = 300,
-                              search_filter: Optional[str] = None) -> str:
+def agent_processes(agent_identifier: str, max_results: int = 300,
+                    search_filter: Optional[str] = None) -> str:
     """Get running processes on an agent via Syscollector.
 
     Args:
-        agent_identifier: Agent ID (e.g. "1", "001"). Auto-padded to 3 digits.
-        max_results: Max processes (default 300).
+        agent_identifier: Agent ID (e.g. "1", "001"), auto-padded to 3 digits.
+        max_results: Max processes to return, default 300.
         search_filter: Filter by process name or command.
 
     Returns:
-        JSON: {status, agent_id, total_count, processes:[{process_id, process_name, state, username, command_line, memory_resident_kb}]}
+        JSON object containing:
+        - agent_id: queried agent ID
+        - total_count: number of processes
+        - processes: list of processes, each with process_id, process_name, state, username, command_line, memory_resident_kb
+
+    Example:
+        agent_processes(agent_identifier="001", search_filter="nginx")
     """
     logger.info(f"Fetching processes for agent {agent_identifier}")
 
@@ -1668,18 +1718,24 @@ def get_wazuh_agent_processes(agent_identifier: str, max_results: int = 300,
         })
 
 @mcp_server.tool()
-def get_wazuh_agent_ports(agent_identifier: str, max_results: int = 300,
-                         protocol_filter: str = "", state_filter: str = "") -> str:
+def agent_ports(agent_identifier: str, max_results: int = 300,
+                protocol_filter: str = "", state_filter: str = "") -> str:
     """Get network ports on an agent via Syscollector.
 
     Args:
-        agent_identifier: Agent ID (e.g. "001"). Auto-padded to 3 digits.
-        max_results: Max ports (default 300).
-        protocol_filter: "tcp" or "udp".
-        state_filter: "LISTENING" or "ESTABLISHED".
+        agent_identifier: Agent ID (e.g. "001"), auto-padded to 3 digits.
+        max_results: Max ports to return, default 300.
+        protocol_filter: Protocol filter: "tcp" or "udp".
+        state_filter: State filter: "LISTENING" or "ESTABLISHED".
 
     Returns:
-        JSON: {status, agent_id, total_count, ports:[{protocol, local_address, remote_address, state, process_name, process_id}]}
+        JSON object containing:
+        - agent_id: queried agent ID
+        - total_count: number of ports
+        - ports: list of ports, each with protocol, local_address, remote_address, state, process_name, process_id
+
+    Example:
+        agent_ports(agent_identifier="001", state_filter="LISTENING")
     """
     logger.info(f"Fetching network ports for agent {agent_identifier}")
 
@@ -1772,20 +1828,27 @@ def get_wazuh_agent_ports(agent_identifier: str, max_results: int = 300,
 # ─────────────────── Statistics & Monitoring Tools ───────────────────
 
 @mcp_server.tool()
-def search_wazuh_manager_logs(max_results: int = 300, skip_count: int = 0,
-                             level_filter: str = "", tag_filter: Optional[str] = None,
-                             keyword_search: Optional[str] = None) -> str:
-    """Search Wazuh manager logs. Use level_filter="error" for error-only logs.
+def search_manager_logs(max_results: int = 300, skip_count: int = 0,
+                        level_filter: str = "", tag_filter: Optional[str] = None,
+                        keyword_search: Optional[str] = None) -> str:
+    """Search Wazuh Manager system logs.
+
+    Use level_filter="error" to see error logs only.
 
     Args:
-        max_results: Max log entries (default 300).
-        skip_count: Entries to skip (default 0).
-        level_filter: "error", "warning", or "info".
+        max_results: Max log entries to return, default 300.
+        skip_count: Skip first N entries, default 0.
+        level_filter: Log level filter: "error", "warning", or "info".
         tag_filter: Filter by log tag.
-        keyword_search: Search term in log description.
+        keyword_search: Search keyword in log description.
 
     Returns:
-        JSON: {status, total_count, logs:[{timestamp, tag, level, description}]}
+        JSON object containing:
+        - total_count: number of log entries
+        - logs: list of logs, each with timestamp, tag, level, description
+
+    Example:
+        search_manager_logs(level_filter="error", keyword_search="connection")
     """
     logger.info(f"Searching manager logs (max={max_results}, level={level_filter})")
 
@@ -1833,14 +1896,18 @@ def search_wazuh_manager_logs(max_results: int = 300, skip_count: int = 0,
         })
 
 @mcp_server.tool()
-def get_wazuh_log_collector_stats(agent_identifier: str) -> str:
-    """Get log collector stats (events, bytes, per-file metrics) for an agent.
+def log_collector_stats(agent_identifier: str) -> str:
+    """Get log collector statistics (events, bytes, per-file metrics) for an agent.
 
     Args:
-        agent_identifier: Agent ID (e.g. "1", "001"). Auto-padded to 3 digits.
+        agent_identifier: Agent ID (e.g. "1", "001"), auto-padded to 3 digits.
 
     Returns:
-        JSON: {status, statistics:{agent_id, global_period, interval_period}}
+        JSON object containing:
+        - statistics: with agent_id, global_period (overall stats), interval_period (interval stats), each with per-file metrics
+
+    Example:
+        log_collector_stats(agent_identifier="001")
     """
     logger.info(f"Fetching log collector stats for agent {agent_identifier}")
 
@@ -1909,11 +1976,15 @@ def get_wazuh_log_collector_stats(agent_identifier: str) -> str:
         })
 
 @mcp_server.tool()
-def get_wazuh_remoted_stats() -> str:
-    """Get remoted daemon stats (queue sizes, TCP sessions, message counts, traffic).
+def remoted_stats() -> str:
+    """Get remoted daemon statistics (queue sizes, TCP sessions, message counts, traffic).
 
     Returns:
-        JSON: {status, statistics:{queue_size, total_queue_size, tcp_sessions, sent_bytes, recv_bytes}}
+        JSON object containing:
+        - statistics: with queue_size, total_queue_size, tcp_sessions, sent_bytes, recv_bytes
+
+    Example:
+        remoted_stats()
     """
     logger.info("Fetching remoted daemon statistics")
 
@@ -1954,11 +2025,15 @@ def get_wazuh_remoted_stats() -> str:
         })
 
 @mcp_server.tool()
-def get_wazuh_weekly_stats() -> str:
-    """Get weekly aggregated performance statistics from the manager.
+def weekly_stats() -> str:
+    """Get weekly aggregated performance statistics from the Manager.
 
     Returns:
-        JSON: {status, statistics:{...weekly metrics}}
+        JSON object containing:
+        - statistics: weekly performance metrics
+
+    Example:
+        weekly_stats()
     """
     logger.info("Fetching weekly statistics")
 
@@ -1978,11 +2053,15 @@ def get_wazuh_weekly_stats() -> str:
         })
 
 @mcp_server.tool()
-def get_wazuh_cluster_health() -> str:
+def cluster_health() -> str:
     """Check Wazuh cluster health (enabled, running, connected nodes).
 
     Returns:
-        JSON: {status, cluster_health:{is_healthy, enabled, running, connected_nodes}}
+        JSON object containing:
+        - cluster_health: with is_healthy, enabled, running, connected_nodes
+
+    Example:
+        cluster_health()
     """
     logger.info("Checking cluster health")
 
@@ -2038,17 +2117,22 @@ def get_wazuh_cluster_health() -> str:
         })
 
 @mcp_server.tool()
-def get_wazuh_cluster_nodes(max_results: Optional[int] = None, skip_count: int = 0,
-                           node_type_filter: Optional[str] = None) -> str:
+def cluster_nodes(max_results: Optional[int] = None, skip_count: int = 0,
+                  node_type_filter: Optional[str] = None) -> str:
     """List Wazuh cluster nodes with type, version, IP, and status.
 
     Args:
-        max_results: Max nodes (API default 500).
-        skip_count: Nodes to skip (default 0).
-        node_type_filter: "master" or "worker".
+        max_results: Max nodes to return (API default 500).
+        skip_count: Skip first N nodes, default 0.
+        node_type_filter: Node type filter: "master" or "worker".
 
     Returns:
-        JSON: {status, total_count, nodes:[{node_name, node_type, version, ip_address, status}]}
+        JSON object containing:
+        - total_count: number of nodes
+        - nodes: list of nodes, each with node_name, node_type, version, ip_address, status
+
+    Example:
+        cluster_nodes(node_type_filter="worker")
     """
     logger.info(f"Fetching cluster nodes (max={max_results}, type={node_type_filter})")
 
@@ -2108,10 +2192,18 @@ def get_wazuh_cluster_nodes(max_results: Optional[int] = None, skip_count: int =
 
 @mcp_server.tool()
 def health_check() -> str:
-    """Test connectivity to Wazuh Manager and Indexer. Returns response times, cache stats, and config.
+    """Test connectivity to Wazuh Manager and Indexer, returns response times, cache stats, and config.
 
     Returns:
-        JSON: {overall_status, timestamp, manager_api:{status,response_time_ms}, indexer_api:{status,response_time_ms}, cache, configuration}
+        JSON object containing:
+        - overall_status: health status (healthy/unhealthy)
+        - manager_api: Manager API status and response time in ms
+        - indexer_api: Indexer API status and response time in ms
+        - cache: cache statistics
+        - configuration: current settings
+
+    Example:
+        health_check()
     """
     logger.info("Executing health check")
 
@@ -2164,7 +2256,12 @@ def clear_cache() -> str:
     """Clear all cached API responses. Forces fresh data on next request.
 
     Returns:
-        JSON: {status, message}
+        JSON object containing:
+        - status: request status
+        - message: result message
+
+    Example:
+        clear_cache()
     """
     logger.info("Clearing cache")
     memory_cache.invalidate_all()
@@ -2178,7 +2275,11 @@ def cache_stats() -> str:
     """Get cache usage info (total entries, valid entries, TTL).
 
     Returns:
-        JSON: {status, cache_statistics:{total_entries, valid_entries, ttl_seconds}}
+        JSON object containing:
+        - cache_statistics: with total_entries, valid_entries, ttl_seconds
+
+    Example:
+        cache_stats()
     """
     logger.info("Retrieving cache statistics")
     cache_metrics = memory_cache.get_statistics()
@@ -2276,7 +2377,7 @@ if __name__ == "__main__":
 
     # Display startup banner
     logger.info("=" * 80)
-    logger.info("Wazuh SIEM MCP Server v1.2.0")
+    logger.info("Wazuh SIEM MCP Server v1.3.0")
     logger.info("=" * 80)
     logger.info("Reference: Inspired by mcp-server-wazuh (Rust) by Gianluca Brigandi")
     logger.info("=" * 80)
@@ -2292,20 +2393,20 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     logger.info("Available Tools (17 total):")
     logger.info("  • health_check() - Connectivity diagnostics")
-    logger.info("  • get_wazuh_alert_summary() - Security alerts")
-    logger.info("  • get_wazuh_alert_statistics() - Alert statistics")
-    logger.info("  • get_wazuh_agents_with_alerts() - Agents with alerts")
-    logger.info("  • get_wazuh_rules_summary() - Detection rules")
-    logger.info("  • get_wazuh_vulnerability_summary() - Vulnerability assessment")
-    logger.info("  • get_wazuh_agents() - Agent inventory")
-    logger.info("  • get_wazuh_agent_processes() - Process monitoring")
-    logger.info("  • get_wazuh_agent_ports() - Network port analysis")
-    logger.info("  • search_wazuh_manager_logs() - Log search")
-    logger.info("  • get_wazuh_log_collector_stats() - Collection metrics")
-    logger.info("  • get_wazuh_remoted_stats() - Daemon statistics")
-    logger.info("  • get_wazuh_weekly_stats() - Weekly aggregates")
-    logger.info("  • get_wazuh_cluster_health() - Cluster status")
-    logger.info("  • get_wazuh_cluster_nodes() - Node inventory")
+    logger.info("  • alert_summary() - Security alerts with IoC")
+    logger.info("  • alert_statistics() - Alert counts & distribution")
+    logger.info("  • agents_with_alerts() - Agents ranked by alert count")
+    logger.info("  • rules_summary() - Detection rules & compliance")
+    logger.info("  • vulnerability_summary() - CVE scan results per agent")
+    logger.info("  • list_agents() - Agent inventory")
+    logger.info("  • agent_processes() - Process monitoring")
+    logger.info("  • agent_ports() - Network port analysis")
+    logger.info("  • search_manager_logs() - Manager log search")
+    logger.info("  • log_collector_stats() - Collection metrics")
+    logger.info("  • remoted_stats() - Daemon statistics")
+    logger.info("  • weekly_stats() - Weekly aggregates")
+    logger.info("  • cluster_health() - Cluster status")
+    logger.info("  • cluster_nodes() - Node inventory")
     logger.info("  • clear_cache() / cache_stats() - Cache management")
     logger.info("=" * 80)
     logger.info(f"Configuration:")
