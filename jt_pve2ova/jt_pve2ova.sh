@@ -9,6 +9,13 @@
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
+#  Version  : 1.8  (2026-04-16)
+#             * Fix virtualHW version mapping for ESXi 6.7 (14, was 17)
+#             * Fix virtualHW version mapping for ESXi 7.0u1 (18, was 19)
+#             * Add ESXi 8.0u2+ mapping to virtualHW 21
+#             * Use SHA1 manifest for ESXi 6.5/6.7 to fix OVA import failure
+#             * Generate customer-facing import guide (Web UI + CLI SOP)
+#
 #  Version  : 1.7  (2025-11-25)
 #             * Add MODE "vmx" to generate VMX only (no VMDK, no OVA)
 #             * Detect disk format (raw/qcow2) from config or pvesm list
@@ -20,19 +27,27 @@
 ##########################################################################
 set -euo pipefail
 
+VERSION="1.8"
+
 # ------------------------ helper functions ----------------------------- #
 
 show_usage() {
-cat <<'USAGE'
+cat <<EOF
+jt_pve2ova.sh v${VERSION} - Convert a Proxmox-VE VM to an ESXi-compatible OVA
+
 Usage:  jt_pve2ova.sh <VMID> <WORK_DIR> <ESXI_VERSION> [MODE]
 
   <VMID>         Proxmox-VE virtual-machine ID (e.g. 203)
   <WORK_DIR>     Temporary working directory for output files
-  <ESXI_VERSION> Target ESXi version (8.0 | 7.0u3 | 7.0 | 6.7 | 6.5)
+  <ESXI_VERSION> Target ESXi version (8.0u2 | 8.0 | 7.0u3 | 7.0u1 | 7.0 | 6.7 | 6.5)
   [MODE]         clean -> convert to VMDK and build OVA, then remove VMX/VMDK (default)
                  keep  -> convert to VMDK and build OVA, keep VMX/VMDK
                  vmx   -> generate VMX only (no VMDK conversion, no OVA)
-USAGE
+EOF
+}
+
+show_version() {
+  echo "jt_pve2ova.sh v${VERSION}"
 }
 
 error() { echo "Error: $*" >&2; exit 1; }
@@ -40,6 +55,7 @@ error() { echo "Error: $*" >&2; exit 1; }
 # ------------------------ argument parsing ----------------------------- #
 
 [[ $# -eq 1 && $1 == "-h" ]] && { show_usage; exit 0; }
+[[ $# -eq 1 && $1 == "-v" ]] && { show_version; exit 0; }
 [[ $# -lt 3 || $# -gt 4 ]] && { show_usage; exit 1; }
 
 VMID="$1"
@@ -162,11 +178,13 @@ esac
 
 shopt -s nocasematch
 case "$ESXIVER_RAW" in
-  8*)                     VHW=20;;
-  7.0u*|7.0u[0-9]*|7.0u)  VHW=19;;
-  7*)                     VHW=17;;
-  6.7*)                   VHW=17;;
-  6.5*)                   VHW=13;;
+  8.0u[2-9]*|8.0u[1-9][0-9]*)  VHW=21;;
+  8*)                            VHW=20;;
+  7.0u[2-9]*|7.0u[1-9][0-9]*)  VHW=19;;
+  7.0u1*)                        VHW=18;;
+  7*)                            VHW=17;;
+  6.7*)                          VHW=14;;
+  6.5*)                          VHW=13;;
   *) error "Unsupported ESXi version '$ESXIVER_RAW'";;
 esac
 shopt -u nocasematch
@@ -372,9 +390,118 @@ echo "INFO: VMX generated -> $vmx"
 if [[ "$MODE" != "vmx" ]]; then
   ova="${WORKDIR}/${name:-pve-vm$VMID}.ova"
 
-  echo "INFO: Packing OVA with ovftool..."
-  "$OVFTOOL" --acceptAllEulas --diskMode=thin "$vmx" "$ova"
+  # ESXi 6.5 (and some early 6.7) only accept SHA1 manifests;
+  # newer ovftool defaults to SHA256 which causes import failures.
+  OVF_SHA_OPT=""
+  if [[ $VHW -le 14 ]]; then
+    OVF_SHA_OPT="--shaAlgorithm=SHA1"
+  fi
+
+  echo "INFO: Packing OVA with ovftool...${OVF_SHA_OPT:+ ($OVF_SHA_OPT)}"
+  "$OVFTOOL" --acceptAllEulas --diskMode=thin $OVF_SHA_OPT "$vmx" "$ova"
   echo "SUCCESS: OVA ready -> $ova"
+
+  # -------------------- generate import SOP for customer ---------------- #
+
+  ova_basename="$(basename "$ova")"
+  sop="${ova%.ova}_import_guide.txt"
+
+  cat > "$sop" <<SOPEOF
+===========================================================================
+  OVA Import Guide - ${name:-pve-vm$VMID}
+===========================================================================
+
+  File        : ${ova_basename}
+  Guest OS    : ${guestos}
+  Firmware    : ${firmware^^}
+  vCPU        : ${vcpus} (sockets=${sockets}, cores=${cores})
+  RAM         : ${memory} MB
+  Disks       : ${#src_disks[@]}
+  Target ESXi : ${ESXIVER_RAW} (virtualHW ${VHW})
+
+---------------------------------------------------------------------------
+  Method 1 : vSphere Web UI (recommended)
+---------------------------------------------------------------------------
+
+  1. Log in to vSphere Client (https://<ESXI_HOST>/ui).
+
+  2. Right-click the target Host (or Cluster) ->
+     "Deploy OVF Template...".
+
+  3. Select "Local file", click "Upload Files",
+     choose "${ova_basename}".
+
+  4. Follow the wizard:
+     a. Name          : accept default or rename
+     b. Datastore     : select the destination datastore
+     c. Disk format   : "Thin Provision" (recommended)
+     d. Network       : map to your target port group
+
+  5. Click "Finish" and wait for the import task to complete.
+
+  6. After import:
+     - Review VM settings (CPU / RAM / NIC) before powering on.
+     - Install or update VMware Tools after first boot.
+     - Verify network connectivity and disk partitions.
+
+---------------------------------------------------------------------------
+  Method 2 : VMware ovftool (CLI)
+---------------------------------------------------------------------------
+
+  Syntax:
+
+    ovftool \\
+      --acceptAllEulas \\
+      --diskMode=thin \\
+      --datastore=<DATASTORE_NAME> \\
+      --network="<PORT_GROUP>" \\
+      --name="${name:-pve-vm$VMID}" \\
+      "${ova_basename}" \\
+      "vi://<USERNAME>@<ESXI_HOST>"
+
+  Example:
+
+    ovftool \\
+      --acceptAllEulas \\
+      --diskMode=thin \\
+      --datastore=datastore1 \\
+      --network="VM Network" \\
+      --name="${name:-pve-vm$VMID}" \\
+      ${ova_basename} \\
+      "vi://root@192.168.1.100"
+
+  Notes:
+    - ovftool will prompt for the ESXi password.
+    - Add --noSSLVerify if ESXi uses a self-signed certificate.
+    - For vCenter, use: vi://<USER>@<VCENTER>/<DC>/host/<CLUSTER>
+
+---------------------------------------------------------------------------
+  Troubleshooting
+---------------------------------------------------------------------------
+
+  * "Invalid OVF manifest / checksum error"
+    -> ESXi 6.5/6.7 requires SHA1 manifests. Re-export with the
+       correct ESXi version parameter so the tool uses SHA1.
+
+  * "Unsupported hardware family vmx-XX"
+    -> The OVA was built for a newer ESXi version.
+       Re-export with the correct ESXi version parameter.
+
+  * VM boots to UEFI shell / no bootable device
+    -> Verify the source VM uses ${firmware^^} firmware.
+       Check the boot order in VM settings after import.
+
+  * Network unreachable after import
+    -> The NIC type is vmxnet3; VMware Tools must be installed.
+       Verify the port group mapping matches your network.
+
+===========================================================================
+  Generated by jt_pve2ova.sh v${VERSION} on $(date '+%Y-%m-%d %H:%M:%S')
+  Jason Tools Co., Ltd. | jason@jason.tools
+===========================================================================
+SOPEOF
+
+  echo "INFO: Import guide -> $sop"
 
   # ----------------------------- cleanup -------------------------------- #
 
