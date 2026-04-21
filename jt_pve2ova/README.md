@@ -1,4 +1,4 @@
-# JT_PVE2OVA 1.8
+# JT_PVE2OVA 1.9
 
 Package a Proxmox VE virtual machine into an OVA file that can be imported by ESXi — **directly on the Proxmox VE node itself**!
 
@@ -20,7 +20,9 @@ Successfully tested on VMware Workstation 17, ESXi 6.5 / 6.7 / 7.0 / 8.0 — imp
 - **Boot mode aware** – reads the `bios:` field and writes the matching `firmware=` entry
 - **SHA1 compatibility** – automatically uses SHA1 manifests for ESXi 6.5/6.7 to avoid import failures
 - **LVM auto-activation** – activates inactive LVM/LVM-thin LVs on PVE 9 when VM is off
-- **Import guide generator** – produces a customer-facing import SOP (Web UI + CLI) alongside the OVA
+- **Import guide generator** – produces a customer-facing import SOP (Web UI + CLI) alongside the OVA, in both English and Traditional Chinese
+- **Auto-rename on conflict** – detects existing output files before conversion starts and auto-appends `_N` suffix to avoid wasted work
+- **ESXi version in filenames** – output files include the target ESXi version (e.g. `vmname_esxi6.7.ova`)
 - **VMX-only mode** – generate VMX configuration without disk conversion or OVA packaging
 
 ![PVE2OVA_convert](https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_pve2ova/pve_vmdisk_zfs_to_ova.png)
@@ -106,11 +108,14 @@ chmod +x /opt/jt_pve2ova.sh
 After a successful run, the following files appear in `WORK_DIR`:
 
 ```
-graylog5-customer.ova                    ← deploy directly in vSphere Client
-graylog5-customer_import_guide.txt       ← customer-facing import SOP
+graylog5-customer_esxi8.0.ova                         ← deploy directly in vSphere Client
+graylog5-customer_esxi8.0_import_guide_en.txt          ← import SOP (English)
+graylog5-customer_esxi8.0_import_guide_zh-TW.txt       ← import SOP (Traditional Chinese)
 ```
 
-The import guide contains step-by-step instructions for both vSphere Web UI and ovftool CLI, along with VM specs and common troubleshooting tips.
+If a file already exists, the script auto-renames with a `_N` suffix (e.g. `_1`, `_2`) **before** starting disk conversion, so no work is wasted.
+
+The import guides contain step-by-step instructions for both vSphere Web UI and ovftool CLI, along with VM specs and common troubleshooting tips.
 
 ---
 
@@ -129,15 +134,16 @@ INFO: Converting disks to streamOptimized VMDK...
 INFO: [0/2] ... -> disk0.vmdk (100.00/100%)
 INFO: [1/2] ... -> disk1.vmdk (100.00/100%)
 INFO: All disks converted.
-INFO: VMX generated -> /vmimage/temp/graylog5-customer.vmx
+INFO: VMX generated -> /vmimage/temp/graylog5-customer_esxi8.0.vmx
 INFO: Packing OVA with ovftool...
-Opening VMX source: /vmimage/temp/graylog5-customer.vmx
-Opening OVA target: /vmimage/temp/graylog5-customer.ova
-Writing OVA package: /vmimage/temp/graylog5-customer.ova
+Opening VMX source: /vmimage/temp/graylog5-customer_esxi8.0.vmx
+Opening OVA target: /vmimage/temp/graylog5-customer_esxi8.0.ova
+Writing OVA package: /vmimage/temp/graylog5-customer_esxi8.0.ova
 Transfer Completed
 Completed successfully
-SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer.ova
-INFO: Import guide -> /vmimage/temp/graylog5-customer_import_guide.txt
+SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer_esxi8.0.ova
+INFO: Import guide (EN) -> /vmimage/temp/graylog5-customer_esxi8.0_import_guide_en.txt
+INFO: Import guide (ZH) -> /vmimage/temp/graylog5-customer_esxi8.0_import_guide_zh-TW.txt
 INFO: Removing temporary VMX/VMDK files...
 INFO: Temporary files removed.
 ```
@@ -153,11 +159,12 @@ INFO: Temporary files removed.
    * **LVM / LVM-thin** → auto-activate inactive LVs if needed
    * Others → `pvesm path …` / fallback `/var/lib/vz/images`
 4. **Space estimate** – adds 20% headroom; aborts if insufficient
-5. **`qemu-img convert`** → `streamOptimized`, `adapter=lsilogic`, `compat6`
-6. **Generate VMX** – correct `virtualHW.version` based on ESXi version
-7. **`ovftool`** – build OVA with `--diskMode=thin`; use `--shaAlgorithm=SHA1` for ESXi ≤ 6.7
-8. **Generate import guide** – customer-facing SOP with Web UI + CLI instructions
-9. **Cleanup** (`MODE=clean`) or keep (`MODE=keep`) temp files
+5. **Output file check** – detects existing files, auto-renames before conversion
+6. **`qemu-img convert`** → `streamOptimized`, `adapter=lsilogic`, `compat6`
+7. **Generate VMX** – correct `virtualHW.version` based on ESXi version
+8. **`ovftool`** – build OVA with `--diskMode=thin`; use `--shaAlgorithm=SHA1` for ESXi ≤ 6.7
+9. **Generate import guides** – customer-facing SOP in English + Traditional Chinese
+10. **Cleanup** (`MODE=clean`) or keep (`MODE=keep`) temp files
 
 ---
 

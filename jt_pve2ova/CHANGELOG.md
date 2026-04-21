@@ -6,6 +6,14 @@ All notable changes to JT_PVE2OVA are documented in this file.
 
 ---
 
+## [1.9] - 2026-04-21
+
+### Added
+- **Pre-conversion file check** — before starting disk conversion, the script checks if the output OVA (or VMX in vmx mode) already exists. If so, it auto-appends a `_N` suffix (e.g. `_1`, `_2`) and informs the user, avoiding wasted conversion time.
+- **ESXi version in output filenames** — output files now include the target ESXi version (e.g. `vmname_esxi6.7.ova`, `vmname_esxi8.0.vmx`), making it easy to identify which ESXi version an OVA was built for.
+
+---
+
 ## [1.8] - 2026-04-16
 
 ### Fixed

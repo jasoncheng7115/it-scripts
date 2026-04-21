@@ -1,4 +1,4 @@
-# JT_PVE2OVA 1.8
+# JT_PVE2OVA 1.9
 
 將 Proxmox VE 虛擬機打包成 ESXi 可匯入的 OVA 檔案 — **直接在 Proxmox VE 節點上完成**！
 
@@ -20,7 +20,9 @@
 - **韌體感知** – 讀取 `bios:` 欄位，自動寫入對應的 `firmware=` 設定
 - **SHA1 相容** – ESXi 6.5/6.7 自動使用 SHA1 manifest，避免匯入失敗
 - **LVM 自動啟用** – PVE 9 VM 關機時自動啟用非活動的 LVM/LVM-thin LV
-- **匯入指南產生器** – OVA 匯出時同時產生客戶用匯入 SOP（Web UI + CLI）
+- **匯入指南產生器** – OVA 匯出時同時產生中英文客戶用匯入 SOP（Web UI + CLI）
+- **衝突自動更名** – 轉換前即檢查輸出檔案是否存在，自動加 `_N` 後綴避免白做工
+- **檔名含 ESXi 版本** – 輸出檔案包含目標 ESXi 版本（如 `vmname_esxi6.7.ova`）
 - **VMX 模式** – 僅產生 VMX 設定檔，不轉磁碟、不打包 OVA
 
 ![PVE2OVA_convert](https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/jt_pve2ova/pve_vmdisk_zfs_to_ova.png)
@@ -106,9 +108,12 @@ chmod +x /opt/jt_pve2ova.sh
 執行成功後，`WORK_DIR` 下會產生以下檔案：
 
 ```
-graylog5-customer.ova                    ← 直接在 vSphere Client 部署
-graylog5-customer_import_guide.txt       ← 客戶用匯入操作指南
+graylog5-customer_esxi8.0.ova                         ← 直接在 vSphere Client 部署
+graylog5-customer_esxi8.0_import_guide_en.txt          ← 匯入操作指南（英文）
+graylog5-customer_esxi8.0_import_guide_zh-TW.txt       ← 匯入操作指南（繁體中文）
 ```
+
+若檔案已存在，腳本會在磁碟轉換**之前**自動加上 `_N` 後綴（如 `_1`、`_2`），避免浪費時間。
 
 匯入指南包含 vSphere Web UI 及 ovftool CLI 的逐步操作說明、VM 規格摘要及常見問題排除。
 
@@ -129,15 +134,16 @@ INFO: Converting disks to streamOptimized VMDK...
 INFO: [0/2] ... -> disk0.vmdk (100.00/100%)
 INFO: [1/2] ... -> disk1.vmdk (100.00/100%)
 INFO: All disks converted.
-INFO: VMX generated -> /vmimage/temp/graylog5-customer.vmx
+INFO: VMX generated -> /vmimage/temp/graylog5-customer_esxi8.0.vmx
 INFO: Packing OVA with ovftool...
-Opening VMX source: /vmimage/temp/graylog5-customer.vmx
-Opening OVA target: /vmimage/temp/graylog5-customer.ova
-Writing OVA package: /vmimage/temp/graylog5-customer.ova
+Opening VMX source: /vmimage/temp/graylog5-customer_esxi8.0.vmx
+Opening OVA target: /vmimage/temp/graylog5-customer_esxi8.0.ova
+Writing OVA package: /vmimage/temp/graylog5-customer_esxi8.0.ova
 Transfer Completed
 Completed successfully
-SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer.ova
-INFO: Import guide -> /vmimage/temp/graylog5-customer_import_guide.txt
+SUCCESS: OVA ready -> /vmimage/temp/graylog5-customer_esxi8.0.ova
+INFO: Import guide (EN) -> /vmimage/temp/graylog5-customer_esxi8.0_import_guide_en.txt
+INFO: Import guide (ZH) -> /vmimage/temp/graylog5-customer_esxi8.0_import_guide_zh-TW.txt
 INFO: Removing temporary VMX/VMDK files...
 INFO: Temporary files removed.
 ```
@@ -153,11 +159,12 @@ INFO: Temporary files removed.
    * **LVM / LVM-thin** → 必要時自動啟用非活動 LV
    * 其他 → `pvesm path …` / 備援 `/var/lib/vz/images`
 4. **空間估算** – 加上 20% 餘裕；不足則中止
-5. **`qemu-img convert`** → `streamOptimized`、`adapter=lsilogic`、`compat6`
-6. **產生 VMX** – 依 ESXi 版本寫入正確的 `virtualHW.version`
-7. **`ovftool`** – 以 `--diskMode=thin` 打包 OVA；ESXi ≤ 6.7 自動加 `--shaAlgorithm=SHA1`
-8. **產生匯入指南** – 客戶用 SOP（Web UI + CLI 操作步驟）
-9. **清理** (`MODE=clean`) 或保留 (`MODE=keep`) 暫存檔
+5. **輸出檔案檢查** – 偵測已存在檔案，轉換前自動更名
+6. **`qemu-img convert`** → `streamOptimized`、`adapter=lsilogic`、`compat6`
+7. **產生 VMX** – 依 ESXi 版本寫入正確的 `virtualHW.version`
+8. **`ovftool`** – 以 `--diskMode=thin` 打包 OVA；ESXi ≤ 6.7 自動加 `--shaAlgorithm=SHA1`
+9. **產生匯入指南** – 中英文客戶用 SOP（Web UI + CLI 操作步驟）
+10. **清理** (`MODE=clean`) 或保留 (`MODE=keep`) 暫存檔
 
 ---
 
