@@ -1,0 +1,4159 @@
+{
+  "v": 1,
+  "id": "131f1cd5-9c7f-4206-820c-f244a64f8e62",
+  "rev": 1,
+  "name": "CubeCOS / OpenStack Log Pipeline",
+  "summary": "Pipeline + 147 Rules (Graylog 6.3.X+)",
+  "description": "CubeCOS / OpenStack / Ceph / Masakari log 處理 Pipeline，相容 Graylog 6.3.X 以上。\n\n包含：\n  - 1 個 Pipeline (CubeCOS / OpenStack Log Processing)\n  - 147 條 Pipeline Rules (6 stages：envelope → 子格式分類 → VM 操作 → VM 細節 → 生命週期 → 時間戳)\n\n匯入後請務必：\n  1. System → Pipelines → 該 pipeline → Edit connections → 勾選要套用的 stream\n  2. System → Configurations → Message Processors：確認 Pipeline Processor 在 Message Filter Chain 之後且 enabled\n\nEvent Definitions 與 Dashboard 因 Graylog 6.x content pack schema 限制，改採手動建立\n (請見 files/alert_definitions.md 與 files/dashboard_widget_queries.md)。\n\nMaintained by Jason Tools Co., Ltd. — https://it.jason.tools",
+  "vendor": "Jason Tools Co., Ltd.",
+  "url": "https://it.jason.tools",
+  "server_version": "6.3.0",
+  "parameters": [],
+  "entities": [
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9f4f0d38-d62f-4c9e-8163-39651231b0e9",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "00 - envelope"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"00 - envelope\"\nwhen\n    has_field(\"message\") AND\n    contains(to_string($message.message), \"{\\\"name\\\":\\\"\")\nthen\n    let m = grok(\n        pattern: \"^<%{NUMBER:syslog_pri}>%{DATA:syslog_ts}\\\\s+\\\\{\\\"name\\\":\\\"%{DATA:host_name}\\\"\\\\}\\\\s+%{DATA:forwarder}\\\\[-\\\\]:\\\\s*%{GREEDYDATA:payload}$\",\n        value: to_string($message.message),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "45c5eec6-aea0-4504-8a02-569eef6bcc40",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "00a - host_name fallback (raw regex)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"00a - host_name fallback (raw regex)\"\nwhen\n    contains(to_string($message.message), \"{\\\"name\\\":\\\"\") AND\n    NOT has_field(\"host_name\")\nthen\n    let m = regex(\n        pattern: \"\\\\{\\\"name\\\":\\\"([a-zA-Z0-9_.-]+)\\\"\\\\}\",\n        value: to_string($message.message)\n    );\n    set_field(\"host_name\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "973a43b1-49ef-44a3-92d2-d9a836eb1e26",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "00b - host_name fallback (bigccN/npveN/host-N/pveN)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"00b - host_name fallback (bigccN/npveN/host-N/pveN)\"\nwhen\n    NOT has_field(\"host_name\") AND\n    regex(\"\\\\b(bigcc[0-9]+|npve[0-9]+|host-[0-9]+|pve[0-9]+)\\\\b\", to_string($message.message)).matches == true\nthen\n    let m = regex(\n        pattern: \"\\\\b(bigcc[0-9]+|npve[0-9]+|host-[0-9]+|pve[0-9]+)\\\\b\",\n        value: to_string($message.message)\n    );\n    set_field(\"host_name\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a07d88ef-a212-4ff2-9837-2e51e521a76f",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "10 - parse Ceph cluster log"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"10 - parse Ceph cluster log\"\nwhen\n    has_field(\"payload\") AND\n    regex(\"^\\\\d{4}-\\\\d{2}-\\\\d{2}T\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+\\\\+\\\\d{4}\\\\s+\\\\S+\\\\s+\\\\(\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^%{TIMESTAMP_ISO8601:ceph_ts}\\\\s+%{NOTSPACE:ceph_daemon}\\\\s+\\\\(%{DATA:ceph_id}\\\\)\\\\s+%{NUMBER:ceph_seq:int}\\\\s*:\\\\s*%{WORD:ceph_subsystem}\\\\s+\\\\[%{WORD:ceph_level}\\\\]\\\\s*%{GREEDYDATA:ceph_message}$\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"ceph\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e6ebf88f-5549-44ca-abd8-2bdb63e62530",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "11 - parse OpenStack service log"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"11 - parse OpenStack service log\"\nwhen\n    has_field(\"payload\") AND\n    regex(\"^(?:\\\\d{4}-\\\\d{2}-\\\\d{2}\\\\s\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+\\\\s+)?\\\\d{4}-\\\\d{2}-\\\\d{2}\\\\s\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+\\\\s+\\\\d+\\\\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|TRACE|NOTICE)\\\\s\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^(?:%{TIMESTAMP_ISO8601}\\\\s+)?%{TIMESTAMP_ISO8601:app_ts}\\\\s+%{NUMBER:app_pid:int}\\\\s+%{LOGLEVEL:app_level}\\\\s+%{NOTSPACE:app_logger}(?:\\\\s+\\\\[%{DATA:request_id}\\\\])?\\\\s*%{GREEDYDATA:app_message}$\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"openstack\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c384d29a-35b4-4702-b629-08ad71a4766e",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "12 - parse Apache/WSGI access log"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"12 - parse Apache/WSGI access log\"\nwhen\n    has_field(\"payload\") AND\n    regex(\"^(?:\\\\d+\\\\.\\\\d+\\\\.\\\\d+\\\\.\\\\d+|::1)\\\\s+\\\\S+\\\\s+\\\\S+\\\\s+\\\\[\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^%{IPORHOST:client_ip}\\\\s+%{NOTSPACE:ident}\\\\s+%{NOTSPACE:auth}\\\\s+\\\\[%{HTTPDATE:apache_ts}\\\\]\\\\s+\\\"%{WORD:http_method}\\\\s+%{NOTSPACE:http_path}\\\\s+HTTP/%{NUMBER:http_version}\\\"\\\\s+%{NUMBER:http_status:int}\\\\s+(?:%{NUMBER:http_bytes:int}|-)(?:\\\\s+\\\"%{DATA:http_referer}\\\"\\\\s+\\\"%{DATA:http_useragent}\\\")?\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"apache_access\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "0bab6cdb-8c89-470e-b440-d4b26ce8b32c",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "13 - parse traditional syslog (systemd/filebeat/influxd/cube-cos-api)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"13 - parse traditional syslog (systemd/filebeat/influxd/cube-cos-api)\"\nwhen\n    has_field(\"payload\") AND\n    regex(\"^\\\\w{3}\\\\s+\\\\d{1,2}\\\\s+\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\s+[\\\\w.\\\\-]+(\\\\[\\\\d+\\\\])?:\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^%{SYSLOGTIMESTAMP:inner_ts}\\\\s+%{DATA:process}(?:\\\\[%{NUMBER:inner_pid:int}\\\\])?:\\\\s*%{GREEDYDATA:inner_message}$\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"syslog\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "999d688b-a3b3-4531-9912-d38ebc7d8abe",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "14 - parse CubeCOS API (nested in inner_message)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"14 - parse CubeCOS API (nested in inner_message)\"\nwhen\n    has_field(\"inner_message\") AND\n    contains(to_string($message.process), \"cube-cos-api\")\nthen\n    let m = grok(\n        pattern: \"^%{TIMESTAMP_ISO8601:cubecos_ts}\\\\s+%{WORD:cubecos_level}\\\\s+req\\\\(%{DATA:cubecos_req}\\\\):\\\\s+%{WORD:cubecos_method}\\\\s+%{NOTSPACE:cubecos_path}(?:\\\\s+\\\\(%{NUMBER:cubecos_duration_ms:float}ms\\\\))?\",\n        value: to_string($message.inner_message),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"cubecos\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "8ad7e976-de88-4328-b333-8bbb414e7206",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "15 - parse InfluxD internal timestamp"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"15 - parse InfluxD internal timestamp\"\nwhen\n    has_field(\"inner_message\") AND\n    contains(to_string($message.inner_message), \"ts=\")\nthen\n    let m = regex(\n        pattern: \"ts=(\\\\d{4}-\\\\d{2}-\\\\d{2}T\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+Z)\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"influxd_ts\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "ec023719-0220-435d-a436-d7fce3ae44f5",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "20 - extract instance_uuid from compute/libvirt logs"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"20 - extract instance_uuid from compute/libvirt logs\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"[instance:\")\nthen\n    let m = regex(\n        pattern: \"\\\\[instance:\\\\s*([a-f0-9-]{36})\\\\]\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"instance_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7c5550a3-e6de-4aac-91e4-95a84ec427b8",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "21 - extract server_uuid from /servers/<uuid> path"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"21 - extract server_uuid from /servers/<uuid> path\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"/servers/[a-f0-9-]{36}\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"/servers/([a-f0-9-]{36})\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"server_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7e9d98ca-0ecd-48b8-9006-552aa306c2bb",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "22 - extract server sub-action"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"22 - extract server sub-action\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"/servers/[a-f0-9-]{36}/\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"/servers/[a-f0-9-]{36}/([\\\\w-]+)\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"server_subresource\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "04a9217b-e22f-4234-8eb6-0e3dc93a3cab",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "23 - extract Placement resource_provider"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"23 - extract Placement resource_provider\"\nwhen\n    has_field(\"http_path\") AND\n    contains(to_string($message.http_path), \"/resource_providers/\")\nthen\n    let m = grok(\n        pattern: \"/resource_providers/%{UUID:rp_uuid}(?:/%{WORD:rp_action})?\",\n        value: to_string($message.http_path),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "f2ff84c0-edd4-46a4-a7d6-e1a1573765b0",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "24 - extract Cinder volume operation"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"24 - extract Cinder volume operation\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"/volumes/[a-f0-9-]{36}\", to_string($message.http_path)).matches == true\nthen\n    let m = grok(\n        pattern: \"/volumes/%{UUID:volume_uuid}(?:/%{WORD:volume_subresource})?\",\n        value: to_string($message.http_path),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c97de3e8-ef8c-414c-8529-76989d2c2fe1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "25 - extract Neutron port UUID"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"25 - extract Neutron port UUID\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"/ports/[a-f0-9-]{36}\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"/ports/([a-f0-9-]{36})\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"port_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "2f497dfa-5b53-4cfa-912c-704090f1ed85",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "26 - extract Keystone operation"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"26 - extract Keystone operation\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"/v3/(auth|projects|users|roles)\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"(/v3/auth/tokens|/v3/projects|/v3/users|/v3/roles)\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"keystone_op\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9567edc1-7f05-42f3-8792-f41266ad4c21",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27 - extract user_id / project_id from request context"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27 - extract user_id / project_id from request context\"\nwhen\n    has_field(\"request_id\") AND\n    regex(\"^req-\\\\S+\\\\s+\\\\S+\\\\s+\\\\S+\", to_string($message.request_id)).matches == true\nthen\n    let m = grok(\n        pattern: \"%{NOTSPACE:req_id_only}\\\\s+%{NOTSPACE:user_id}\\\\s+%{NOTSPACE:project_id}(?:\\\\s+%{NOTSPACE:domain_id}\\\\s+%{NOTSPACE:user_domain}\\\\s+%{NOTSPACE:project_domain})?\",\n        value: to_string($message.request_id),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c776ac8b-7f93-4cb2-8ea8-ca03225d2872",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "28 - VM action verb (spawn/destroy/stop/start/migrate)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"28 - VM action verb (spawn/destroy/stop/start/migrate)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"(spawned|destroyed|Terminating|Stopping|Starting|Rebooting|rebooted|Resuming|Pausing|Resizing|migrat|Evacuat|to spawn|to build|Creating image|console output|quiesce|running successfully|soft rebooted)\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"(spawned successfully|destroyed successfully|soft rebooted successfully|rebooted successfully|running successfully|Terminating instance|Stopping instance|Starting instance|Rebooting instance|Resuming instance|Pausing instance|Resizing|Live migrat\\\\w+|Evacuat\\\\w+|Took [\\\\d.]+ seconds to spawn|Took [\\\\d.]+ seconds to build instance|Creating image|Get console output|Attempting to quiesce instance|pre_live_migration|Migration running|Migration completed)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_action\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "6db29bc0-7e31-4cc6-8155-dc67cb8e8da6",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "30 - VM compute node (Claim successful on node X)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"30 - VM compute node (Claim successful on node X)\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Claim successful\")\nthen\n    let m = regex(\n        pattern: \"Claim successful on node (\\\\S+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"compute_node\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9a163c14-04fc-4427-87d8-c3c6628ae230",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "31 - VM build duration"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"31 - VM build duration\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"seconds to build instance\")\nthen\n    let m = regex(\n        pattern: \"Took ([\\\\d.]+) seconds to build instance\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"build_duration_sec\", to_double(m[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7dfa90a2-90b3-4d45-becc-1236816fb623",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "32 - VM spawn duration"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"32 - VM spawn duration\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"seconds to spawn\")\nthen\n    let m = regex(\n        pattern: \"Took ([\\\\d.]+) seconds to spawn the instance\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"spawn_duration_sec\", to_double(m[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "50110aab-c7ac-4578-b541-60a521083436",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "33 - VM vm_state"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"33 - VM vm_state\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"vm_state\")\nthen\n    let m = regex(\n        pattern: \"vm_state[\\\\s=:]+(\\\\S+?)[\\\\s.,]\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_state\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d65790dc-9402-4479-b887-8b0c6378ecb1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "34 - VM task_state"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"34 - VM task_state\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"task_state\")\nthen\n    let m = regex(\n        pattern: \"task_state[\\\\s=:]+(\\\\S+?)[\\\\s.,]\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"task_state\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4f4485ad-dbbe-4fab-b0d3-da58b04fe425",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "35 - VM pending task"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"35 - VM pending task\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"pending task\")\nthen\n    let m = regex(\n        pattern: \"pending task \\\\((\\\\w+)\\\\)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"pending_task\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "21c6ea1e-0eda-4e84-a5ce-98513ff8ca77",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "36 - Libvirt action result (destroyed/spawned/rebooted)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"36 - Libvirt action result (destroyed/spawned/rebooted)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Instance (\\\\w+\\\\s+)?\\\\w+ successfully\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"Instance ((?:soft\\\\s+)?\\\\w+) successfully\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"libvirt_action\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "489a3a57-7787-49af-9a50-ad7c0aaa3cd1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "37 - VIF event name"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"37 - VIF event name\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"network-vif-\")\nthen\n    let m = regex(\n        pattern: \"(network-vif-(?:plugged|unplugged|deleted))\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_event\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "fb17ae5e-7b6a-431d-9f8d-ab0758e04cd0",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "38 - VIF UUID"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"38 - VIF UUID\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"network-vif-\")\nthen\n    let m = regex(\n        pattern: \"network-vif-(?:plugged|unplugged|deleted)[:-]([a-f0-9-]{36})\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a046b1a8-4e66-4222-bd1c-7875c26182df",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "39 - external event target node"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"39 - external event target node\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"for instance\")\nthen\n    let m = regex(\n        pattern: \"for instance [a-f0-9-]{36} on (\\\\S+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"event_target_node\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "331f0111-f008-41ed-8382-cb2449f72143",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "3A - OpenStack internal caller (from user-agent)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"3A - OpenStack internal caller (from user-agent)\"\nwhen\n    has_field(\"http_useragent\") AND\n    regex(\"^(nova|neutron|cinder|keystone|placement|cube-cos|masakari|monasca)-\", to_string($message.http_useragent)).matches == true\nthen\n    let m = regex(\n        pattern: \"^(nova-\\\\w+|neutron-\\\\w+|cinder-\\\\w+|keystone-\\\\w+|placement-\\\\w+|cube-cos-\\\\w+|masakari-\\\\w+|monasca-\\\\w+)\",\n        value: to_string($message.http_useragent)\n    );\n    set_field(\"os_caller\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "78cb4d64-5dcc-4ae5-bb84-45fbbe3d5912",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "3B - Placement allocation instance UUID"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"3B - Placement allocation instance UUID\"\nwhen\n    has_field(\"http_path\") AND\n    contains(to_string($message.http_path), \"/allocations/\")\nthen\n    let m = regex(\n        pattern: \"/allocations/([a-f0-9-]{36})\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"allocation_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "3d25442a-38e2-4529-a48c-550e526035e6",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "40 - vm_lifecycle_event (legacy callback format)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"40 - vm_lifecycle_event (legacy callback format)\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Libvirt Event:\")\nthen\n    let m = grok(\n        pattern: \"Libvirt Event:\\\\s*type=%{WORD:libvirt_type},\\\\s*hostname=%{HOSTNAME:libvirt_host},\\\\s*uuid=%{UUID:libvirt_uuid},\\\\s*time=%{TIMESTAMP_ISO8601:libvirt_event_time},\\\\s*event_id=%{WORD:vm_lifecycle_event},\\\\s*detail=%{WORD:libvirt_detail}\",\n        value: to_string($message.app_message),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"lifecycle_format\", \"callback\");\n    // Mirror libvirt_uuid → instance_uuid for unified VM tracking\n    set_field(\"instance_uuid\", to_string($message.libvirt_uuid));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9450f693-5c4b-4e09-a97d-2dabaaa1a232",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "41 - vm_lifecycle_event (new notification format)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"41 - vm_lifecycle_event (new notification format)\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"vir_domain_event\")\nthen\n    let m = regex(\n        pattern: \"vir_domain_event['\\\\s:]+([A-Z_]+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_lifecycle_event\", m[\"0\"]);\n    set_field(\"lifecycle_format\", \"notification\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "83f8e9a7-0c27-48d7-9281-36747b81a05e",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "42 - Masakari notification type"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"42 - Masakari notification type\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"['\\\"]event['\\\"]\\\\s*:\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"['\\\"]event['\\\"]\\\\s*:\\\\s*['\\\"]([A-Z_]+)['\\\"]\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_event_type\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9089a29f-dcfd-4755-a0b2-e2e31268fef8",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "43 - Masakari notification UUID"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"43 - Masakari notification UUID\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Notification\\\\s+'?[a-f0-9-]{36}'?\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"Notification\\\\s+'?([a-f0-9-]{36})'?\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_notification_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "047df690-0638-4acb-99f7-9206713585c4",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "44 - Masakari source host UUID"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"44 - Masakari source host UUID\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"source_host_uuid=\")\nthen\n    let m = regex(\n        pattern: \"source_host_uuid=([a-f0-9-]{36})\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_source_host_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "f34ab3eb-5334-43bc-b9d9-07ad0f2275ab",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "45 - Masakari notification status"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"45 - Masakari notification status\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Notification.*status[=:]\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"status[=:]\\\\s*(\\\\w+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_notification_status\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "509190fb-681c-4640-a172-6375be224c33",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "46 - Masakari notification handled (ignored/accepted/...)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"46 - Masakari notification handled (ignored/accepted/...)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Notification.*?(ignored|accepted|processed|finished)\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"Notification.*?(ignored|accepted|processed|finished)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_handled\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "67960e51-0cb2-4dc6-8d68-f0fa251a1944",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "50 - preserve EventReceiveTime"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"50 - preserve EventReceiveTime\"\nwhen\n    has_field(\"timestamp\")\nthen\n    set_field(\"EventReceiveTime\", $message.timestamp);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "310b17ce-982f-4030-aab7-6de6329cfc8a",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "51 - timestamp from app_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"51 - timestamp from app_ts\"\nwhen\n    has_field(\"app_ts\")\nthen\n    let parsed = parse_date(\n        value: to_string($message.app_ts),\n        pattern: \"yyyy-MM-dd HH:mm:ss.SSS\",\n        timezone: \"Asia/Taipei\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"app_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d42c52c9-6998-4e25-b7f6-a745c36104fd",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "52 - timestamp from ceph_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"52 - timestamp from ceph_ts\"\nwhen\n    has_field(\"ceph_ts\") AND NOT has_field(\"app_ts\")\nthen\n    let parsed = parse_date(\n        value: to_string($message.ceph_ts),\n        pattern: \"yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"ceph_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "5ce2f573-569e-4f39-a254-7c87ce06d3bc",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "53 - timestamp from apache_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"53 - timestamp from apache_ts\"\nwhen\n    has_field(\"apache_ts\") AND NOT has_field(\"app_ts\") AND NOT has_field(\"ceph_ts\")\nthen\n    let parsed = parse_date(\n        value: to_string($message.apache_ts),\n        pattern: \"dd/MMM/yyyy:HH:mm:ss Z\",\n        locale: \"en\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"apache_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "019fc26b-f4ab-4738-928f-12514ff728c4",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "54 - timestamp from influxd_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"54 - timestamp from influxd_ts\"\nwhen\n    has_field(\"influxd_ts\") AND NOT has_field(\"app_ts\") AND NOT has_field(\"ceph_ts\") AND NOT has_field(\"apache_ts\")\nthen\n    let parsed = parse_date(\n        value: to_string($message.influxd_ts),\n        pattern: \"yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'\",\n        timezone: \"UTC\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"influxd_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "343793bf-3495-4482-84f3-af410a2e0c34",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "55 - timestamp from cubecos_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"55 - timestamp from cubecos_ts\"\nwhen\n    has_field(\"cubecos_ts\") AND NOT has_field(\"app_ts\") AND NOT has_field(\"ceph_ts\") AND NOT has_field(\"apache_ts\") AND NOT has_field(\"influxd_ts\")\nthen\n    let parsed = parse_date(\n        value: to_string($message.cubecos_ts),\n        pattern: \"yyyy-MM-dd'T'HH:mm:ss.SSSZ\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"cubecos_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "8bba1fd3-7874-420d-a619-44025c053df9",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "56 - timestamp from inner_ts (last resort, year-less)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"56 - timestamp from inner_ts (last resort, year-less)\"\nwhen\n    has_field(\"inner_ts\") AND NOT has_field(\"app_ts\") AND NOT has_field(\"ceph_ts\") AND NOT has_field(\"apache_ts\") AND NOT has_field(\"influxd_ts\") AND NOT has_field(\"cubecos_ts\")\nthen\n    let normalized = regex_replace(\n        pattern: \"\\\\s+\",\n        value: to_string($message.inner_ts),\n        replacement: \" \"\n    );\n    let parsed = parse_date(\n        value: normalized,\n        pattern: \"MMM d HH:mm:ss\",\n        timezone: \"Asia/Taipei\",\n        locale: \"en\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"inner_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c01c1863-8854-4a77-8d2b-fa2e1ca999ec",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "47 - Masakari monitors notification (Python dict format)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"47 - Masakari monitors notification (Python dict format)\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_logger), \"masakarimonitors\") AND\n    contains(to_string($message.app_message), \"Send a notification\")\nthen\n    let m_uuid = regex(\n        pattern: \"'instance_uuid':\\\\s*'([a-f0-9-]{36})'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"instance_uuid\", m_uuid[\"0\"]);\n\n    let m_event = regex(\n        pattern: \"'event':\\\\s*'([A-Z_]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_lifecycle_event\", m_event[\"0\"]);\n    set_field(\"lifecycle_format\", \"masakari_monitor\");\n\n    let m_host = regex(\n        pattern: \"'hostname':\\\\s*'([^']+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_hostname\", m_host[\"0\"]);\n\n    let m_type = regex(\n        pattern: \"'type':\\\\s*'([A-Z_]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_event_type\", m_type[\"0\"]);\n\n    let m_vir = regex(\n        pattern: \"'vir_domain_event':\\\\s*'([A-Z_]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_vir_domain_event\", m_vir[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "bff7ccac-e019-42ae-aef8-311c05a1c2b9",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "3C - cubecos duration µs to ms"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"3C - cubecos duration µs to ms\"\nwhen\n    has_field(\"inner_message\") AND\n    has_field(\"cubecos_method\") AND\n    NOT has_field(\"cubecos_duration_ms\") AND\n    regex(\"\\\\([\\\\d.]+µs\\\\)\", to_string($message.inner_message)).matches == true\nthen\n    let r = regex(\n        pattern: \"\\\\(([\\\\d.]+)µs\\\\)\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"cubecos_duration_ms\", to_double(r[\"0\"]) / 1000.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "fb65d30d-1da1-4bf5-8f13-01cc0bc41186",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "3D - extract cubecos resource type"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"3D - extract cubecos resource type\"\nwhen\n    has_field(\"cubecos_path\") AND\n    contains(to_string($message.cubecos_path), \"/datacenters/\")\nthen\n    let m = regex(\n        pattern: \"/api/v\\\\d+/datacenters/([^/]+)/([^/?]+)\",\n        value: to_string($message.cubecos_path)\n    );\n    set_field(\"cubecos_datacenter\", m[\"0\"]);\n    set_field(\"cubecos_resource\", m[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9a0a8a98-9913-4d36-a1c2-ae93d3262fd4",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "3E - cubecos duration s to ms"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"3E - cubecos duration s to ms\"\nwhen\n    has_field(\"inner_message\") AND\n    has_field(\"cubecos_method\") AND\n    NOT has_field(\"cubecos_duration_ms\") AND\n    regex(\"\\\\([\\\\d.]+s\\\\)\", to_string($message.inner_message)).matches == true\nthen\n    let r = regex(\n        pattern: \"\\\\(([\\\\d.]+)s\\\\)\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"cubecos_duration_ms\", to_double(r[\"0\"]) * 1000.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "bc5128db-88d3-410f-af83-cad6bdac3ae4",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "48 - Heat service operation"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"48 - Heat service operation\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"heat.engine\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Service \")\nthen\n    let m = regex(\n        pattern: \"Service ([a-f0-9-]{36})\\\\s+(\\\\w+)\\\\s+(failed|succeeded|started|completed)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"heat_service_uuid\", m[\"0\"]);\n    set_field(\"heat_operation\", m[\"1\"]);\n    set_field(\"heat_status\", m[\"2\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "f6fde864-b19c-4337-84a8-615dbac59268",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "49 - Masakari host monitor status"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"49 - Masakari host monitor status\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"hostmonitor.host_handler\") AND\n    has_field(\"app_message\")\nthen\n    let m = regex(\n        pattern: \"'([^']+)' is '(\\\\w+)' \\\\(current: '(\\\\w+)'\\\\)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"monitored_host\", m[\"0\"]);\n    set_field(\"monitored_host_status\", m[\"1\"]);\n    set_field(\"monitored_host_status_current\", m[\"2\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "bdb501b8-732b-48c2-bc11-7b1804de32a6",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4A - VM moved to another host"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4A - VM moved to another host\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"has been moved to another host\")\nthen\n    let m = regex(\n        pattern: \"Instance ([a-f0-9-]{36}) has been moved to another host (\\\\S+?)\\\\(\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"instance_uuid\", m[\"0\"]);\n    set_field(\"moved_to_host\", m[\"1\"]);\n    set_field(\"nova_stale_allocation\", \"true\");\n\n    let mem = regex(\n        pattern: \"MEMORY_MB[^0-9]+([0-9]+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_memory_mb\", to_long(mem[\"0\"]));\n\n    let vcpu = regex(\n        pattern: \"VCPU[^0-9]+([0-9]+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_vcpu\", to_long(vcpu[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c61b0034-aa5c-4696-9631-65eb9a47bb10",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4B - VM Lifecycle Event (nova.compute.manager)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4B - VM Lifecycle Event (nova.compute.manager)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"\\\\[instance:\\\\s*[a-f0-9-]{36}\\\\] VM \\\\w+\\\\s*\\\\(Lifecycle Event\\\\)\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"VM (\\\\w+)\\\\s*\\\\(Lifecycle Event\\\\)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_lifecycle_event\", m[\"0\"]);\n    set_field(\"lifecycle_format\", \"nova_compute\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e935e364-7ae9-41fb-85a6-095628ee9797",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4C - Masakari engine notification payload"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4C - Masakari engine notification payload\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Notification ['\\\"][a-f0-9-]{36}['\\\"] received with payload\", to_string($message.app_message)).matches == true\nthen\n    let m_uuid = regex(\n        pattern: \"'instance_uuid':\\\\s*'([a-f0-9-]{36})'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"instance_uuid\", m_uuid[\"0\"]);\n\n    let m_event = regex(\n        pattern: \"'event':\\\\s*'([A-Z_]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_lifecycle_event\", m_event[\"0\"]);\n    set_field(\"lifecycle_format\", \"masakari_engine\");\n\n    let m_vir = regex(\n        pattern: \"'vir_domain_event':\\\\s*'([A-Z_]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_vir_domain_event\", m_vir[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4c60039c-54e3-4a61-8c47-115c4e46ba30",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4D - pacemaker syslog level"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4D - pacemaker syslog level\"\nwhen\n    has_field(\"process\") AND\n    has_field(\"inner_message\") AND\n    regex(\"^pacemaker-\", to_string($message.process)).matches == true\nthen\n    set_field(\"log_kind\", \"pacemaker\");\n    let m = regex(\n        pattern: \"^(warning|notice|info|error|crit|debug):\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"pcm_level\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d9dbe910-a5e5-45b9-9083-24ac99328355",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4E - pacemaker resource placement (Chose X for Y)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4E - pacemaker resource placement (Chose X for Y)\"\nwhen\n    has_field(\"inner_message\") AND\n    contains(to_string($message.inner_message), \"Chose \") AND\n    contains(to_string($message.inner_message), \" for \")\nthen\n    let m = regex(\n        pattern: \"Chose (\\\\S+) for (\\\\S+)(?: from (\\\\d+) nodes)?(?: with score (\\\\S+))?\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"pcm_chosen_node\", m[\"0\"]);\n    set_field(\"pcm_resource\", m[\"1\"]);\n    set_field(\"pcm_candidate_nodes\", m[\"2\"]);\n    set_field(\"pcm_score\", m[\"3\"]);\n    set_field(\"pcm_action\", \"placement\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "aeeab876-5762-40f4-b40e-f6b72536cc05",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4F - pacemaker controld state"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4F - pacemaker controld state\"\nwhen\n    has_field(\"process\") AND\n    contains(to_string($message.process), \"pacemaker-controld\") AND\n    has_field(\"inner_message\") AND\n    contains(to_string($message.inner_message), \"ping state:\")\nthen\n    let m = regex(\n        pattern: \"ping state: (\\\\S+)\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"pcm_controld_state\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "2e39a424-e851-4dcd-a7b7-a5fcb4407772",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4G - VM live migration (pre/running/completed)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4G - VM live migration (pre/running/completed)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"(pre_live_migration|Migration running|Migration completed|Post operation of migration|moved from host|to host)\", to_string($message.app_message)).matches == true\nthen\n    let m_dest = regex(\n        pattern: \"(?:on destination host|to host)\\\\s+(\\\\S+?)(?:\\\\.|$)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"migration_dest_host\", m_dest[\"0\"]);\n\n    let m_src = regex(\n        pattern: \"(?:from host|from)\\\\s+(\\\\S+?)\\\\s+to host\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"migration_src_host\", m_src[\"0\"]);\n\n    let m_dur = regex(\n        pattern: \"Took ([\\\\d.]+) seconds for pre_live_migration\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"migration_pre_duration_sec\", to_double(m_dur[\"0\"]));\n\n    let m_phase = regex(\n        pattern: \"(pre_live_migration|Migration running|Migration completed|Post operation of migration started|moved from host)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"migration_phase\", m_phase[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e95f93fa-2a19-4467-8c33-c7103fdc28f6",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "50_pcm - pacemaker transition calculated"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"50_pcm - pacemaker transition calculated\"\nwhen\n    has_field(\"inner_message\") AND\n    contains(to_string($message.inner_message), \"Calculated transition\")\nthen\n    let m = regex(\n        pattern: \"Calculated transition (\\\\d+)\",\n        value: to_string($message.inner_message)\n    );\n    set_field(\"pcm_transition_id\", m[\"0\"]);\n    set_field(\"pcm_action\", \"transition\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "addf82a7-348f-4289-a4d8-4542ef947929",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4H - Keystone project not found"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4H - Keystone project not found\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"keystone\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Could not find project\")\nthen\n    let m = regex(\n        pattern: \"Could not find project:\\\\s*([^.\\\\\\\\]+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"keystone_failed_project\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a23beb4b-4893-458f-8cd9-beeec663169f",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4I - Nova external event for instance"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4I - Nova external event for instance\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"nova.api.openstack.compute.server_external_events\") AND\n    has_field(\"app_message\")\nthen\n    let m = regex(\n        pattern: \"Creating event ([\\\\w-]+):([a-f0-9-]{36}) for instance ([a-f0-9-]{36}) on (\\\\S+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_event\", m[\"0\"]);\n    set_field(\"vif_uuid\", m[\"1\"]);\n    set_field(\"instance_uuid\", m[\"2\"]);\n    set_field(\"event_target_node\", m[\"3\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c2b58e30-e517-4b95-9a85-a319488c6b38",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4J - Neutron Nova event response"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4J - Neutron Nova event response\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"neutron.notifiers.nova\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Nova event matching\")\nthen\n    let m_uuid = regex(\n        pattern: \"'server_uuid':\\\\s*'([a-f0-9-]{36})'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"server_uuid\", m_uuid[\"0\"]);\n\n    let m_name = regex(\n        pattern: \"'name':\\\\s*'([^']+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_event\", m_name[\"0\"]);\n\n    let m_status = regex(\n        pattern: \"'status':\\\\s*'(\\\\w+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_event_status\", m_status[\"0\"]);\n\n    let m_tag = regex(\n        pattern: \"'tag':\\\\s*'([a-f0-9-]+)'\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vif_uuid\", m_tag[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d3a35c3f-0739-4653-a0c8-1b0b854a4981",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4K - Masakari duplicate notification"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4K - Masakari duplicate notification\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"is duplicate\")\nthen\n    let m = regex(\n        pattern: \"from host (\\\\S+)\\\\s+of\\\\s+type\\\\s+'(\\\\w+)'\\\\s+is duplicate\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"masakari_hostname\", m[\"0\"]);\n    set_field(\"masakari_event_type\", m[\"1\"]);\n    set_field(\"masakari_handled\", \"duplicate\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "dc6bea34-5961-4cf4-9461-f9e872c40c85",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4L - OVN port chassis binding"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4L - OVN port chassis binding\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"neutron.agent.ovn.metadata.agent\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"bound to our chassis\")\nthen\n    let m = regex(\n        pattern: \"Port ([a-f0-9-]{36}) in datapath ([a-f0-9-]{36})\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"port_uuid\", m[\"0\"]);\n    set_field(\"network_uuid\", m[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "0d36cc79-0712-42de-bbae-fca511e3aa73",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4M - Nova OS info not found"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4M - Nova OS info not found\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"nova.virt.osinfo\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Cannot find OS information\")\nthen\n    let m = regex(\n        pattern: \"operating system (\\\\w+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"os_info_missing\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "8d010b1f-e079-4612-802e-67ebe0d1bc91",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4N - Keystone Fernet token oversize"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4N - Keystone Fernet token oversize\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"keystone.token\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"exceeds\")\nthen\n    let m = regex(\n        pattern: \"length of (\\\\d+) characters\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"fernet_token_length\", to_long(m[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4d7d8cf1-8661-4342-ab17-9ba53c696a46",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4P - inline WSGI HTTP request from app_message"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4P - inline WSGI HTTP request from app_message\"\nwhen\n    has_field(\"app_message\") AND\n    NOT has_field(\"http_method\") AND\n    regex(\"\\\"\\\\w+ \\\\S+ HTTP/[\\\\d.]+\\\"\", to_string($message.app_message)).matches == true\nthen\n    let m = grok(\n        pattern: \"%{IPORHOST:client_ip}.*?\\\"%{WORD:http_method} %{NOTSPACE:http_path} HTTP/%{NUMBER:http_version}\\\"\\\\s+(?:status:\\\\s+)?%{NUMBER:http_status:int}(?:\\\\s+(?:len:?\\\\s+)?%{NUMBER:http_bytes:int})?(?:\\\\s+(?:time:?\\\\s+)?%{NUMBER:http_time_sec:float})?\",\n        value: to_string($message.app_message),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "68743582-6cf1-4afc-9400-89a3d5797640",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4Q - Cinder/Manila WSGI client http response"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4Q - Cinder/Manila WSGI client http response\"\nwhen\n    has_field(\"app_message\") AND\n    NOT has_field(\"http_status\") AND\n    contains(to_string($message.app_message), \"returned with HTTP\")\nthen\n    let m = regex(\n        pattern: \"(http[s]?://\\\\S+)\\\\s+returned with HTTP\\\\s+(\\\\d+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"http_url\", m[\"0\"]);\n    set_field(\"http_status\", to_long(m[\"1\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4968b185-fdca-4f83-9f13-2ab4d281d2eb",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "16 - parse Apache HTTPD error log"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"16 - parse Apache HTTPD error log\"\nwhen\n    has_field(\"payload\") AND\n    regex(\"^\\\\d{4}-\\\\d{2}-\\\\d{2}\\\\s\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+\\\\s+AH\\\\d+:\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^%{TIMESTAMP_ISO8601:apache_err_ts}\\\\s+(?<apache_code>AH\\\\d+):\\\\s*%{GREEDYDATA:apache_message}\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"apache_error\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "6904c722-34c1-42a9-9361-2e768575062f",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17 - parse Ceph pgmap metrics"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17 - parse Ceph pgmap metrics\"\nwhen\n    has_field(\"ceph_message\") AND\n    contains(to_string($message.ceph_message), \"pgmap\")\nthen\n    let m_pg = regex(\n        pattern: \"pgmap v(\\\\d+):\\\\s+(\\\\d+)\\\\s+pgs:\\\\s+(\\\\d+)\\\\s+([\\\\w+]+)\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_pgmap_version\", to_long(m_pg[\"0\"]));\n    set_field(\"ceph_pgs_total\", to_long(m_pg[\"1\"]));\n    set_field(\"ceph_pgs_healthy\", to_long(m_pg[\"2\"]));\n    set_field(\"ceph_pgs_state\", m_pg[\"3\"]);\n\n    let m_io = regex(\n        pattern: \"([\\\\d.]+)\\\\s*([KMGT]iB)/s\\\\s+rd\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_read_value\", to_double(m_io[\"0\"]));\n    set_field(\"ceph_read_unit\", m_io[\"1\"]);\n\n    let m_iow = regex(\n        pattern: \"([\\\\d.]+)\\\\s*([KMGT]iB)/s\\\\s+wr\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_write_value\", to_double(m_iow[\"0\"]));\n    set_field(\"ceph_write_unit\", m_iow[\"1\"]);\n\n    let m_ops = regex(\n        pattern: \"([\\\\d.]+)([kKMG]?)\\\\s*op/s\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_ops_value\", to_double(m_ops[\"0\"]));\n    set_field(\"ceph_ops_scale\", m_ops[\"1\"]);\n\n    let m_avail = regex(\n        pattern: \"([\\\\d.]+)\\\\s*([KMGT]iB)\\\\s*/\\\\s*([\\\\d.]+)\\\\s*([KMGT]iB)\\\\s+avail\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_avail_value\", to_double(m_avail[\"0\"]));\n    set_field(\"ceph_avail_unit\", m_avail[\"1\"]);\n    set_field(\"ceph_total_value\", to_double(m_avail[\"2\"]));\n    set_field(\"ceph_total_unit\", m_avail[\"3\"]);\n\n    let m_used = regex(\n        pattern: \"([\\\\d.]+)\\\\s*([KMGT]iB)\\\\s+used\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_used_value\", to_double(m_used[\"0\"]));\n    set_field(\"ceph_used_unit\", m_used[\"1\"]);\n\n    let m_data = regex(\n        pattern: \"([\\\\d.]+)\\\\s*([KMGT]iB)\\\\s+data\",\n        value: to_string($message.ceph_message)\n    );\n    set_field(\"ceph_data_value\", to_double(m_data[\"0\"]));\n    set_field(\"ceph_data_unit\", m_data[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "61e0d0d9-7038-4d0c-a6ae-e7ab1f800092",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_avail_GiB - convert avail GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_avail_GiB - convert avail GiB to bytes\"\nwhen has_field(\"ceph_avail_value\") AND to_string($message.ceph_avail_unit) == \"GiB\"\nthen set_field(\"ceph_avail_bytes\", to_double($message.ceph_avail_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "468b54a5-ec2d-422d-b694-c1598dd9015e",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_avail_KiB - convert avail KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_avail_KiB - convert avail KiB to bytes\"\nwhen has_field(\"ceph_avail_value\") AND to_string($message.ceph_avail_unit) == \"KiB\"\nthen set_field(\"ceph_avail_bytes\", to_double($message.ceph_avail_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a4d8c46a-bb81-4e64-aacd-c7f2e07c3fc7",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_avail_MiB - convert avail MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_avail_MiB - convert avail MiB to bytes\"\nwhen has_field(\"ceph_avail_value\") AND to_string($message.ceph_avail_unit) == \"MiB\"\nthen set_field(\"ceph_avail_bytes\", to_double($message.ceph_avail_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "39814dba-348a-49b9-ac92-b2e8c0da3678",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_avail_TiB - convert avail TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_avail_TiB - convert avail TiB to bytes\"\nwhen has_field(\"ceph_avail_value\") AND to_string($message.ceph_avail_unit) == \"TiB\"\nthen set_field(\"ceph_avail_bytes\", to_double($message.ceph_avail_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "35cb21c2-150b-425c-ac2d-12ff281a4b49",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_data_GiB - convert data GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_data_GiB - convert data GiB to bytes\"\nwhen has_field(\"ceph_data_value\") AND to_string($message.ceph_data_unit) == \"GiB\"\nthen set_field(\"ceph_data_bytes\", to_double($message.ceph_data_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a289ab88-0848-4133-9d9e-1158c344fefa",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_data_KiB - convert data KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_data_KiB - convert data KiB to bytes\"\nwhen has_field(\"ceph_data_value\") AND to_string($message.ceph_data_unit) == \"KiB\"\nthen set_field(\"ceph_data_bytes\", to_double($message.ceph_data_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d2a94342-18c6-4e6a-8c07-bd2a27550843",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_data_MiB - convert data MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_data_MiB - convert data MiB to bytes\"\nwhen has_field(\"ceph_data_value\") AND to_string($message.ceph_data_unit) == \"MiB\"\nthen set_field(\"ceph_data_bytes\", to_double($message.ceph_data_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "28617536-04e5-436f-b460-6dd75ea35da2",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_data_TiB - convert data TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_data_TiB - convert data TiB to bytes\"\nwhen has_field(\"ceph_data_value\") AND to_string($message.ceph_data_unit) == \"TiB\"\nthen set_field(\"ceph_data_bytes\", to_double($message.ceph_data_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "759da64e-438e-43ff-b7c9-94ea51a8106a",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_ops_K - ops with K scale"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_ops_K - ops with K scale\"\nwhen has_field(\"ceph_ops_value\") AND to_string($message.ceph_ops_scale) == \"K\"\nthen set_field(\"ceph_ops_per_sec\", to_double($message.ceph_ops_value) * 1000.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "b65193c8-30b1-45ae-a8a5-065c3e0bf446",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_ops_M - ops with M scale"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_ops_M - ops with M scale\"\nwhen has_field(\"ceph_ops_value\") AND to_string($message.ceph_ops_scale) == \"M\"\nthen set_field(\"ceph_ops_per_sec\", to_double($message.ceph_ops_value) * 1000000.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "04ea9f72-bad7-43d2-b252-a144f545b85b",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_ops_k - ops with k scale"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_ops_k - ops with k scale\"\nwhen has_field(\"ceph_ops_value\") AND to_string($message.ceph_ops_scale) == \"k\"\nthen set_field(\"ceph_ops_per_sec\", to_double($message.ceph_ops_value) * 1000.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "248179cc-bf29-4adc-8fb3-98f3eb63f38d",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_ops_plain - ops without scale"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_ops_plain - ops without scale\"\nwhen has_field(\"ceph_ops_value\") AND to_string($message.ceph_ops_scale) == \"\"\nthen set_field(\"ceph_ops_per_sec\", to_double($message.ceph_ops_value));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d2ecc8ab-ab55-449d-a797-0c0323e563e1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_read_GiB - convert read GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_read_GiB - convert read GiB to bytes\"\nwhen has_field(\"ceph_read_value\") AND to_string($message.ceph_read_unit) == \"GiB\"\nthen set_field(\"ceph_read_bytes_per_sec\", to_double($message.ceph_read_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9cc738fa-1c48-4363-bce0-3bd5121523da",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_read_KiB - convert read KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_read_KiB - convert read KiB to bytes\"\nwhen has_field(\"ceph_read_value\") AND to_string($message.ceph_read_unit) == \"KiB\"\nthen set_field(\"ceph_read_bytes_per_sec\", to_double($message.ceph_read_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e8fb6201-01c9-402c-aac7-42e83c505e6b",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_read_MiB - convert read MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_read_MiB - convert read MiB to bytes\"\nwhen has_field(\"ceph_read_value\") AND to_string($message.ceph_read_unit) == \"MiB\"\nthen set_field(\"ceph_read_bytes_per_sec\", to_double($message.ceph_read_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "1a04c965-9b45-42f5-8a9d-300cde219f1f",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_read_TiB - convert read TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_read_TiB - convert read TiB to bytes\"\nwhen has_field(\"ceph_read_value\") AND to_string($message.ceph_read_unit) == \"TiB\"\nthen set_field(\"ceph_read_bytes_per_sec\", to_double($message.ceph_read_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d99c36fa-7369-40c8-b7f8-6c0e78ca05fa",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_total_GiB - convert total GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_total_GiB - convert total GiB to bytes\"\nwhen has_field(\"ceph_total_value\") AND to_string($message.ceph_total_unit) == \"GiB\"\nthen set_field(\"ceph_total_bytes\", to_double($message.ceph_total_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "6dde8905-9690-4c3f-b0e3-dd509ef2abd4",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_total_KiB - convert total KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_total_KiB - convert total KiB to bytes\"\nwhen has_field(\"ceph_total_value\") AND to_string($message.ceph_total_unit) == \"KiB\"\nthen set_field(\"ceph_total_bytes\", to_double($message.ceph_total_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "f78bb035-1c12-4d37-9d89-3519f3d23896",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_total_MiB - convert total MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_total_MiB - convert total MiB to bytes\"\nwhen has_field(\"ceph_total_value\") AND to_string($message.ceph_total_unit) == \"MiB\"\nthen set_field(\"ceph_total_bytes\", to_double($message.ceph_total_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "fe3cb084-bf37-442e-b4e7-19af6ce89b7a",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_total_TiB - convert total TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_total_TiB - convert total TiB to bytes\"\nwhen has_field(\"ceph_total_value\") AND to_string($message.ceph_total_unit) == \"TiB\"\nthen set_field(\"ceph_total_bytes\", to_double($message.ceph_total_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d00a5b6c-d7bb-477f-b327-84ab1c8749b7",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_used_GiB - convert used GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_used_GiB - convert used GiB to bytes\"\nwhen has_field(\"ceph_used_value\") AND to_string($message.ceph_used_unit) == \"GiB\"\nthen set_field(\"ceph_used_bytes\", to_double($message.ceph_used_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "5e60488f-06ff-4dab-9d7c-7cf4b007afc1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_used_KiB - convert used KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_used_KiB - convert used KiB to bytes\"\nwhen has_field(\"ceph_used_value\") AND to_string($message.ceph_used_unit) == \"KiB\"\nthen set_field(\"ceph_used_bytes\", to_double($message.ceph_used_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4cbfdebd-0c7d-48c4-8f5e-fd70d1b76903",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_used_MiB - convert used MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_used_MiB - convert used MiB to bytes\"\nwhen has_field(\"ceph_used_value\") AND to_string($message.ceph_used_unit) == \"MiB\"\nthen set_field(\"ceph_used_bytes\", to_double($message.ceph_used_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "56e904c6-2216-486e-bacb-71c84442d287",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_used_TiB - convert used TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_used_TiB - convert used TiB to bytes\"\nwhen has_field(\"ceph_used_value\") AND to_string($message.ceph_used_unit) == \"TiB\"\nthen set_field(\"ceph_used_bytes\", to_double($message.ceph_used_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "211c77cc-29c8-47ae-b5fb-e0db1f7a1143",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_write_GiB - convert write GiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_write_GiB - convert write GiB to bytes\"\nwhen has_field(\"ceph_write_value\") AND to_string($message.ceph_write_unit) == \"GiB\"\nthen set_field(\"ceph_write_bytes_per_sec\", to_double($message.ceph_write_value) * 1073741824.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "bcaebdcc-b736-4f8e-ade7-b808ce8a3afe",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_write_KiB - convert write KiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_write_KiB - convert write KiB to bytes\"\nwhen has_field(\"ceph_write_value\") AND to_string($message.ceph_write_unit) == \"KiB\"\nthen set_field(\"ceph_write_bytes_per_sec\", to_double($message.ceph_write_value) * 1024.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c221ec79-e497-4bc1-8ecd-c988e14f0a3c",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_write_MiB - convert write MiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_write_MiB - convert write MiB to bytes\"\nwhen has_field(\"ceph_write_value\") AND to_string($message.ceph_write_unit) == \"MiB\"\nthen set_field(\"ceph_write_bytes_per_sec\", to_double($message.ceph_write_value) * 1048576.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "ffd5a53d-2117-42fe-bab5-e5f1b1a276a0",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_write_TiB - convert write TiB to bytes"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_write_TiB - convert write TiB to bytes\"\nwhen has_field(\"ceph_write_value\") AND to_string($message.ceph_write_unit) == \"TiB\"\nthen set_field(\"ceph_write_bytes_per_sec\", to_double($message.ceph_write_value) * 1099511627776.0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9fe8a4d6-f173-40bf-8ea4-b4bb73c97eb1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4S - HTTP endpoint label"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4S - HTTP endpoint label\"\nwhen\n    has_field(\"http_path\")\nthen\n    let m = regex(\n        pattern: \"^/(?:v[0-9.]+/)?([^/?]+)\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"http_endpoint\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "8567f046-1b5c-4274-9bea-a80d970ecfe9",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4T - Nova sync_power_states VM count"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4T - Nova sync_power_states VM count\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"synchronizing instance power states\")\nthen\n    let m = regex(\n        pattern: \"found (\\\\d+) instances in the database and (\\\\d+) instances on the hypervisor\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"vm_count_db\", to_long(m[\"0\"]));\n    set_field(\"vm_count_hypervisor\", to_long(m[\"1\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "99bedeb5-3233-4d9b-8250-5a3c1c8620c1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4U - Nova instance usage audit"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4U - Nova instance usage audit\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"instance usage audit for host\")\nthen\n    let m = regex(\n        pattern: \"audit for host (\\\\S+) from \\\\S+ \\\\S+ to \\\\S+ \\\\S+\\\\.\\\\s+(\\\\d+) instances\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"audit_host\", m[\"0\"]);\n    set_field(\"audit_instance_count\", to_long(m[\"1\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "0d262da3-b669-4d34-8a20-b6f6bdb8c19a",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4V - Cinder volume operation success"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4V - Cinder volume operation success\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"cinder.volume\") AND\n    has_field(\"app_message\") AND\n    regex(\"(create|delete|attach|detach|extend|migrate|snapshot)\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(\n        pattern: \"(create_volume|delete_volume|attach_volume|detach_volume|extend_volume|migrate_volume|create_snapshot|delete_snapshot)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"cinder_volume_action\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7913597d-721a-4a28-a547-27afb7b9e08d",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4X - Service login token created"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4X - Service login token created\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"keystone.token\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Fernet token created\")\nthen\n    set_field(\"keystone_event\", \"fernet_token_created\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "9ee6310e-08ab-4b92-aac1-c43d7ffba131",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M1 - MySQL connection lost"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M1 - MySQL connection lost\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Lost connection to MySQL\")\nthen\n    set_field(\"critical_event\", \"mysql_connection_lost\");\n    set_field(\"alert_severity\", \"high\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "84e2a940-fa2d-4d31-acca-329d96dcb933",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M2 - Corosync communication failure"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M2 - Corosync communication failure\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Corosync communication is failed\")\nthen\n    set_field(\"critical_event\", \"corosync_failed\");\n    set_field(\"alert_severity\", \"critical\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "f99eb4b6-ec3f-4518-9f42-dc4936f147ed",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M3 - OVN revision conflict"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M3 - OVN revision conflict\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"RevisionConflict\")\nthen\n    let m = regex(\n        pattern: \"Failed to fix resource ([a-f0-9-]{36}) \\\\(type: (\\\\w+)\\\\)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"ovn_resource_uuid\", m[\"0\"]);\n    set_field(\"ovn_resource_type\", m[\"1\"]);\n    set_field(\"critical_event\", \"ovn_revision_conflict\");\n    set_field(\"alert_severity\", \"high\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7d95fff0-b35c-44fa-a694-35d94577e27c",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M4 - Heat entity not found"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M4 - Heat entity not found\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"EntityNotFound\")\nthen\n    set_field(\"critical_event\", \"heat_entity_not_found\");\n    set_field(\"alert_severity\", \"medium\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "138883a8-804b-4853-860e-b4ad58800916",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M5 - oslo_messaging connection issue"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M5 - oslo_messaging connection issue\"\nwhen\n    has_field(\"app_message\") AND\n (contains(to_string($message.app_message), \"AMQP server\") OR\n     contains(to_string($message.app_message), \"rabbit\"))\nthen\n    set_field(\"critical_event\", \"amqp_issue\");\n    set_field(\"alert_severity\", \"medium\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d66ed967-8dec-4c51-b8ab-d946f7a0e5bc",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M6 - DB cluster issue"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M6 - DB cluster issue\"\nwhen\n    has_field(\"app_message\") AND\n (contains(to_string($message.app_message), \"deadlock\") OR\n     contains(to_string($message.app_message), \"Lock wait timeout\") OR\n     contains(to_string($message.app_message), \"Galera\"))\nthen\n    set_field(\"critical_event\", \"db_lock_or_galera\");\n    set_field(\"alert_severity\", \"medium\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d4584682-191e-4642-a24d-ddd311feb9d0",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M7 - VM HA evacuate event"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M7 - VM HA evacuate event\"\nwhen\n    has_field(\"app_message\") AND\n (contains(to_string($message.app_message), \"Evacuating\") OR\n     contains(to_string($message.app_message), \"evacuat\"))\nthen\n    set_field(\"critical_event\", \"vm_evacuating\");\n    set_field(\"alert_severity\", \"high\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "76960576-c46a-4641-bf54-a9c068e1c8dd",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N1 - OVN maintenance sync timing"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N1 - OVN maintenance sync timing\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Maintenance task: Synchronization finished\")\nthen\n    let m = regex(\n        pattern: \"took ([\\\\d.]+) seconds\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"ovn_sync_duration_sec\", to_double(m[\"0\"]));\n    set_field(\"ovn_event\", \"sync_finished\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e42d68ee-4cca-4f18-9872-9ef5fd5604aa",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N2 - OVN revision bump"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N2 - OVN revision bump\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Successfully bumped revision number\")\nthen\n    let m = regex(\n        pattern: \"resource ([a-f0-9-]{36}) \\\\(type: (\\\\w+)\\\\) to (\\\\d+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"ovn_resource_uuid\", m[\"0\"]);\n    set_field(\"ovn_resource_type\", m[\"1\"]);\n    set_field(\"ovn_revision\", to_long(m[\"2\"]));\n    set_field(\"ovn_event\", \"revision_bump\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "ed8260c7-d329-4c09-adbe-820d72fbca0c",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N3 - DHCP scheduling failure"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N3 - DHCP scheduling failure\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Unable to schedule network\")\nthen\n    let m = regex(\n        pattern: \"Unable to schedule network ([a-f0-9-]{36})\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"network_uuid\", m[\"0\"]);\n    set_field(\"critical_event\", \"dhcp_no_agents\");\n    set_field(\"alert_severity\", \"medium\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "63ef7338-1c43-45c2-ab4a-cbb952cce1fc",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N4 - DHCP no agents"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N4 - DHCP no agents\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"dhcp_agent_scheduler\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"No more DHCP\")\nthen\n    set_field(\"critical_event\", \"dhcp_no_agents\");\n    set_field(\"alert_severity\", \"high\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e746a328-008c-4955-837e-cf13cc415ead",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N5 - Keystone password truncation"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N5 - Keystone password truncation\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Truncating password\")\nthen\n    let m = regex(\n        pattern: \"maximum length (\\\\d+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"password_max_length\", to_long(m[\"0\"]));\n    set_field(\"keystone_event\", \"password_truncated\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "d60ae171-edc8-4aa3-911b-25b98c55201b",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "N6 - Heat WSGI request"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"N6 - Heat WSGI request\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"heat.common.wsgi\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Processing request\")\nthen\n    let m = regex(\n        pattern: \"Processing request: (\\\\w+)\\\\s+(\\\\S+)\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"http_method\", m[\"0\"]);\n    set_field(\"http_path\", m[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "6784f853-e2c3-4251-8d1b-a2db3a1b392e",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4Z - extract tenant_id from query string"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4Z - extract tenant_id from query string\"\nwhen\n    has_field(\"http_path\") AND\n    contains(to_string($message.http_path), \"tenant_id=\")\nthen\n    let m = regex(\n        pattern: \"tenant_id=([a-f0-9]+)\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"tenant_id\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "883759c2-1c6f-4b25-8093-9b18ba5f9af7",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4R1 - HTTP 5xx category"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4R1 - HTTP 5xx category\"\nwhen has_field(\"http_status\") AND to_long($message.http_status) >= 500\nthen set_field(\"http_status_category\", \"5xx_server_error\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "3522d3c8-a69d-402a-937b-ac0cded4a18c",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4R2 - HTTP 4xx category"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4R2 - HTTP 4xx category\"\nwhen has_field(\"http_status\") AND to_long($message.http_status) >= 400 AND to_long($message.http_status) < 500\nthen set_field(\"http_status_category\", \"4xx_client_error\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "0f9ab020-4774-4b22-9d41-93c35bbd890a",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4R3 - HTTP 3xx category"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4R3 - HTTP 3xx category\"\nwhen has_field(\"http_status\") AND to_long($message.http_status) >= 300 AND to_long($message.http_status) < 400\nthen set_field(\"http_status_category\", \"3xx_redirect\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "5c7bbe19-07df-451d-a642-579729e6a6f7",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4R4 - HTTP 2xx category"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4R4 - HTTP 2xx category\"\nwhen has_field(\"http_status\") AND to_long($message.http_status) >= 200 AND to_long($message.http_status) < 300\nthen set_field(\"http_status_category\", \"2xx_success\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "dd3e858c-902f-4faa-9281-8cd317b72443",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "53b - timestamp from apache_err_ts"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Parse apache HTTPD error log timestamp (ISO8601 with microseconds)"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"53b - timestamp from apache_err_ts\"\nwhen\n    has_field(\"apache_err_ts\") AND NOT has_field(\"app_ts\") AND NOT has_field(\"ceph_ts\") AND NOT has_field(\"apache_ts\")\nthen\n    let raw = to_string($message.apache_err_ts);\n    let truncated = regex_replace(pattern: \"(\\\\.\\\\d{3})\\\\d+\", value: raw, replacement: \"$1\");\n    let parsed = parse_date(\n        value: truncated,\n        pattern: \"yyyy-MM-dd HH:mm:ss.SSS\",\n        timezone: \"Asia/Taipei\",\n        locale: \"en\"\n    );\n    set_field(\"timestamp\", parsed);\n    set_field(\"ts_source\", \"apache_err_ts\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "bd441c78-e608-45d6-85d3-fabcd197b314",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "16b - parse Apache SSL library error"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Parse apache mod_ssl SSL Library Error messages (no AH code prefix)"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"16b - parse Apache SSL library error\"\nwhen\n    has_field(\"payload\") AND\n    NOT has_field(\"log_kind\") AND\n    regex(\"^\\\\d{4}-\\\\d{2}-\\\\d{2}\\\\s\\\\d{2}:\\\\d{2}:\\\\d{2}\\\\.\\\\d+\\\\s+SSL Library Error:\", to_string($message.payload)).matches == true\nthen\n    let m = grok(\n        pattern: \"^%{TIMESTAMP_ISO8601:apache_err_ts}\\\\s+SSL Library Error:\\\\s+(?<ssl_error_code>error:[0-9A-F]+):%{GREEDYDATA:apache_message}\",\n        value: to_string($message.payload),\n        only_named_captures: true\n    );\n    set_fields(fields: m);\n    set_field(\"log_kind\", \"apache_ssl_error\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "ee4ba851-3987-4151-bb6e-2a90a53dd548",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4W1 - Manila update share status"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Manila share state"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4W1 - Manila update share status\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"manila.share\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Updating share status\")\nthen\n    set_field(\"manila_action\", \"update_share_status\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7de44610-20f1-400f-8570-b1f165dbb44b",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4W2 - Manila check unused share servers"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Manila share state"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4W2 - Manila check unused share servers\"\nwhen\n    has_field(\"app_logger\") AND\n    contains(to_string($message.app_logger), \"manila.share\") AND\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Check for unused share servers\")\nthen\n    set_field(\"manila_action\", \"check_unused_servers\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "fec8b355-5ba0-432c-bafe-313f2923e6f8",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b1 - remove dash user_id"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from request context field"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b1 - remove dash user_id\"\nwhen\n    has_field(\"user_id\") AND to_string($message.user_id) == \"-\"\nthen\n    remove_field(\"user_id\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a866794d-abc5-46cc-b283-1dd51c1de738",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b2 - remove dash project_id"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from request context field"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b2 - remove dash project_id\"\nwhen\n    has_field(\"project_id\") AND to_string($message.project_id) == \"-\"\nthen\n    remove_field(\"project_id\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "0ad9b532-a3d9-4e1f-8805-1081c13be135",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b3 - remove dash domain_id"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from request context field"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b3 - remove dash domain_id\"\nwhen\n    has_field(\"domain_id\") AND to_string($message.domain_id) == \"-\"\nthen\n    remove_field(\"domain_id\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "813ccd0a-5aea-4016-b4ba-30eae2bfdd46",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b4 - remove dash user_domain"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from request context field"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b4 - remove dash user_domain\"\nwhen\n    has_field(\"user_domain\") AND to_string($message.user_domain) == \"-\"\nthen\n    remove_field(\"user_domain\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "31770898-ed16-40fc-986d-cb4ab8b4a27e",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b5 - remove dash project_domain"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from request context field"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b5 - remove dash project_domain\"\nwhen\n    has_field(\"project_domain\") AND to_string($message.project_domain) == \"-\"\nthen\n    remove_field(\"project_domain\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "2cf69ab6-ac4f-4b68-8e4e-5a8d62adc308",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b6 - remove dash ident"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from ident"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b6 - remove dash ident\"\nwhen\n    has_field(\"ident\") AND to_string($message.ident) == \"-\"\nthen\n    remove_field(\"ident\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "b0ac2051-b150-45a9-978b-a6810a232210",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b7 - remove dash auth"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from auth"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b7 - remove dash auth\"\nwhen\n    has_field(\"auth\") AND to_string($message.auth) == \"-\"\nthen\n    remove_field(\"auth\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "44920c19-67af-4a98-be8d-a465ea630c09",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "27b8 - remove dash http_referer"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Remove '-' placeholder from http_referer"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"27b8 - remove dash http_referer\"\nwhen\n    has_field(\"http_referer\") AND to_string($message.http_referer) == \"-\"\nthen\n    remove_field(\"http_referer\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4208f658-8e7c-403f-ab6c-dbc7ce6d34ec",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_pg_unhealthy_a - active+clean treated as healthy"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_pg_unhealthy_a - active+clean treated as healthy\"\nwhen\n    has_field(\"ceph_pgs_total\") AND has_field(\"ceph_pgs_state\") AND\n    contains(to_string($message.ceph_pgs_state), \"active+clean\")\nthen\n    set_field(\"ceph_pgs_unhealthy\", 0);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "7d5ac3be-1f85-438e-b79a-ba21f1873ebe",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "17_pg_unhealthy_b - non active+clean state means unhealthy"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"17_pg_unhealthy_b - non active+clean state means unhealthy\"\nwhen\n    has_field(\"ceph_pgs_total\") AND has_field(\"ceph_pgs_healthy\") AND has_field(\"ceph_pgs_state\") AND\n    NOT contains(to_string($message.ceph_pgs_state), \"active+clean\")\nthen\n    let total = to_long($message.ceph_pgs_total);\n    let healthy = to_long($message.ceph_pgs_healthy);\n    set_field(\"ceph_pgs_unhealthy\", total - healthy);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "e7944dd1-382d-48f9-bf14-2436218e42a8",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "41b - vm_lifecycle_event override UNKNOWN with payload event"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"41b - vm_lifecycle_event override UNKNOWN with payload event\"\nwhen\n    has_field(\"app_message\") AND\n    has_field(\"vm_lifecycle_event\") AND\n    to_string($message.vm_lifecycle_event) == \"UNKNOWN\"\nthen\n    let m = regex(pattern: \"'event'[:\\\\s'\\\"]+([A-Z_]+)\", value: to_string($message.app_message));\n    set_field(\"vm_lifecycle_event\", to_string(m[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "79b20aa7-d0d8-4733-8cc5-0c88cb5afa19",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AA - Corosync interface 失敗 (含介面名稱)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AA - Corosync interface 失敗 (含介面名稱)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"Corosync communication using '[^']+' is failed\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(pattern: \"Corosync communication using '([^']+)' is failed\", value: to_string($message.app_message));\n    set_field(\"corosync_failed_iface\", m[\"0\"]);\n    set_field(\"critical_event\", \"corosync_failed\");\n    set_field(\"alert_severity\", \"high\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c7e59bd1-5587-400a-a538-6ee9bc5db457",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AB - Masakari host 健檢狀態變更"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AB - Masakari host 健檢狀態變更\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"'[^']+' is '(online|offline)' \\\\(current: '[^']+'\\\\)\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(pattern: \"'([^']+)' is '(online|offline)' \\\\(current: '([^']+)'\\\\)\", value: to_string($message.app_message));\n    set_field(\"masakari_target_host\", m[\"0\"]);\n    set_field(\"masakari_host_status_new\", m[\"1\"]);\n    set_field(\"masakari_host_status_current\", m[\"2\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "4b7ef7f3-6ba3-4fc7-872f-4fbf0b5037df",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AC - Masakari 重傳停止 (重複通知)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AC - Masakari 重傳停止 (重複通知)\"\nwhen\n    has_field(\"app_message\") AND\n    contains(to_string($message.app_message), \"Stop retrying to send a notification\")\nthen\n    set_field(\"masakari_retry_stopped\", true);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "ae79d10b-1f25-48ea-9da8-57c373ba9aee",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AD - Masakari notification project_id (從 payload location 取得)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AD - Masakari notification project_id (從 payload location 取得)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"'project':\\\\s*Munch\\\\(\\\\{'id':\\\\s*'[a-f0-9]{32}'\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(pattern: \"'project':\\\\s*Munch\\\\(\\\\{'id':\\\\s*'([a-f0-9]{32})'\", value: to_string($message.app_message));\n    set_field(\"project_id\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "15abd191-18eb-422b-add3-5f98acc3bdf3",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AE - Masakari notification location 雲端資訊"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AE - Masakari notification location 雲端資訊\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\"'cloud':\\\\s*'[^']+'\", to_string($message.app_message)).matches == true\nthen\n    let cm = regex(pattern: \"'cloud':\\\\s*'([^']+)'\", value: to_string($message.app_message));\n    set_field(\"masakari_cloud\", cm[\"0\"]);\n    let rm = regex(pattern: \"'region_name':\\\\s*'([^']+)'\", value: to_string($message.app_message));\n    set_field(\"masakari_region\", rm[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "45b71385-e53a-4ec7-9919-fa4c27a78d7f",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4AF - Masakari notification id (數字 ID)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4AF - Masakari notification id (數字 ID)\"\nwhen\n    has_field(\"app_message\") AND\n    regex(\",\\\\s*id=\\\\d+,\\\\s*notification_uuid=\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(pattern: \",\\\\s*id=(\\\\d+),\\\\s*notification_uuid=\", value: to_string($message.app_message));\n    set_field(\"masakari_notification_id\", to_long(m[\"0\"]));\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "b442868c-62fc-48f7-aa8e-039941256244",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "4CC - instance_uuid from masakari notification payload (general)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"4CC - instance_uuid from masakari notification payload (general)\"\nwhen\n    has_field(\"app_message\") AND\n    NOT has_field(\"instance_uuid\") AND\n    regex(\"'instance_uuid':\\\\s*'[a-f0-9-]{36}'\", to_string($message.app_message)).matches == true\nthen\n    let m = regex(pattern: \"'instance_uuid':\\\\s*'([a-f0-9-]{36})'\", value: to_string($message.app_message));\n    set_field(\"instance_uuid\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "072d38e2-fdc7-41aa-8dce-208706e41deb",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "14b - CubeCOS API metric type and target host"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"14b - CubeCOS API metric type and target host\"\nwhen\n    has_field(\"cubecos_path\") AND\n    contains(to_string($message.cubecos_path), \"/metrics/\")\nthen\n    let m = regex(\n        pattern: \"/metrics/([a-zA-Z]+)/summary/hosts/([\\\\w-]+)\",\n        value: to_string($message.cubecos_path)\n    );\n    set_field(\"cubecos_metric_type\", m[\"0\"]);\n    set_field(\"cubecos_target_host\", m[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "dc5afc4d-8449-4326-982f-e1e41b7ccb75",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "14c - CubeCOS API node target host"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"14c - CubeCOS API node target host\"\nwhen\n    has_field(\"cubecos_path\") AND\n    regex(\"/nodes/[\\\\w-]+(?:\\\\?|$)\", to_string($message.cubecos_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"/nodes/([\\\\w-]+)\",\n        value: to_string($message.cubecos_path)\n    );\n    set_field(\"cubecos_target_host\", m[\"0\"]);\n    set_field(\"cubecos_resource\", \"nodes\");\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "5ca3863f-dd54-4cf2-a26c-64ab484f4a46",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "M4b - Heat entity uuid extraction"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"M4b - Heat entity uuid extraction\"\nwhen\n    has_field(\"app_message\") AND\n    has_field(\"critical_event\") AND\n    to_string($message.critical_event) == \"heat_entity_not_found\"\nthen\n    let m = regex(\n        pattern: \"The (\\\\w+) \\\\(([a-f0-9-]{36})\\\\) could not be found\",\n        value: to_string($message.app_message)\n    );\n    set_field(\"heat_entity_type\", m[\"0\"]);\n    set_field(\"heat_entity_uuid\", m[\"1\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "a55c171e-325a-4cc4-bdbd-172229cb45f3",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "HV - HTTP API version extraction"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"HV - HTTP API version extraction\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"^/(v[0-9]+(?:\\\\.[0-9]+)?)/\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"^/(v[0-9]+(?:\\\\.[0-9]+)?)/\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"http_api_version\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline_rule",
+        "version": "1"
+      },
+      "id": "c0c0ca67-b64c-469b-b894-e0234b04c5f1",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "HE - HTTP endpoint resource type (Neutron/Nova/Cinder)"
+        },
+        "description": {
+          "@type": "string",
+          "@value": ""
+        },
+        "source": {
+          "@type": "string",
+          "@value": "rule \"HE - HTTP endpoint resource type (Neutron/Nova/Cinder)\"\nwhen\n    has_field(\"http_path\") AND\n    regex(\"^/v[0-9.]+/([a-z_-]+)\", to_string($message.http_path)).matches == true\nthen\n    let m = regex(\n        pattern: \"^/v[0-9.]+/([a-z_-]+)\",\n        value: to_string($message.http_path)\n    );\n    set_field(\"http_resource\", m[\"0\"]);\nend"
+        }
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    },
+    {
+      "v": "1",
+      "type": {
+        "name": "pipeline",
+        "version": "1"
+      },
+      "id": "3520f99b-c038-4747-8649-b2845917af26",
+      "data": {
+        "title": {
+          "@type": "string",
+          "@value": "CubeCOS / OpenStack Log Processing"
+        },
+        "description": {
+          "@type": "string",
+          "@value": "Full log parsing pipeline (44 rules across 6 stages)"
+        },
+        "source": {
+          "@type": "string",
+          "@value": "pipeline \"CubeCOS / OpenStack Log Processing\"\nstage 0 match either\n    rule \"00 - envelope\"\n    rule \"00a - host_name fallback (raw regex)\"\n    rule \"00b - host_name fallback (bigccN/npveN/host-N/pveN)\"\nstage 1 match either\n    rule \"10 - parse Ceph cluster log\"\n    rule \"11 - parse OpenStack service log\"\n    rule \"12 - parse Apache/WSGI access log\"\n    rule \"13 - parse traditional syslog (systemd/filebeat/influxd/cube-cos-api)\"\n    rule \"16 - parse Apache HTTPD error log\"\n    rule \"16b - parse Apache SSL library error\"\nstage 2 match pass\n    rule \"17 - parse Ceph pgmap metrics\"\n    rule \"14 - parse CubeCOS API (nested in inner_message)\"\n    rule \"15 - parse InfluxD internal timestamp\"\n    rule \"20 - extract instance_uuid from compute/libvirt logs\"\n    rule \"4CC - instance_uuid from masakari notification payload (general)\"\n    rule \"21 - extract server_uuid from /servers/<uuid> path\"\n    rule \"22 - extract server sub-action\"\n    rule \"23 - extract Placement resource_provider\"\n    rule \"24 - extract Cinder volume operation\"\n    rule \"25 - extract Neutron port UUID\"\n    rule \"26 - extract Keystone operation\"\n    rule \"27 - extract user_id / project_id from request context\"\n    rule \"28 - VM action verb (spawn/destroy/stop/start/migrate)\"\nstage 3 match pass\n    rule \"14b - CubeCOS API metric type and target host\"\n    rule \"14c - CubeCOS API node target host\"\n    rule \"17_pg_unhealthy_a - active+clean treated as healthy\"\n    rule \"17_pg_unhealthy_b - non active+clean state means unhealthy\"\n    rule \"27b1 - remove dash user_id\"\n    rule \"27b2 - remove dash project_id\"\n    rule \"27b3 - remove dash domain_id\"\n    rule \"27b4 - remove dash user_domain\"\n    rule \"27b5 - remove dash project_domain\"\n    rule \"27b6 - remove dash ident\"\n    rule \"27b7 - remove dash auth\"\n    rule \"27b8 - remove dash http_referer\"\n    rule \"30 - VM compute node (Claim successful on node X)\"\n    rule \"31 - VM build duration\"\n    rule \"32 - VM spawn duration\"\n    rule \"33 - VM vm_state\"\n    rule \"34 - VM task_state\"\n    rule \"35 - VM pending task\"\n    rule \"36 - Libvirt action result (destroyed/spawned/rebooted)\"\n    rule \"37 - VIF event name\"\n    rule \"38 - VIF UUID\"\n    rule \"39 - external event target node\"\n    rule \"3A - OpenStack internal caller (from user-agent)\"\n    rule \"3B - Placement allocation instance UUID\"\n    rule \"3C - cubecos duration µs to ms\"\n    rule \"3D - extract cubecos resource type\"\n    rule \"3E - cubecos duration s to ms\"\n    rule \"17_read_KiB - convert read KiB to bytes\"\n    rule \"17_read_MiB - convert read MiB to bytes\"\n    rule \"17_read_GiB - convert read GiB to bytes\"\n    rule \"17_read_TiB - convert read TiB to bytes\"\n    rule \"17_write_KiB - convert write KiB to bytes\"\n    rule \"17_write_MiB - convert write MiB to bytes\"\n    rule \"17_write_GiB - convert write GiB to bytes\"\n    rule \"17_write_TiB - convert write TiB to bytes\"\n    rule \"17_avail_KiB - convert avail KiB to bytes\"\n    rule \"17_avail_MiB - convert avail MiB to bytes\"\n    rule \"17_avail_GiB - convert avail GiB to bytes\"\n    rule \"17_avail_TiB - convert avail TiB to bytes\"\n    rule \"17_total_KiB - convert total KiB to bytes\"\n    rule \"17_total_MiB - convert total MiB to bytes\"\n    rule \"17_total_GiB - convert total GiB to bytes\"\n    rule \"17_total_TiB - convert total TiB to bytes\"\n    rule \"17_used_KiB - convert used KiB to bytes\"\n    rule \"17_used_MiB - convert used MiB to bytes\"\n    rule \"17_used_GiB - convert used GiB to bytes\"\n    rule \"17_used_TiB - convert used TiB to bytes\"\n    rule \"17_data_KiB - convert data KiB to bytes\"\n    rule \"17_data_MiB - convert data MiB to bytes\"\n    rule \"17_data_GiB - convert data GiB to bytes\"\n    rule \"17_data_TiB - convert data TiB to bytes\"\n    rule \"17_ops_plain - ops without scale\"\n    rule \"17_ops_k - ops with k scale\"\n    rule \"17_ops_K - ops with K scale\"\n    rule \"17_ops_M - ops with M scale\"\nstage 4 match pass\n    rule \"4AA - Corosync interface 失敗 (含介面名稱)\"\n    rule \"4AB - Masakari host 健檢狀態變更\"\n    rule \"4AC - Masakari 重傳停止 (重複通知)\"\n    rule \"4AD - Masakari notification project_id (從 payload location 取得)\"\n    rule \"4AE - Masakari notification location 雲端資訊\"\n    rule \"4AF - Masakari notification id (數字 ID)\"\n    rule \"40 - vm_lifecycle_event (legacy callback format)\"\n    rule \"41 - vm_lifecycle_event (new notification format)\"\n    rule \"42 - Masakari notification type\"\n    rule \"43 - Masakari notification UUID\"\n    rule \"44 - Masakari source host UUID\"\n    rule \"45 - Masakari notification status\"\n    rule \"46 - Masakari notification handled (ignored/accepted/...)\"\n    rule \"47 - Masakari monitors notification (Python dict format)\"\n    rule \"48 - Heat service operation\"\n    rule \"49 - Masakari host monitor status\"\n    rule \"4A - VM moved to another host\"\n    rule \"4B - VM Lifecycle Event (nova.compute.manager)\"\n    rule \"4C - Masakari engine notification payload\"\n    rule \"4D - pacemaker syslog level\"\n    rule \"4E - pacemaker resource placement (Chose X for Y)\"\n    rule \"4F - pacemaker controld state\"\n    rule \"50_pcm - pacemaker transition calculated\"\n    rule \"4G - VM live migration (pre/running/completed)\"\n    rule \"4H - Keystone project not found\"\n    rule \"4I - Nova external event for instance\"\n    rule \"4J - Neutron Nova event response\"\n    rule \"4K - Masakari duplicate notification\"\n    rule \"4L - OVN port chassis binding\"\n    rule \"4M - Nova OS info not found\"\n    rule \"4N - Keystone Fernet token oversize\"\n    rule \"4P - inline WSGI HTTP request from app_message\"\n    rule \"4Q - Cinder/Manila WSGI client http response\"\n    rule \"4T - Nova sync_power_states VM count\"\n    rule \"4U - Nova instance usage audit\"\n    rule \"4V - Cinder volume operation success\"\n    rule \"4W1 - Manila update share status\"\n    rule \"4W2 - Manila check unused share servers\"\n    rule \"4X - Service login token created\"\n    rule \"M1 - MySQL connection lost\"\n    rule \"M2 - Corosync communication failure\"\n    rule \"M3 - OVN revision conflict\"\n    rule \"M4 - Heat entity not found\"\n    rule \"M5 - oslo_messaging connection issue\"\n    rule \"M6 - DB cluster issue\"\n    rule \"M7 - VM HA evacuate event\"\n    rule \"N1 - OVN maintenance sync timing\"\n    rule \"N2 - OVN revision bump\"\n    rule \"N3 - DHCP scheduling failure\"\n    rule \"N4 - DHCP no agents\"\n    rule \"N5 - Keystone password truncation\"\n    rule \"N6 - Heat WSGI request\"\n    rule \"4Z - extract tenant_id from query string\"\nstage 41 match pass\n    rule \"M4b - Heat entity uuid extraction\"\n    rule \"HV - HTTP API version extraction\"\n    rule \"HE - HTTP endpoint resource type (Neutron/Nova/Cinder)\"\n    rule \"41b - vm_lifecycle_event override UNKNOWN with payload event\"\n    rule \"4R1 - HTTP 5xx category\"\n    rule \"4R2 - HTTP 4xx category\"\n    rule \"4R3 - HTTP 3xx category\"\n    rule \"4R4 - HTTP 2xx category\"\n    rule \"4S - HTTP endpoint label\"\nstage 5 match either\n    rule \"50 - preserve EventReceiveTime\"\n    rule \"51 - timestamp from app_ts\"\n    rule \"52 - timestamp from ceph_ts\"\n    rule \"53 - timestamp from apache_ts\"\n    rule \"53b - timestamp from apache_err_ts\"\n    rule \"54 - timestamp from influxd_ts\"\n    rule \"55 - timestamp from cubecos_ts\"\n    rule \"56 - timestamp from inner_ts (last resort, year-less)\"\nend\n"
+        },
+        "connected_streams": []
+      },
+      "constraints": [
+        {
+          "type": "server-version",
+          "version": ">=6.3.0+0"
+        }
+      ]
+    }
+  ]
+}
