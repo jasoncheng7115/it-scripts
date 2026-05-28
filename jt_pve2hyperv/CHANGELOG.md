@@ -21,7 +21,7 @@ All notable changes to JT_PVE2HYPERV are documented in this file.
   - Auto-disables Secure Boot for Linux Gen 2 guests
   - Attaches additional disks (disk 1..N) via `Add-VMHardDiskDrive`
 - **ASCII / BOM safety** — generated `.ps1` is pure ASCII, no BOM, no CJK characters. VM names containing non-ASCII characters are sanitized via `LC_ALL=C tr -c 'A-Za-z0-9._-' '_'` before being used in filenames or the PS1. Defensive post-write byte scan fails loudly if any non-ASCII byte slipped in.
-- **Storage backend support** — RBD, dir, ZFS, LVM, LVM-thin (same code path as sister project `jt_pve2ova`).
+- **Storage backend support** — RBD, dir, ZFS, LVM, LVM-thin (same code path as related project `jt_pve2ova`).
 - **LVM auto-activation** — inactive LVM/LVM-thin LVs are activated automatically on PVE 9 when the VM is powered off.
 - **Disk format detection** — automatically detects raw/qcow2 format from VM config or `pvesm list`.
 - **Disk size fallback** — determines disk size via config `size=`, then `pvesm list`, then `blockdev --getsize64`.
@@ -32,5 +32,5 @@ All notable changes to JT_PVE2HYPERV are documented in this file.
   - `guide` — generate guide + PS1 only (no disk conversion); useful for previewing the customer-facing artifacts.
 
 ### Notes
-- No `ovftool` dependency (unlike the sister `jt_pve2ova` project). VHDX is produced natively by `qemu-img`.
+- No `ovftool` dependency (unlike the related `jt_pve2ova` project). VHDX is produced natively by `qemu-img`.
 - All bash log output is ASCII-only (no Unicode in log messages).

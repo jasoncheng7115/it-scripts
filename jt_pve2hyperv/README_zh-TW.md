@@ -10,7 +10,7 @@
 
 [English version](README.md)
 
-姊妹專案：[jt_pve2ova](../jt_pve2ova) — 相同概念，但目標是 VMware ESXi 的 OVA。
+相關專案：[jt_pve2ova](../jt_pve2ova) — 相同概念，但目標是 VMware ESXi 的 OVA。
 
 ---
 
@@ -38,7 +38,7 @@
 | bash, numfmt           | —            | 標準 GNU coreutils                                |
 | （客戶端）Windows + Hyper-V | Win 10/11 Pro/Ent，或 Win Server 2016+ | 用來執行 PS1 並匯入 VHDX |
 
-> **不需要 ovftool**（與姊妹專案 jt_pve2ova 不同），VHDX 由 `qemu-img` 直接產生。
+> **不需要 ovftool**（與相關專案 jt_pve2ova 不同），VHDX 由 `qemu-img` 直接產生。
 
 ---
 

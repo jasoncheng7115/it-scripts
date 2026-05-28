@@ -8,7 +8,7 @@ Supports multiple storage back-ends such as RBD / dir / ZFS / LVM / LVM-thin.
 
 [繁體中文版說明](README_zh-TW.md)
 
-Sister project: [jt_pve2ova](../jt_pve2ova) — same idea, but targets VMware ESXi via OVA.
+Related project: [jt_pve2ova](../jt_pve2ova) — same idea, but targets VMware ESXi via OVA.
 
 ---
 
@@ -36,7 +36,7 @@ Sister project: [jt_pve2ova](../jt_pve2ova) — same idea, but targets VMware ES
 | bash, numfmt           | —            | Standard GNU coreutils                            |
 | (Customer side) Windows with Hyper-V | Win 10/11 Pro/Ent, or Win Server 2016+ | To consume the VHDX + PS1 |
 
-> No `ovftool` required (unlike the sister jt_pve2ova project). VHDX is produced natively by `qemu-img`.
+> No `ovftool` required (unlike the related jt_pve2ova project). VHDX is produced natively by `qemu-img`.
 
 ---
 
