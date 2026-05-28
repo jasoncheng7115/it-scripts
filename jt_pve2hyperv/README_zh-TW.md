@@ -171,4 +171,4 @@ PS1 會在建立 VM 前先檢查 Hyper-V 是否可用、虛擬交換器是否存
 
 「依現狀」提供，無任何擔保。你可以自由修改或散布，前提是保留原始檔頭。
 
-**作者：** Jason Cheng（捷盟資訊股份有限公司）— jason@jason.tools
+**作者：** Jason Cheng（Jason Tools Co., Ltd.）— jason@jason.tools
