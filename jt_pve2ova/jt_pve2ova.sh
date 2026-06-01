@@ -9,6 +9,12 @@
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
+#  Version  : 1.10 (2026-06-01)
+#             * Fix RBD conversion failure ("error connecting" / DNS SRV
+#               ceph-mon): build a full librbd URI using the real Ceph
+#               pool name from storage.cfg plus the conf/keyring under
+#               /etc/pve/priv/ceph/, instead of "rbd:<storeid>/<vol>"
+#
 #  Version  : 1.9  (2026-04-21)
 #             * Check for existing output files before conversion and
 #               auto-rename with _N suffix to avoid wasted work
@@ -33,7 +39,7 @@
 ##########################################################################
 set -euo pipefail
 
-VERSION="1.9"
+VERSION="1.10"
 
 # ------------------------ helper functions ----------------------------- #
 
@@ -234,7 +240,36 @@ while IFS= read -r line; do
   [[ -z "$stype" ]] && stype="dir"
 
   if [[ "$stype" == "rbd" ]]; then
-    src="rbd:${storage}/${volname}"
+    # The PVE storage id is NOT necessarily the Ceph pool name, and a bare
+    # "rbd:pool/img" URI makes qemu-img fall back to /etc/ceph/ceph.conf and
+    # DNS SRV monitor discovery. PVE keeps the conf/keyring for an RBD storage
+    # under /etc/pve/priv/ceph/, so build a full librbd URI from storage.cfg.
+    rbd_block="$(awk -v s="${storage}:" '
+        $1 == s {grab=1; next}
+        /^[^[:space:]]/ {grab=0}
+        grab {print}
+    ' "$STORAGE_CFG")"
+
+    rbd_pool="$(echo "$rbd_block" | awk '$1=="pool"{print $2; exit}')"
+    [[ -z "$rbd_pool" ]] && rbd_pool="$storage"
+
+    rbd_user="$(echo "$rbd_block" | awk '$1=="username"{print $2; exit}')"
+    [[ -z "$rbd_user" ]] && rbd_user="admin"
+
+    rbd_conf="/etc/pve/priv/ceph/${storage}.conf"
+    [[ -f "$rbd_conf" ]] || rbd_conf="/etc/ceph/ceph.conf"
+    rbd_keyring="/etc/pve/priv/ceph/${storage}.keyring"
+
+    src="rbd:${rbd_pool}/${volname}:id=${rbd_user}"
+    [[ -f "$rbd_conf" ]]    && src="${src}:conf=${rbd_conf}"
+    [[ -f "$rbd_keyring" ]] && src="${src}:keyring=${rbd_keyring}"
+
+    # Fallback: if no conf file was found, pass monitors explicitly.
+    if [[ ! -f "$rbd_conf" ]]; then
+      rbd_mon="$(echo "$rbd_block" | awk '$1=="monhost"{$1=""; sub(/^[ \t]+/,""); gsub(/[ \t]+/,"\\;"); print; exit}')"
+      [[ -n "$rbd_mon" ]] && src="${src}:mon_host=${rbd_mon}"
+    fi
+
     [[ -z "$fmt_field" ]] && src_fmt="raw"
   else
     src="$(pvesm path "${storage}:${volname}" 2>/dev/null)"
