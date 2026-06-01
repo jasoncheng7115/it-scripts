@@ -9,7 +9,21 @@
 #  License  : Provided "as-is" with no warranty. You may modify or
 #             redistribute provided this header remains intact.
 #
-#  Version  : 1.0  (2026-05-28)
+#  Version  : 1.2  (2026-06-01)
+#             * Fix RBD conversion failure ("error connecting" / DNS SRV
+#               ceph-mon): resolve the RBD source via "pvesm path", which
+#               emits a complete librbd URI (pool, conf/mon_host, id,
+#               keyring) that qemu-img can open, instead of the bare
+#               "rbd:<storeid>/<vol>". Falls back to reconstructing the
+#               URI from storage.cfg if pvesm path is unavailable.
+#
+#  Version  : 1.1  (2026-05-28)
+#             * Carry over PVE VM description into Hyper-V VM notes
+#               (written to a separate UTF-8 <vm>_notes.txt file and
+#               applied by the generated PowerShell script via
+#               Set-VM -Notes). PS1 remains pure ASCII.
+#
+#             1.0  (2026-05-28)
 #             * Initial release
 #             * Convert PVE VM disks (RBD/dir/ZFS/LVM/LVM-thin) to
 #               dynamic (thin) VHDX via qemu-img
@@ -21,7 +35,7 @@
 ##########################################################################
 set -euo pipefail
 
-VERSION="1.0"
+VERSION="1.2"
 
 # ------------------------ helper functions ----------------------------- #
 
@@ -114,6 +128,24 @@ cores="$(cfg cores)"
 vcpus_conf="$(cfg vcpus)"
 memory="$(cfg memory)"
 ostype="$(cfg ostype)"
+description_raw="$(cfg description)"
+
+# PVE stores description URL-encoded on a single line (e.g. spaces as %20,
+# newlines as %0A). Decode it via perl (perl is a hard dependency of PVE
+# itself, so safe to assume). Result may contain CJK / multi-line text and
+# will be written to a separate UTF-8 file — NOT embedded in the .ps1.
+description=""
+if [[ -n "$description_raw" ]]; then
+  if command -v perl >/dev/null 2>&1; then
+    description="$(printf '%s' "$description_raw" | \
+      perl -pe 's/%([0-9A-Fa-f]{2})/chr(hex($1))/ge' | tr -d '\000')"
+  else
+    echo "WARN: perl not found; VM description will be passed through URL-encoded."
+    description="$description_raw"
+  fi
+  # trim leading/trailing whitespace
+  description="$(printf '%s' "$description" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+fi
 
 [[ -z "${sockets:-}" ]] && sockets=1
 [[ -z "${cores:-}"   ]] && cores=1
@@ -193,7 +225,41 @@ while IFS= read -r line; do
   [[ -z "$stype" ]] && stype="dir"
 
   if [[ "$stype" == "rbd" ]]; then
-    src="rbd:${storage}/${volname}"
+    # A bare "rbd:pool/img" URI makes qemu-img fall back to /etc/ceph/ceph.conf
+    # and DNS SRV monitor discovery, which fails on PVE. Prefer PVE's own
+    # pvesm path(), which emits a fully-formed librbd connection string
+    # (pool, mon_host, id, keyring, conf) that qemu-img can open directly.
+    src="$(pvesm path "${storage}:${volname}" 2>/dev/null || true)"
+
+    # If PVE returned nothing usable, or a krbd block device that isn't
+    # currently mapped, reconstruct a librbd URI from storage.cfg instead.
+    if [[ -z "$src" || ( "$src" == /dev/* && ! -e "$src" ) ]]; then
+      # storage block header is "<type>: <storeid>" -> match $2, not $1.
+      rbd_block="$(awk -v s="$storage" '
+          $1 ~ /:$/ && $2 == s {grab=1; next}
+          $1 ~ /:$/            {grab=0}
+          grab {print}
+      ' "$STORAGE_CFG")"
+
+      rbd_pool="$(echo "$rbd_block" | awk '$1=="pool"{print $2; exit}')"
+      [[ -z "$rbd_pool" ]] && rbd_pool="$storage"
+
+      rbd_user="$(echo "$rbd_block" | awk '$1=="username"{print $2; exit}')"
+      [[ -z "$rbd_user" ]] && rbd_user="admin"
+
+      # monhost: space-separated in storage.cfg -> comma-separated for librados
+      rbd_mon="$(echo "$rbd_block" | awk '$1=="monhost"{$1=""; sub(/^[ \t]+/,""); gsub(/[ \t]+/,","); print; exit}')"
+
+      rbd_conf="/etc/pve/priv/ceph/${storage}.conf"
+      [[ -f "$rbd_conf" ]] || rbd_conf="/etc/ceph/ceph.conf"
+      rbd_keyring="/etc/pve/priv/ceph/${storage}.keyring"
+
+      src="rbd:${rbd_pool}/${volname}:id=${rbd_user}"
+      [[ -n "$rbd_mon" ]]     && src="${src}:mon_host=${rbd_mon}"
+      [[ -f "$rbd_conf" ]]    && src="${src}:conf=${rbd_conf}"
+      [[ -f "$rbd_keyring" ]] && src="${src}:keyring=${rbd_keyring}"
+    fi
+
     [[ -z "$fmt_field" ]] && src_fmt="raw"
   else
     src="$(pvesm path "${storage}:${volname}" 2>/dev/null)"
@@ -308,6 +374,16 @@ for i in "${!vhdx_files[@]}"; do
   vhdx_files[$i]="${base_tag}_disk${i}.vhdx"
 done
 
+# finalize notes filename (only meaningful if description is non-empty)
+notes_basename="${base_tag}_notes.txt"
+notes_file="${WORKDIR}/${notes_basename}"
+has_notes="false"
+if [[ -n "$description" ]]; then
+  printf '%s\n' "$description" > "$notes_file"
+  has_notes="true"
+  echo "INFO: VM notes file -> $notes_file"
+fi
+
 # --------------- convert each disk to dynamic VHDX -------------------- #
 
 if [[ "$MODE" != "guide" ]]; then
@@ -346,6 +422,14 @@ for i in "${!vhdx_files[@]}"; do
   disk_table+="    Disk ${i}: ${vhdx_files[$i]}  (size ~${sz_iec}, PVE bus=${disk_buses[$i]})"$'\n'
 done
 
+# notes line for the file list (only if there is a description)
+notes_line_en=""
+notes_line_zh=""
+if [[ "$has_notes" == "true" ]]; then
+  notes_line_en=$'\n'"    ${notes_basename}                <- PVE VM notes (UTF-8, applied by PS1)"
+  notes_line_zh=$'\n'"    ${notes_basename}                <- PVE 來源 VM 備註（UTF-8，PS1 會自動套用）"
+fi
+
 if [[ "$GUIDE_LANG" == "zh-TW" ]]; then
   cat > "$guide_file" <<GUIDEEOF
 ===========================================================================
@@ -360,7 +444,7 @@ if [[ "$GUIDE_LANG" == "zh-TW" ]]; then
   磁碟數量    : ${#src_disks[@]}
 
   輸出檔案 (請整批複製到 Hyper-V 主機):
-${disk_table}    ${ps1_basename}                <- PowerShell 自動建立腳本
+${disk_table}    ${ps1_basename}                <- PowerShell 自動建立腳本${notes_line_zh}
 
 ---------------------------------------------------------------------------
   方法一：使用提供的 PowerShell 腳本（最推薦，全自動）
@@ -482,7 +566,7 @@ else
   Disk count  : ${#src_disks[@]}
 
   Output files (copy ALL of these to the Hyper-V host):
-${disk_table}    ${ps1_basename}                <- PowerShell auto-create script
+${disk_table}    ${ps1_basename}                <- PowerShell auto-create script${notes_line_en}
 
 ---------------------------------------------------------------------------
   Method 1 : Provided PowerShell script (recommended, fully automated)
@@ -619,6 +703,29 @@ else
   ps_islinux='$false'
 fi
 
+# Optional notes block: read external UTF-8 file written by bash above and
+# apply via Set-VM -Notes. Only emitted if the source VM has a description,
+# so the .ps1 stays clean when there is nothing to apply. The .ps1 itself
+# is still pure ASCII -- the CJK / multi-line content lives in the .txt
+# file that the .ps1 reads with -Encoding UTF8 at runtime.
+ps_notes_block=""
+if [[ "$has_notes" == "true" ]]; then
+  ps_notes_block="
+# --- 10. Apply VM notes from external UTF-8 file (PVE description) ---
+\$notesFile = Join-Path -Path \$VHDXPath -ChildPath \"${notes_basename}\"
+if (Test-Path -LiteralPath \$notesFile) {
+    try {
+        \$notesContent = Get-Content -LiteralPath \$notesFile -Raw -Encoding UTF8
+        Set-VM -Name \$VMName -Notes \$notesContent
+        Write-Host (\"Applied VM notes from \" + \$notesFile)
+    } catch {
+        Write-Warning (\"Could not apply VM notes: \" + \$_.Exception.Message)
+    }
+} else {
+    Write-Warning (\"Notes file not found: \" + \$notesFile + \" (skipping notes)\")
+}"
+fi
+
 # Use unquoted heredoc so bash expands ${...} placeholders.
 # Every PowerShell variable is written as \$ to keep it literal.
 cat > "$ps1_file" <<PS1EOF
@@ -723,6 +830,7 @@ for (\$i = 1; \$i -lt \$diskPaths.Count; \$i++) {
     Write-Host ("Attaching disk " + \$i + ": " + \$diskPaths[\$i])
     Add-VMHardDiskDrive -VMName \$VMName -Path \$diskPaths[\$i]
 }
+${ps_notes_block}
 
 Write-Host ""
 Write-Host "SUCCESS: VM '\$VMName' has been created."
@@ -752,6 +860,9 @@ echo "SUCCESS: All done."
 echo "  Work directory : $WORKDIR"
 echo "  Guide ($GUIDE_LANG) : $(basename "$guide_file")"
 echo "  PS1 script     : $(basename "$ps1_file")"
+if [[ "$has_notes" == "true" ]]; then
+  echo "  Notes file     : $notes_basename"
+fi
 if [[ "$MODE" != "guide" ]]; then
   echo "  VHDX files     :"
   for v in "${vhdx_files[@]}"; do

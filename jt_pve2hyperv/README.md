@@ -1,4 +1,4 @@
-# JT_PVE2HYPERV 1.0
+# JT_PVE2HYPERV 1.2
 
 Package a Proxmox VE virtual machine into **dynamic VHDX** files that can be imported by Microsoft Hyper-V — **directly on the Proxmox VE node itself**!
 
@@ -16,13 +16,14 @@ Related project: [jt_pve2ova](../jt_pve2ova) — same idea, but targets VMware E
 
 - **One-liner workflow** — convert VHDX -> generate setup guide -> generate PowerShell auto-create script
 - **Slim image** — VHDX is written with `subformat=dynamic` (thin-provisioned)
-- **Smart source detection** — RBD handled directly by `qemu-img`; others via `pvesm path`
+- **Smart source detection** — RBD resolved via `pvesm path` into a complete librbd URI (pool, mon_host, id, keyring, conf); others via `pvesm path`
 - **PVE firmware aware** — `bios: ovmf` -> Hyper-V **Generation 2**, otherwise **Generation 1**
 - **Customer-facing PowerShell script** — `.ps1` is ASCII-only, no BOM, no CJK; runs on Windows out of the box
 - **Bilingual setup guide** — English or Traditional Chinese (selected via parameter)
 - **LVM auto-activation** — activates inactive LVM/LVM-thin LVs on PVE 9 when VM is off
 - **Auto-rename on conflict** — detects existing output files before conversion starts and auto-appends `_N` suffix to avoid wasted work
 - **Linux Gen 2 awareness** — automatically disables Secure Boot in the generated PS1 when source is a Linux guest
+- **VM notes carried over** — PVE `description:` is exported to a UTF-8 `<vm>_notes.txt` and applied to the Hyper-V VM via `Set-VM -Notes` by the generated PS1 (CJK / multi-line OK; PS1 stays pure ASCII)
 - **Guide-only mode** — generate the guide + PS1 without running the long disk conversion
 
 ---
@@ -129,7 +130,7 @@ The script validates Hyper-V availability, the virtual switch, and every VHDX pa
 2. **Parse VM config** — CPU (sockets/cores/vCPUs), RAM, ostype, UEFI/BIOS, disk list
 3. **Sanitize VM name** — `LC_ALL=C tr -c 'A-Za-z0-9._-' '_'` produces an ASCII-safe name for all output files and the PS1
 4. **Disk path resolution**
-   - **RBD** -> `rbd:<pool>/<image>`
+   - **RBD** -> `pvesm path` produces a full librbd URI (pool, mon_host, id, keyring, conf); falls back to reconstructing it from `storage.cfg`
    - **LVM / LVM-thin** -> auto-activate inactive LVs if needed
    - Others -> `pvesm path ...` / fallback `/var/lib/vz/images`
 5. **Space estimate** — adds 20% headroom; aborts if insufficient

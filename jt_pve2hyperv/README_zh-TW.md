@@ -1,4 +1,4 @@
-# JT_PVE2HYPERV 1.0
+# JT_PVE2HYPERV 1.2
 
 將 Proxmox VE 虛擬機封裝成 Microsoft Hyper-V 可以直接匯入的 **動態 VHDX** 檔案——**直接在 Proxmox VE 節點上執行即可**！
 
@@ -18,13 +18,14 @@
 
 - **一鍵流程** — 轉 VHDX → 產生操作指南 → 產生 PowerShell 自動建立腳本
 - **精簡映像** — VHDX 採用 `subformat=dynamic`（動態 / 精簡佈建）
-- **智慧來源偵測** — RBD 直接由 `qemu-img` 處理；其他類型透過 `pvesm path` 解析
+- **智慧來源偵測** — RBD 透過 `pvesm path` 解析為完整 librbd URI（pool、mon_host、id、keyring、conf）；其他類型同樣透過 `pvesm path`
 - **PVE 韌體自動對應** — `bios: ovmf` → Hyper-V **Generation 2**；其他 → **Generation 1**
 - **客戶用 PowerShell 腳本** — `.ps1` 純 ASCII、無 BOM、無 CJK，在 Windows 上直接執行
 - **雙語操作指南** — 可選擇英文或繁體中文（透過參數）
 - **LVM 自動啟用** — PVE 9 上若 LV 未啟用，自動 `lvchange -ay`
 - **檔案衝突自動改名** — 開始轉換前先檢查輸出檔，若存在則整批加 `_N` 後綴，避免做白工
 - **Linux Gen 2 自動處理** — 來源為 Linux 時，產生的 PS1 會自動關閉 Secure Boot
+- **VM 備註自動帶入** — PVE `description:` 會另存為 UTF-8 的 `<vm>_notes.txt`，PS1 執行時會以 `Set-VM -Notes` 套用到 Hyper-V VM（支援 CJK / 多行；PS1 仍維持純 ASCII）
 - **僅產生說明檔模式** — 不執行漫長的磁碟轉換，只產生指南 + PS1 供預覽
 
 ---
@@ -131,7 +132,7 @@ PS1 會在建立 VM 前先檢查 Hyper-V 是否可用、虛擬交換器是否存
 2. **解析 VM config** — CPU（sockets/cores/vCPU）、RAM、ostype、UEFI/BIOS、磁碟列表
 3. **VM 名稱 ASCII 化** — `LC_ALL=C tr -c 'A-Za-z0-9._-' '_'` 產生安全字串，用於所有輸出檔名與 PS1
 4. **磁碟路徑解析**
-   - **RBD** → `rbd:<pool>/<image>`
+   - **RBD** → `pvesm path` 產生完整 librbd URI（pool、mon_host、id、keyring、conf）；不可用時改由 `storage.cfg` 重建
    - **LVM / LVM-thin** → 必要時自動啟用 LV
    - 其他 → `pvesm path ...` / 回退 `/var/lib/vz/images`
 5. **空間估算** — 加 20% 緩衝，不足則中止

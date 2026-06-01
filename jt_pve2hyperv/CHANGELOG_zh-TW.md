@@ -6,6 +6,20 @@
 
 ---
 
+## [1.2] - 2026-06-01
+
+### 修正
+- **RBD 轉換失敗** — 當 VM 磁碟位於 Ceph/RBD 儲存時，轉換會出現 `unable to get monitor info from DNS SRV with service name: ceph-mon` 以及 `qemu-img: Could not open 'rbd:<storeid>/<vol>': error connecting` 而失敗。先前腳本只傳了一個裸的 `rbd:<storeid>/<volname>` URI 給 `qemu-img`，這（1）假設 PVE storage id 等同 Ceph pool 名稱，（2）未提供 ceph.conf／keyring／monitors，導致 qemu-img 退回以 DNS SRV 探尋 monitor 而失敗。現在改以 `pvesm path` 解析 RBD 來源，會輸出完整的 librbd URI（真實 pool、`conf`／`mon_host`、`id`、`keyring`），qemu-img 可直接開啟 — 同時涵蓋 conf 位於 `/etc/pve/ceph.conf` 的超融合叢集。若 `pvesm path` 不可用，則退回依 `storage.cfg`（`pool`、`username`、`monhost`）加上 `/etc/pve/priv/ceph/` 下的 conf／keyring 重建 URI。
+
+---
+
+## [1.1] - 2026-05-28
+
+### 新增
+- **PVE VM 備註 → Hyper-V VM 備註** — 來源 VM 的 `description:` 欄位會自動 URL-decode，另存為 `<vmname>_notes.txt`（UTF-8、無 BOM）。產生的 PowerShell 腳本執行時會以 `Get-Content -Encoding UTF8 -Raw` 讀取並透過 `Set-VM -Notes` 套用到 Hyper-V VM。只有當來源備註非空時，PS1 才會包含這段邏輯；`.ps1` 本身仍維持純 ASCII（CJK / 多行內容存在於外部 `.txt`）。操作指南與最終 SUCCESS 摘要也會一併列出此檔。
+
+---
+
 ## [1.0] - 2026-05-28
 
 ### 新增

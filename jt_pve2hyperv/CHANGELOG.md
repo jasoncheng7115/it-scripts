@@ -6,6 +6,20 @@ All notable changes to JT_PVE2HYPERV are documented in this file.
 
 ---
 
+## [1.2] - 2026-06-01
+
+### Fixed
+- **RBD conversion failure** — converting a VM whose disk lives on a Ceph/RBD storage failed with `unable to get monitor info from DNS SRV with service name: ceph-mon` and `qemu-img: Could not open 'rbd:<storeid>/<vol>': error connecting`. The script previously passed a bare `rbd:<storeid>/<volname>` URI to `qemu-img`, which (1) assumed the PVE storage id equals the Ceph pool name and (2) provided no ceph.conf/keyring/monitors, so qemu-img fell back to DNS SRV monitor discovery and failed. The RBD source is now resolved via `pvesm path`, which emits a complete librbd URI (real pool, `conf`/`mon_host`, `id`, `keyring`) that qemu-img can open directly — this also covers hyper-converged clusters whose conf lives at `/etc/pve/ceph.conf`. If `pvesm path` is unavailable, the script falls back to reconstructing the URI from `storage.cfg` (`pool`, `username`, `monhost`) plus the conf/keyring under `/etc/pve/priv/ceph/`.
+
+---
+
+## [1.1] - 2026-05-28
+
+### Added
+- **PVE VM description → Hyper-V VM notes** — the source VM's `description:` field is now URL-decoded and written to a separate `<vmname>_notes.txt` (UTF-8, no BOM). The generated PowerShell script reads it at runtime via `Get-Content -Encoding UTF8 -Raw` and applies it with `Set-VM -Notes`. The notes block is only emitted into the PS1 when the source description is non-empty; the PS1 itself stays pure ASCII (CJK / multi-line content lives in the `.txt` sidecar). Setup guide and final SUCCESS summary list the notes file alongside the VHDX / PS1 outputs.
+
+---
+
 ## [1.0] - 2026-05-28
 
 ### Added
