@@ -1,4 +1,4 @@
-# JT_PVE2OVA 1.9
+# JT_PVE2OVA 1.10
 
 Package a Proxmox VE virtual machine into an OVA file that can be imported by ESXi — **directly on the Proxmox VE node itself**!
 
@@ -14,7 +14,7 @@ Successfully tested on VMware Workstation 17, ESXi 6.5 / 6.7 / 7.0 / 8.0 — imp
 
 - **One-liner workflow** – convert VMDK → generate VMX → pack into OVA
 - **Slim image** – uses `streamOptimized` sub-format + `--diskMode=thin`
-- **Smart source detection** – RBD handled directly by `qemu-img`; others via `pvesm path`
+- **Smart source detection** – RBD converted via a full librbd URI built from the real Ceph pool plus the `conf`/`keyring` under `/etc/pve/priv/ceph/`; others via `pvesm path`
 - **Temp cleanup** – `MODE=clean` (default) removes VMX/VMDK after packing
 - **Accurate version mapping** – `virtualHW.version` is precisely matched to ESXi version (6.5 → 13, 6.7 → 14, 7.0 → 17, 7.0u1 → 18, 7.0u2+ → 19, 8.0 → 20, 8.0u2+ → 21)
 - **Boot mode aware** – reads the `bios:` field and writes the matching `firmware=` entry
@@ -155,7 +155,7 @@ INFO: Temporary files removed.
 1. **Environment check** – validate `ovftool`, `qemu-img`, PVE config
 2. **Parse VM config** – CPU (sockets/cores/vCPUs), RAM, UUID, UEFI/BIOS, disk list
 3. **Disk path resolution**
-   * **RBD** → `rbd:<pool>/<image>`
+   * **RBD** → `rbd:<pool>/<image>:id=<user>:conf=…:keyring=…` (pool/user from `storage.cfg`, conf/keyring from `/etc/pve/priv/ceph/`)
    * **LVM / LVM-thin** → auto-activate inactive LVs if needed
    * Others → `pvesm path …` / fallback `/var/lib/vz/images`
 4. **Space estimate** – adds 20% headroom; aborts if insufficient
@@ -179,7 +179,7 @@ INFO: Temporary files removed.
 | VM boots to UEFI shell / no bootable device  | Verify source VM firmware type; check boot order after import             |
 | Network unreachable after import             | NIC type is vmxnet3 — install VMware Tools; verify port group mapping     |
 | VM boots with IDE controller                 | ESXi should auto-switch to LSI SAS; change manually if not               |
-| RBD permission denied                        | Check `/etc/pve/ceph.conf` and keyring permissions                        |
+| RBD permission denied                        | Check `/etc/pve/priv/ceph/<storeid>.conf` and `.keyring` permissions      |
 | LV inactive on PVE 9                         | Script auto-activates; if it fails, run `lvchange -ay` manually          |
 
 ---

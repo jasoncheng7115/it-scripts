@@ -1,4 +1,4 @@
-# JT_PVE2OVA 1.9
+# JT_PVE2OVA 1.10
 
 將 Proxmox VE 虛擬機打包成 ESXi 可匯入的 OVA 檔案 — **直接在 Proxmox VE 節點上完成**！
 
@@ -14,7 +14,7 @@
 
 - **一鍵完成** – 轉換 VMDK → 產生 VMX → 打包 OVA
 - **精簡映像** – 使用 `streamOptimized` 子格式 + `--diskMode=thin`
-- **智慧偵測** – RBD 由 `qemu-img` 直接處理；其他儲存透過 `pvesm path`
+- **智慧偵測** – RBD 以完整 librbd URI 轉換（取用真正的 Ceph pool 與 `/etc/pve/priv/ceph/` 下的 `conf`/`keyring`）；其他儲存透過 `pvesm path`
 - **自動清理** – `MODE=clean`（預設）打包後移除暫存 VMX/VMDK
 - **精確版本對應** – `virtualHW.version` 依 ESXi 版本精準匹配（6.5 → 13、6.7 → 14、7.0 → 17、7.0u1 → 18、7.0u2+ → 19、8.0 → 20、8.0u2+ → 21）
 - **韌體感知** – 讀取 `bios:` 欄位，自動寫入對應的 `firmware=` 設定
@@ -155,7 +155,7 @@ INFO: Temporary files removed.
 1. **環境檢查** – 驗證 `ovftool`、`qemu-img`、PVE 設定
 2. **解析 VM 設定** – CPU（sockets/cores/vCPUs）、記憶體、UUID、UEFI/BIOS、磁碟清單
 3. **磁碟路徑解析**
-   * **RBD** → `rbd:<pool>/<image>`
+   * **RBD** → `rbd:<pool>/<image>:id=<user>:conf=…:keyring=…`（pool/user 取自 `storage.cfg`，conf/keyring 取自 `/etc/pve/priv/ceph/`）
    * **LVM / LVM-thin** → 必要時自動啟用非活動 LV
    * 其他 → `pvesm path …` / 備援 `/var/lib/vz/images`
 4. **空間估算** – 加上 20% 餘裕；不足則中止
@@ -179,7 +179,7 @@ INFO: Temporary files removed.
 | VM 開機進入 UEFI shell / 無可開機裝置          | 確認來源 VM 韌體類型；匯入後檢查開機順序                                      |
 | 匯入後網路無法連線                              | 網卡類型為 vmxnet3，需安裝 VMware Tools；確認 Port Group 對應正確              |
 | VM 以 IDE 控制器開機                           | ESXi 應自動切換為 LSI SAS，若未切換請手動修改                                  |
-| RBD 權限不足                                  | 檢查 `/etc/pve/ceph.conf` 及 keyring 權限                                  |
+| RBD 權限不足                                  | 檢查 `/etc/pve/priv/ceph/<storeid>.conf` 及 `.keyring` 權限                |
 | PVE 9 LV 未啟用                              | 腳本會自動啟用；若失敗請手動執行 `lvchange -ay`                                |
 
 ---
