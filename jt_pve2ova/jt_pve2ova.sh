@@ -11,9 +11,11 @@
 #
 #  Version  : 1.10 (2026-06-01)
 #             * Fix RBD conversion failure ("error connecting" / DNS SRV
-#               ceph-mon): build a full librbd URI using the real Ceph
-#               pool name from storage.cfg plus the conf/keyring under
-#               /etc/pve/priv/ceph/, instead of "rbd:<storeid>/<vol>"
+#               ceph-mon): resolve the RBD source via "pvesm path", which
+#               emits a complete librbd URI (pool, conf/mon_host, id,
+#               keyring) that qemu-img can open, instead of the bare
+#               "rbd:<storeid>/<vol>". Falls back to reconstructing the
+#               URI from storage.cfg if pvesm path is unavailable.
 #
 #  Version  : 1.9  (2026-04-21)
 #             * Check for existing output files before conversion and
@@ -240,34 +242,39 @@ while IFS= read -r line; do
   [[ -z "$stype" ]] && stype="dir"
 
   if [[ "$stype" == "rbd" ]]; then
-    # The PVE storage id is NOT necessarily the Ceph pool name, and a bare
-    # "rbd:pool/img" URI makes qemu-img fall back to /etc/ceph/ceph.conf and
-    # DNS SRV monitor discovery. PVE keeps the conf/keyring for an RBD storage
-    # under /etc/pve/priv/ceph/, so build a full librbd URI from storage.cfg.
-    rbd_block="$(awk -v s="${storage}:" '
-        $1 == s {grab=1; next}
-        /^[^[:space:]]/ {grab=0}
-        grab {print}
-    ' "$STORAGE_CFG")"
+    # A bare "rbd:pool/img" URI makes qemu-img fall back to /etc/ceph/ceph.conf
+    # and DNS SRV monitor discovery, which fails on PVE. Prefer PVE's own
+    # pvesm path(), which emits a fully-formed librbd connection string
+    # (pool, mon_host, id, keyring, conf) that qemu-img can open directly.
+    src="$(pvesm path "${storage}:${volname}" 2>/dev/null || true)"
 
-    rbd_pool="$(echo "$rbd_block" | awk '$1=="pool"{print $2; exit}')"
-    [[ -z "$rbd_pool" ]] && rbd_pool="$storage"
+    # If PVE returned nothing usable, or a krbd block device that isn't
+    # currently mapped, reconstruct a librbd URI from storage.cfg instead.
+    if [[ -z "$src" || ( "$src" == /dev/* && ! -e "$src" ) ]]; then
+      # storage block header is "<type>: <storeid>" -> match $2, not $1.
+      rbd_block="$(awk -v s="$storage" '
+          $1 ~ /:$/ && $2 == s {grab=1; next}
+          $1 ~ /:$/            {grab=0}
+          grab {print}
+      ' "$STORAGE_CFG")"
 
-    rbd_user="$(echo "$rbd_block" | awk '$1=="username"{print $2; exit}')"
-    [[ -z "$rbd_user" ]] && rbd_user="admin"
+      rbd_pool="$(echo "$rbd_block" | awk '$1=="pool"{print $2; exit}')"
+      [[ -z "$rbd_pool" ]] && rbd_pool="$storage"
 
-    rbd_conf="/etc/pve/priv/ceph/${storage}.conf"
-    [[ -f "$rbd_conf" ]] || rbd_conf="/etc/ceph/ceph.conf"
-    rbd_keyring="/etc/pve/priv/ceph/${storage}.keyring"
+      rbd_user="$(echo "$rbd_block" | awk '$1=="username"{print $2; exit}')"
+      [[ -z "$rbd_user" ]] && rbd_user="admin"
 
-    src="rbd:${rbd_pool}/${volname}:id=${rbd_user}"
-    [[ -f "$rbd_conf" ]]    && src="${src}:conf=${rbd_conf}"
-    [[ -f "$rbd_keyring" ]] && src="${src}:keyring=${rbd_keyring}"
+      # monhost: space-separated in storage.cfg -> comma-separated for librados
+      rbd_mon="$(echo "$rbd_block" | awk '$1=="monhost"{$1=""; sub(/^[ \t]+/,""); gsub(/[ \t]+/,","); print; exit}')"
 
-    # Fallback: if no conf file was found, pass monitors explicitly.
-    if [[ ! -f "$rbd_conf" ]]; then
-      rbd_mon="$(echo "$rbd_block" | awk '$1=="monhost"{$1=""; sub(/^[ \t]+/,""); gsub(/[ \t]+/,"\\;"); print; exit}')"
-      [[ -n "$rbd_mon" ]] && src="${src}:mon_host=${rbd_mon}"
+      rbd_conf="/etc/pve/priv/ceph/${storage}.conf"
+      [[ -f "$rbd_conf" ]] || rbd_conf="/etc/ceph/ceph.conf"
+      rbd_keyring="/etc/pve/priv/ceph/${storage}.keyring"
+
+      src="rbd:${rbd_pool}/${volname}:id=${rbd_user}"
+      [[ -n "$rbd_mon" ]]     && src="${src}:mon_host=${rbd_mon}"
+      [[ -f "$rbd_conf" ]]    && src="${src}:conf=${rbd_conf}"
+      [[ -f "$rbd_keyring" ]] && src="${src}:keyring=${rbd_keyring}"
     fi
 
     [[ -z "$fmt_field" ]] && src_fmt="raw"

@@ -9,7 +9,7 @@ JT_PVE2OVA 所有重要變更記錄於此。
 ## [1.10] - 2026-06-01
 
 ### 修正
-- **RBD 轉換失敗** — 當 VM 磁碟位於 Ceph/RBD 儲存時，轉換會失敗並報 `unable to get monitor info from DNS SRV with service name: ceph-mon` 及 `qemu-img: Could not open 'rbd:<storeid>/<vol>': error connecting`。先前腳本傳給 `qemu-img` 的是裸 `rbd:<storeid>/<volname>` URI，問題在於：(1) 假設 PVE 儲存 ID 等同 Ceph pool 名稱；(2) 未帶 ceph.conf/keyring/monitor 資訊，導致 qemu-img 退回用 DNS SRV 探測 monitor 而失敗。現在改為組出完整的 librbd URI：使用 `storage.cfg` 中真正的 `pool` 與 `username`，並帶入 PVE 放在 `/etc/pve/priv/ceph/` 下的 `conf`/`keyring`（找不到時退回 `/etc/ceph/ceph.conf`，若無 conf 檔則再從 `monhost` 帶入明確的 `mon_host`）。
+- **RBD 轉換失敗** — 當 VM 磁碟位於 Ceph/RBD 儲存時，轉換會失敗並報 `unable to get monitor info from DNS SRV with service name: ceph-mon` 及 `qemu-img: Could not open 'rbd:<storeid>/<vol>': error connecting`。先前腳本傳給 `qemu-img` 的是裸 `rbd:<storeid>/<volname>` URI，問題在於：(1) 假設 PVE 儲存 ID 等同 Ceph pool 名稱；(2) 未帶 ceph.conf/keyring/monitor 資訊，導致 qemu-img 退回用 DNS SRV 探測 monitor 而失敗。現在改為透過 `pvesm path` 取得來源路徑，它會吐出完整的 librbd URI（真實 pool、`conf`/`mon_host`、`id`、`keyring`），qemu-img 可直接開啟 — 也涵蓋 conf 位於 `/etc/pve/ceph.conf` 的超融合叢集。若無法使用 `pvesm path`，則退回從 `storage.cfg`（`pool`、`username`、`monhost`）加上 `/etc/pve/priv/ceph/` 下的 conf/keyring 自行組出 URI。
 
 ---
 
