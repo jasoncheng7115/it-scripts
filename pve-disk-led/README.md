@@ -35,7 +35,7 @@ by Jason Cheng (Jason Tools)
 
 ```bash
 cd /opt
-wget https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/pve-disk-led/pve-disk-led.sh
+wget -O pve-disk-led.sh https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/pve-disk-led/pve-disk-led.sh
 chmod +x pve-disk-led.sh
 ```
 
