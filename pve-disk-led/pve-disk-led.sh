@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Script      : pve-disk-led.sh
-# Version     : 1.1
+# Version     : 1.2
 # Author      : Jason Cheng (Jason Tools Co., Ltd.)
 # Description : List disks on Proxmox VE host and light up disk LEDs for identification.
 #               Output columns: Model, Serial, Size, SMART, SSD wear %.
@@ -61,9 +61,12 @@ get_wear() {
   val=$(echo "$out" | sed 's/^0*//')
   [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$((100 - val))%" && return
 
-  # INTEL DC SSD
-  out=$(smartctl -A "$dev" 2>/dev/null | awk '/Percentage Used Endurance Indicator/ {print $NF; exit}')
+  # INTEL DC SSD / SAS-SCSI SSD
+  # Matches both "Percentage Used Endurance Indicator" (Intel) and the
+  # SAS/SCSI form "Percentage used endurance indicator: 8%" (case-insensitive).
+  out=$(smartctl -a "$dev" 2>/dev/null | awk 'tolower($0) ~ /percentage used endurance indicator/ {print $NF; exit}')
   val=$(echo "$out" | sed 's/^0*//;s/%//')
+  [[ -z "$val" && "$out" =~ ^0*%?$ ]] && val=0   # handle a genuine 0% reading
   [[ -n "$val" && "$val" =~ ^[0-9]+$ && "$val" -le 100 ]] && echo "$val%" && return
 
   echo "N/A"
@@ -120,7 +123,8 @@ list_disks() {
     name="${disks[i]}"
     IFS=$'\t' read -r model serial size_bytes < <(get_model_serial_size "$name")
     size=$(pretty_capacity "$size_bytes")
-    smart=$(smartctl -H "/dev/$name" 2>/dev/null | awk -F: '/overall-health/ {gsub(/^ +/,"",$2); print $2; exit}')
+    # ATA: "SMART overall-health ...: PASSED"  |  SAS/SCSI: "SMART Health Status: OK"
+    smart=$(smartctl -H "/dev/$name" 2>/dev/null | awk -F: '/overall-health|SMART Health Status/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')
     [[ -z $smart ]] && smart="Unknown"
     wear=$(get_wear "$name")
     if (( SHOW_DISKID )); then
