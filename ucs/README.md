@@ -23,6 +23,7 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 | `jt-ucs-group-recovery.sh` | Restore a **deleted group** | Restores members (`uniqueMember`/`memberUid`); checks members still exist |
 | `jt-ucs-attr-rollback.sh` | **Roll back one attribute** on a still-existing object | Restores a single attribute's value(s) from a backup |
 | `jt-ucs-snapshot.sh` | **Pre-change snapshot** (restore point) | Captures LDAP + Samba AD + config + secrets before risky work |
+| `jt-ucs-ldap-audit.sh` | **Read-only consistency / orphan audit** | Finds duplicate IDs, dangling members, S4 rejects — writes nothing |
 
 ---
 
@@ -31,7 +32,7 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 Download to `/opt/` (run as root):
 
 ```bash
-for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot; do
+for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit; do
   curl -Lo "/opt/$s.sh" "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/$s.sh"
 done
 chmod +x /opt/jt-ucs-*.sh
@@ -150,6 +151,24 @@ Captured into `/var/univention-backup/snapshots/snapshot_<ts>/`:
 - `samba/` — `samba-tool domain backup offline` (Samba4 AD DCs)
 - `packages.txt` — dpkg selections, UCS version, server role
 - `MANIFEST.txt` — metadata + sha256 of every file
+
+---
+
+## Consistency / orphan audit
+
+A **read-only** health check — it never writes anything. Run it after a recovery
+or periodically to catch corruption that silently breaks logins / ACLs.
+
+```bash
+/opt/jt-ucs-ldap-audit.sh        # full audit
+/opt/jt-ucs-ldap-audit.sh -q     # quiet: only warnings/failures + summary
+```
+
+Checks: duplicate `sambaSID` / `uidNumber` / `gidNumber`; dangling `memberUid`
+and `uniqueMember` (members whose object is gone); accounts whose primary
+`gidNumber` has no group; S4 Connector rejected objects (Samba4 AD DC); and an
+informational LDAP-vs-Samba object-count drift. Exit code `0` = clean, `1` =
+issues found, `2` = setup error (handy for cron/monitoring).
 
 ---
 
