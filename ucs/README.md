@@ -1,9 +1,11 @@
-# UCS Deleted-Object Recovery Tools
+# UCS Disaster-Recovery Tools
 
-Interactive Bash tools to recover accidentally deleted objects on
-**Univention Corporate Server (UCS)** from an LDAP backup, preserving the
-original identity attributes (`sambaSID`, `uidNumber`, `gidNumber`,
-`sambaPrimaryGroupSID`).
+Interactive Bash tools for **Univention Corporate Server (UCS)** disaster
+recovery: restore accidentally deleted directory objects from LDAP backups,
+roll back a mistakenly changed attribute, and take a consistent pre-change
+snapshot. Recovery tools preserve identity attributes
+(`sambaSID` / `uidNumber` / `gidNumber` / `sambaPrimaryGroupSID`) and,
+optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 
 - **Author:** Jason Cheng (Jason Tools)
 - **Contact:** jason@jason.tools · www.jason.tools
@@ -14,50 +16,33 @@ original identity attributes (`sambaSID`, `uidNumber`, `gidNumber`,
 
 ## Scripts
 
-| Script | Recovers | RDN | Notes |
-|--------|----------|-----|-------|
-| `jt-ucs-user-recovery.sh` | **User** account | `uid=<name>` | Restores the user object; group membership & OX mailbox are follow-ups. |
-| `jt-ucs-computer-recovery.sh` | **Computer** object | `cn=<name>` | Filters by `objectClass=univentionHost`; DNS/DHCP records & domain re-join are follow-ups. |
-
-Both share the same workflow, safety prompts, and comparison/force-fix logic.
+| Script | Purpose | Key notes |
+|--------|---------|-----------|
+| `jt-ucs-user-recovery.sh` | Restore a **deleted user** | RDN `uid=`; group membership / OX are follow-ups |
+| `jt-ucs-computer-recovery.sh` | Restore a **deleted computer** | RDN `cn=` + `objectClass=univentionHost`; DNS/DHCP & domain re-join are follow-ups |
+| `jt-ucs-group-recovery.sh` | Restore a **deleted group** | Restores members (`uniqueMember`/`memberUid`); checks members still exist |
+| `jt-ucs-attr-rollback.sh` | **Roll back one attribute** on a still-existing object | Restores a single attribute's value(s) from a backup |
+| `jt-ucs-snapshot.sh` | **Pre-change snapshot** (restore point) | Captures LDAP + Samba AD + config + secrets before risky work |
 
 ---
 
 ## Install / Download
 
-Download both scripts to `/opt/` (run as root):
+Download to `/opt/` (run as root):
 
 ```bash
-curl -Lo /opt/jt-ucs-user-recovery.sh     "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/jt-ucs-user-recovery.sh"
-curl -Lo /opt/jt-ucs-computer-recovery.sh "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/jt-ucs-computer-recovery.sh"
-chmod +x /opt/jt-ucs-user-recovery.sh /opt/jt-ucs-computer-recovery.sh
+for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot; do
+  curl -Lo "/opt/$s.sh" "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/$s.sh"
+done
+chmod +x /opt/jt-ucs-*.sh
 ```
 
-Or with `wget`:
+Or a single tool, e.g. with `wget`:
 
 ```bash
-wget -O /opt/jt-ucs-user-recovery.sh     https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/jt-ucs-user-recovery.sh
-wget -O /opt/jt-ucs-computer-recovery.sh https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/jt-ucs-computer-recovery.sh
-chmod +x /opt/jt-ucs-user-recovery.sh /opt/jt-ucs-computer-recovery.sh
+wget -O /opt/jt-ucs-user-recovery.sh https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/jt-ucs-user-recovery.sh
+chmod +x /opt/jt-ucs-user-recovery.sh
 ```
-
----
-
-## What they do
-
-1. You provide only the **name** (uid for users, cn for computers); the script
-   auto-searches the backup for the object's DN/OU (it does **not** assume a
-   fixed container such as `cn=users` / `cn=computers`).
-   - The computer tool additionally filters candidates by
-     `objectClass=univentionHost`, so it never picks up a same-named DNS, DHCP,
-     or group object.
-2. Shows a summary of the object found in the backup and asks you to confirm
-   it is the correct target.
-3. On confirmation, asks whether to restore it into LDAP.
-4. After the restore, prints the object and **auto-compares** it against the
-   backup (`sambaSID` / `uidNumber` / `gidNumber` / `sambaPrimaryGroupSID`).
-5. If `sambaSID` was reassigned during import and no longer matches the backup,
-   offers to **force-fix** it back to the original value.
 
 ---
 
@@ -65,116 +50,133 @@ chmod +x /opt/jt-ucs-user-recovery.sh /opt/jt-ucs-computer-recovery.sh
 
 - Run **as root** on the **Primary Directory Node** (PDN).
 - Readable `/etc/ldap.secret` (the `cn=admin` password).
-- LDAP backups present in `/var/univention-backup/` named
-  `ldap-backup_*.ldif.gz` (UCS creates these automatically).
-- Required commands (checked at start-up):
-  `zcat`, `awk`, `grep`, `ldapadd`, `ldapsearch`, `ldapmodify`, `ucr`, `udm`.
+- LDAP backups in `/var/univention-backup/` named `ldap-backup_*.ldif.gz`
+  (UCS creates these automatically every night; see note below).
+- Commands checked at start-up (per tool): `zcat awk grep ldapadd ldapsearch
+  ldapmodify ucr udm` (recovery), `slapcat gzip tar sha256sum dpkg` (snapshot).
+
+> **UCS backups are automatic by default.** The `univention-ldap-server`
+> package installs `/etc/cron.d/univention-ldap-server`, which runs
+> `/usr/sbin/univention-ldap-backup` daily at 00:00 (UCR `slapd/backup/cron`).
+> Samba's AD DB has a separate nightly backup (UCR `samba4/backup/cron`,
+> default 03:00). Retention: keep at least `backup/clean/min_backups` (10);
+> set `backup/clean/max_age` to also prune by age (unset = keep forever).
 
 ---
 
-## Usage
+## Object recovery (user / computer / group)
 
-### User recovery
+All three share the same guided flow — you provide only the name, not the DN.
 
 ```bash
-# Interactive — the script prompts for the uid
-/opt/jt-ucs-user-recovery.sh
-
-# Specify the uid directly
+/opt/jt-ucs-user-recovery.sh                 # prompts for uid
 /opt/jt-ucs-user-recovery.sh jsmith
+/opt/jt-ucs-computer-recovery.sh PC01        # trailing '$' is stripped
+/opt/jt-ucs-group-recovery.sh sales
 ```
 
-### Computer recovery
-
-```bash
-# Interactive — the script prompts for the computer name (cn)
-/opt/jt-ucs-computer-recovery.sh
-
-# Specify the computer name directly (a trailing '$' is stripped automatically)
-/opt/jt-ucs-computer-recovery.sh PC01
-```
-
----
-
-## Workflow (step by step)
+### Workflow (step by step)
 
 | Step | Action |
 |------|--------|
 | 1 | Obtain the target **name** (argument or prompt). |
-| 2 | List available backups (newest first, up to 10). Press Enter for the newest `[0]`, or pick an index. |
-| 3 | Search the chosen backup for the object's DN. Users match `dn: uid=<uid>,…`; computers match `dn: cn=<cn>,…` **and** `objectClass=univentionHost`. If multiple DNs match, you choose which one. |
-| 4 | Show an **object summary** from the backup and ask you to confirm the target. The full entry is saved under `/root/`. |
-| 5 | Record original key attributes for later comparison. |
-| 6 | Confirm the restore. The script also checks the DN does **not** already exist in LDAP (to avoid duplicate import). |
-| 7 | Strip operational attributes (`entryUUID`, `entryCSN`, `creatorsName`, `createTimestamp`, `modifiersName`, `modifyTimestamp`, `structuralObjectClass`, `univentionObjectIdentifier`, `memberOf`, `subschemaSubentry`, `hasSubordinates`, `entryDN`) while keeping identity attributes. |
-| 8 | Import into LDAP with `ldapadd`. |
-| 9 | Show the restored object (users via `udm users/user list`; computers via `ldapsearch`, because computer UDM modules are per-role). |
-| 10 | **Auto-compare** LDAP actual values vs the backup originals. |
-| 11 | If `sambaSID` differs, optionally **force-fix** it back to the original. |
-| 12 | Print follow-up hints (see below). |
+| 2 | List backups (newest first, up to 10). Enter = newest `[0]`. |
+| 3 | Find the DN. Users match `dn: uid=<uid>,…`; computers/groups match `dn: cn=<cn>,…` **and** `objectClass=univentionHost`/`univentionGroup`. Multiple matches → you choose. |
+| 4 | Show an **object summary** and confirm the target. Full entry saved under `/root/`. |
+| 5 | Record original key attributes for comparison. |
+| 6 | *(group)* Check every member still exists; optionally drop dangling members. |
+| 7 | Confirm restore; refuse if the DN already exists in LDAP. |
+| 8 | Optionally **preserve `entryUUID`** (see below); strip operational attributes. |
+| 9 | Import with `ldapadd` (`-e relax` when preserving `entryUUID`). |
+| 10 | Show the restored object; **auto-compare** vs backup. |
+| 11 | If `sambaSID`/`gidNumber` differs, optionally **force-fix** `sambaSID`. |
+| 12 | Print follow-up hints. |
+
+### `-u` / `--preserve-uuid` (Microsoft 365 / Azure AD)
+
+By default the tools strip `entryUUID` and let LDAP regenerate it — fine for
+pure UCS/Samba. But if the object is synced to **Microsoft 365 / Azure AD**, the
+connector derives the cloud immutableID from `entryUUID`; regenerating it breaks
+the mapping. Pass `-u` (or answer the interactive prompt) to keep the original
+`entryUUID` via `ldapadd -e relax`:
+
+```bash
+/opt/jt-ucs-user-recovery.sh -u jsmith
+```
 
 ### LDIF line-folding is handled
 
 LDIF (RFC 2849) folds long lines, with continuation lines starting with a
-single space. Both scripts **unfold** the backup stream before any per-line
-filtering, so stripping an attribute in Step 7 can never leave an orphaned
-continuation line that would break `ldapadd` with a confusing parse error.
-This matters most for long DN-valued attributes like `memberOf`, `creatorsName`,
-and `entryDN`.
+space. The tools **unfold** the backup stream before any per-line filtering, so
+stripping an attribute never leaves an orphaned continuation line that would
+break `ldapadd` with a confusing parse error (matters for long DN-valued
+attributes like `memberOf`, `creatorsName`, `entryDN`).
+
+---
+
+## Attribute rollback
+
+For when the object still exists but one attribute was changed or cleared by
+mistake (e.g. `mailPrimaryAddress` wiped, `description` overwritten).
+
+```bash
+/opt/jt-ucs-attr-rollback.sh                                   # fully interactive
+/opt/jt-ucs-attr-rollback.sh "uid=jsmith,cn=users,dc=…" mailPrimaryAddress
+```
+
+- Restores **all** values of a multi-valued attribute; preserves base64 (`::`).
+- If the attribute was empty in the backup, offers to delete it (roll back to empty).
+- Shows a before/after diff and requires confirmation; does nothing if already equal.
+- Refuses if the DN does not currently exist (use the recovery tools for that).
+
+---
+
+## Pre-change snapshot
+
+Take a restore point **before** risky work (bulk edits, upgrades, connector
+changes). Read-only w.r.t. running services — it only writes new files.
+
+```bash
+/opt/jt-ucs-snapshot.sh                 # auto timestamp
+/opt/jt-ucs-snapshot.sh before-upgrade  # add a label
+```
+
+Captured into `/var/univention-backup/snapshots/snapshot_<ts>/`:
+
+- `openldap.ldif.gz` — full OpenLDAP dump (slapcat)
+- `ucr.txt` — UCR variables
+- `configs.tar.gz` — `/etc/univention`, `/etc/ldap`, Samba sysvol
+- `secrets.tar.gz` — `ldap.secret`, `machine.secret` (sensitive; dir is `0700`)
+- `samba/` — `samba-tool domain backup offline` (Samba4 AD DCs)
+- `packages.txt` — dpkg selections, UCS version, server role
+- `MANIFEST.txt` — metadata + sha256 of every file
 
 ---
 
 ## After recovery — manual follow-up
 
-The tools restore the **object itself only**. A few things are intentionally
-left to you.
+Recovery restores the **object only**; a few things are intentionally manual.
 
-### User: group membership (NOT auto-restored)
-
-```bash
-zcat /var/univention-backup/ldap-backup_<...>.ldif.gz \
-  | awk '/^dn: cn=/{dn=$0} /memberUid: <uid>$/{print dn}'
-
-udm groups/group modify --dn "<group DN>" --append users="<user DN>"
-```
-
-Also verify the OX mailbox if the original `isOxUser` was enabled.
-
-### Computer: group membership, DNS/DHCP, domain re-join
-
-Machine accounts use the uid form `<name>$`:
-
-```bash
-zcat /var/univention-backup/ldap-backup_<...>.ldif.gz \
-  | awk '/^dn: cn=/{dn=$0} /memberUid: <name>\$$/{print dn}'
-
-# Computers are added to groups via the 'hosts' property
-udm groups/group modify --dn "<group DN>" --append hosts="<computer DN>"
-```
-
-- **DNS (A/PTR) and DHCP host entries are separate objects** and are NOT
-  restored — recreate them via UMC or `udm dns/* ` / `udm dhcp/host`.
-- **Machine-account password:** a domain-joined Windows/Samba client rotates its
-  password periodically. If the restored object's old `sambaNTPassword` no
-  longer matches the live machine, re-join the client to the domain.
+- **User group membership** — `udm groups/group modify --dn "<grp>" --append users="<user DN>"`; verify OX mailbox if `isOxUser` was set.
+- **Computer** — DNS (A/PTR) and DHCP host entries are separate objects (recreate via UMC / `udm dns/* dhcp/host`); and **AD trust is not restored** — a domain-joined client rotates its machine password, so a restored old `sambaNTPassword` usually no longer matches. Use `Reset-ComputerMachinePassword` / `Test-ComputerSecureChannel -Repair`, or re-join the domain. (The SID is preserved, so ACLs/group SIDs stay valid.)
+- **Group** — nested-group membership (this group inside others) is not restored; re-add on the parent group.
 
 ### Clean up temp files
 
-The temporary LDIF files contain password / machine-account hashes. Securely
-remove them:
+Recovery temp files under `/root/` contain password / machine hashes:
 
 ```bash
-shred -u /root/restore-*.raw.ldif /root/restore-*.clean.ldif
+shred -u /root/restore-*.ldif /root/attr-rollback.*.ldif
 ```
 
 ---
 
 ## Safety notes
 
-- The scripts are **interactive** and ask for confirmation before any change.
-- They refuse to import if the DN already exists in LDAP.
-- Temp files under `/root/` contain sensitive material — shred them when done.
-- Always test recovery on a non-production object first if you are unsure.
+- All tools are **interactive** and confirm before any change.
+- Recovery refuses to import if the DN already exists in LDAP.
+- Temp files and snapshots contain sensitive material — shred/remove when done.
+- Always test on a non-production object first if unsure.
 
 ---
 

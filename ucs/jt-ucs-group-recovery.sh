@@ -1,30 +1,26 @@
 #!/bin/bash
 #
-# UCS Deleted-Computer Recovery Tool (interactive)
+# UCS Deleted-Group Recovery Tool (interactive)
 # Author: Jason Cheng (Jason Tools)
 # jason@jason.tools
 # www.jason.tools
 # ------------------------------------------------------------
 # Features:
-#   1. Enter only the computer name (cn); the script auto-searches the backup
-#      for its OU/DN and filters by objectClass=univentionHost so it does NOT
-#      pick up same-named DNS/DHCP/group objects.
-#   2. After locating the DN, asks the user to confirm it is the target object.
-#   3. On confirmation, asks whether to restore.
-#   4. After restore, prints the object and auto-compares it against the backup
-#      (verifies sambaSID / uidNumber / gidNumber / sambaPrimaryGroupSID).
-#   5. If sambaSID differs from the backup, offers to force-fix it.
+#   1. Enter only the group name (cn); the script auto-searches the backup for
+#      its OU/DN and filters by objectClass=univentionGroup so it does NOT pick
+#      up same-named computer/DNS/container objects.
+#   2. Restores the group object INCLUDING its members (uniqueMember/memberUid) —
+#      this is the whole point of a group, unlike user/computer recovery.
+#   3. Before import, checks every member still exists in LDAP and lets you keep
+#      or drop dangling members whose target object is gone.
+#   4. After restore, auto-compares gidNumber / sambaSID against the backup and
+#      offers to force-fix sambaSID if it was reassigned.
 #
 # Usage:
-#   ./jt-ucs-computer-recovery.sh              # interactive, prompts for name
-#   ./jt-ucs-computer-recovery.sh <name>       # specify computer name directly
+#   ./jt-ucs-group-recovery.sh              # interactive, prompts for name
+#   ./jt-ucs-group-recovery.sh <name>       # specify group name directly
 #
 # Note: run as root on the Primary Directory Node.
-#
-# IMPORTANT — machine account password:
-#   Domain-joined Windows/Samba clients rotate their machine-account password
-#   periodically. Restoring the old sambaNTPassword may no longer match the live
-#   machine, so the client may need to be re-joined to the domain afterwards.
 # ------------------------------------------------------------
 
 set -o pipefail
@@ -48,9 +44,9 @@ err()   { echo -e "${C_ERR}[FAIL]${C_RESET} $*" >&2; }
 
 # ---- LDIF unfold ----
 # RFC 2849 folds long lines; continuation lines start with a single space.
-# Join them back so each attribute sits on one physical line. This is required
-# before any per-line grep/awk filtering, otherwise stripping an attribute
-# (Step 7) would leave orphaned continuation lines and break ldapadd.
+# Join them back so each attribute sits on one physical line — required before
+# any per-line grep/awk filtering (otherwise stripping an attribute would leave
+# orphaned continuation lines and break ldapadd).
 unfold_ldif() {
     awk '
         /^ / { buf = buf substr($0, 2); next }
@@ -102,6 +98,8 @@ if [[ -z "$LDAP_BASE" ]]; then
 fi
 BIND_DN="cn=admin,${LDAP_BASE}"
 
+LDAP_OPTS=(-x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:///)
+
 # ---- parse options (-u/--preserve-uuid) ----
 # Preserving entryUUID keeps Microsoft 365 / Azure AD object mappings intact.
 # Requires ldapadd '-e relax' to re-set the NO-USER-MODIFICATION attribute.
@@ -116,21 +114,19 @@ done
 set -- "${POSARGS[@]}"
 
 # ============================================================
-# Step 1: obtain computer name (cn)
+# Step 1: obtain group name (cn)
 # ============================================================
 NAME_INPUT="$1"
 if [[ -z "$NAME_INPUT" ]]; then
-    echo -ne "${C_ASK}[ASK ]${C_RESET} Enter the computer name (cn) to recover: "
+    echo -ne "${C_ASK}[ASK ]${C_RESET} Enter the group name (cn) to recover: "
     read -r NAME_INPUT
 fi
 
 if [[ -z "$NAME_INPUT" ]]; then
-    err "No computer name entered. Aborting."
+    err "No group name entered. Aborting."
     exit 1
 fi
-# Strip a trailing '$' if the user pasted the machine-account uid form.
-NAME_INPUT="${NAME_INPUT%\$}"
-info "Target computer name: ${NAME_INPUT}"
+info "Target group name: ${NAME_INPUT}"
 
 # ============================================================
 # Step 2: select backup file (default: newest ldap-backup)
@@ -158,35 +154,35 @@ BACKUP_FILE="${BACKUP_FILES[$BK_IDX]}"
 info "Using backup: $(basename "$BACKUP_FILE")"
 
 # ============================================================
-# Step 3: search for the computer DN (auto-detect OU, filter by univentionHost)
+# Step 3: search for the group DN (auto-detect OU, filter by univentionGroup)
 # ============================================================
-info "Searching backup for computer object cn=${NAME_INPUT} ..."
+info "Searching backup for group object cn=${NAME_INPUT} ..."
 
 # Scan record-by-record on the UNFOLDED stream. Only keep records whose RDN is
-# cn=<name> AND that carry objectClass: univentionHost (the marker shared by
-# every UCS computer role) — this excludes same-named DNS/DHCP/group objects.
-# Literal (index-based) name matching avoids regex-metacharacter pitfalls.
+# cn=<name> AND that carry objectClass: univentionGroup — this excludes
+# same-named computer/DNS/container objects. Literal name match (index) avoids
+# regex-metacharacter pitfalls.
 mapfile -t FOUND_DNS < <(
     zcat "$BACKUP_FILE" | unfold_ldif | awk -v name="$NAME_INPUT" '
         BEGIN { target = tolower("dn: cn=" name ",") }
-        /^dn:/  { dn=$0; low=tolower($0); rdn_ok=(index(low, target)==1); is_host=0 }
-        tolower($0) == "objectclass: univentionhost" { is_host=1 }
-        /^$/    { if (dn!="" && rdn_ok && is_host) print dn; dn=""; is_host=0; rdn_ok=0 }
-        END     { if (dn!="" && rdn_ok && is_host) print dn }
+        /^dn:/  { dn=$0; low=tolower($0); rdn_ok=(index(low, target)==1); is_grp=0 }
+        tolower($0) == "objectclass: univentiongroup" { is_grp=1 }
+        /^$/    { if (dn!="" && rdn_ok && is_grp) print dn; dn=""; is_grp=0; rdn_ok=0 }
+        END     { if (dn!="" && rdn_ok && is_grp) print dn }
     '
 )
 
 if [[ ${#FOUND_DNS[@]} -eq 0 ]]; then
-    err "No computer object with cn=${NAME_INPUT} found in this backup."
+    err "No group object with cn=${NAME_INPUT} found in this backup."
     warn "Possible causes: different spelling, object did not span this backup,"
-    warn "the value is base64-encoded, or it is not a univentionHost object."
+    warn "the value is base64-encoded, or it is not a univentionGroup object."
     warn "Try another backup, or check manually:"
     echo "      zcat \"$BACKUP_FILE\" | grep -i \"cn=${NAME_INPUT},\""
     exit 1
 fi
 
 if [[ ${#FOUND_DNS[@]} -gt 1 ]]; then
-    warn "Multiple matching computer DNs found. Please choose:"
+    warn "Multiple matching group DNs found. Please choose:"
     for i in "${!FOUND_DNS[@]}"; do
         printf "   [%d] %s\n" "$i" "${FOUND_DNS[$i]#dn: }"
     done
@@ -204,12 +200,9 @@ fi
 ok "Found target DN: ${TARGET_DN}"
 
 # ============================================================
-# Step 4: show object summary and confirm target
+# Step 4: extract entry and show summary (incl. member counts)
 # ============================================================
-# Extract the whole entry by DN on the UNFOLDED stream (start at DN line, stop
-# at the blank line). Unfolding keeps each attribute on one line so the later
-# grep -v strip (Step 7) cannot leave orphaned continuation lines.
-TMP_RAW="${WORK_DIR}/restore-comp-${NAME_INPUT}.raw.ldif"
+TMP_RAW="${WORK_DIR}/restore-grp-${NAME_INPUT}.raw.ldif"
 zcat "$BACKUP_FILE" | unfold_ldif | awk -v dn="dn: ${TARGET_DN}" '
     $0==dn {flag=1}
     flag {print}
@@ -221,15 +214,20 @@ if [[ ! -s "$TMP_RAW" ]]; then
     exit 1
 fi
 
+MEMBERUID_COUNT="$(grep -ic '^memberUid:' "$TMP_RAW")"
+UNIQMEM_COUNT="$(grep -ic '^uniqueMember:' "$TMP_RAW")"
+
 echo
 info "===== Object summary from backup ====="
-grep -iE '^(dn|cn|uid|uidNumber|gidNumber|macAddress|aRecord|operatingSystem|operatingSystemVersion|sambaSID|sambaPrimaryGroupSID|univentionObjectType|univentionServerRole):' "$TMP_RAW" \
+grep -iE '^(dn|cn|gidNumber|sambaSID|sambaGroupType|description|univentionObjectType):' "$TMP_RAW" \
     | sed 's/^/   /'
+echo "   memberUid (count)    : ${MEMBERUID_COUNT}"
+echo "   uniqueMember (count) : ${UNIQMEM_COUNT}"
 echo "   ---------------------------------"
 echo "   (Full entry saved to: $TMP_RAW)"
 echo
 
-if ! ask_yes_no "Is this the object you want to recover?"; then
+if ! ask_yes_no "Is this the group you want to recover?"; then
     warn "Cancelled. No changes made. Temp file: $TMP_RAW"
     exit 0
 fi
@@ -237,35 +235,68 @@ fi
 # ============================================================
 # Step 5: record original key attributes (for comparison)
 # ============================================================
-ORIG_SAMBASID="$(grep -i '^sambaSID:' "$TMP_RAW" | head -1 | awk '{print $2}')"
-ORIG_UIDNUM="$(grep -i '^uidNumber:' "$TMP_RAW" | head -1 | awk '{print $2}')"
 ORIG_GIDNUM="$(grep -i '^gidNumber:' "$TMP_RAW" | head -1 | awk '{print $2}')"
-ORIG_PRIMSID="$(grep -i '^sambaPrimaryGroupSID:' "$TMP_RAW" | head -1 | awk '{print $2}')"
+ORIG_SAMBASID="$(grep -i '^sambaSID:' "$TMP_RAW" | head -1 | awk '{print $2}')"
 
 info "Recorded original key attributes:"
-echo "   sambaSID             = ${ORIG_SAMBASID:-(none)}"
-echo "   uidNumber            = ${ORIG_UIDNUM:-(none)}"
-echo "   gidNumber            = ${ORIG_GIDNUM:-(none)}"
-echo "   sambaPrimaryGroupSID = ${ORIG_PRIMSID:-(none)}"
+echo "   gidNumber = ${ORIG_GIDNUM:-(none)}"
+echo "   sambaSID  = ${ORIG_SAMBASID:-(none)}"
 
 # ============================================================
-# Step 6: confirm restore
+# Step 6: check members still exist; optionally drop dangling ones
 # ============================================================
 echo
-if ! ask_yes_no "Proceed to restore this computer object into LDAP?"; then
+info "===== Member existence check ====="
+MISSING_UNIQMEM=()
+MISSING_MEMBERUID=()
+
+while IFS= read -r m; do
+    [[ -z "$m" ]] && continue
+    if ! ldapsearch "${LDAP_OPTS[@]}" -b "$m" -s base dn >/dev/null 2>&1; then
+        MISSING_UNIQMEM+=("$m")
+    fi
+done < <(grep -i '^uniqueMember:' "$TMP_RAW" | sed 's/^[^:]*: //')
+
+while IFS= read -r u; do
+    [[ -z "$u" ]] && continue
+    if ! ldapsearch "${LDAP_OPTS[@]}" -b "$LDAP_BASE" "(uid=${u})" dn 2>/dev/null | grep -qi '^dn:'; then
+        MISSING_MEMBERUID+=("$u")
+    fi
+done < <(grep -i '^memberUid:' "$TMP_RAW" | sed 's/^[^:]*: //')
+
+DROP_MISSING=0
+if [[ ${#MISSING_UNIQMEM[@]} -gt 0 || ${#MISSING_MEMBERUID[@]} -gt 0 ]]; then
+    warn "Some members no longer exist in LDAP:"
+    for m in "${MISSING_UNIQMEM[@]}";  do echo "     [uniqueMember] $m"; done
+    for u in "${MISSING_MEMBERUID[@]}"; do echo "     [memberUid]    $u"; done
+    echo
+    if ask_yes_no "Drop these dangling members from the restored group?"; then
+        DROP_MISSING=1
+        info "Dangling members will be dropped."
+    else
+        warn "Keeping all original members (dangling references will be restored as-is)."
+    fi
+else
+    ok "All members still exist."
+fi
+
+# ============================================================
+# Step 7: confirm restore
+# ============================================================
+echo
+if ! ask_yes_no "Proceed to restore this group into LDAP?"; then
     warn "Restore cancelled. No changes made. Temp file: $TMP_RAW"
     exit 0
 fi
 
 # Check if DN already exists (avoid duplicate import)
-if ldapsearch -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// \
-        -b "$TARGET_DN" -s base dn >/dev/null 2>&1; then
-    err "This DN already exists in LDAP; the object may not be deleted (or already restored). Aborting."
+if ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base dn >/dev/null 2>&1; then
+    err "This DN already exists in LDAP; the group may not be deleted (or already restored). Aborting."
     exit 1
 fi
 
 # ============================================================
-# Step 7: strip operational attributes, keep identity attributes
+# Step 8: strip operational attributes (KEEP uniqueMember/memberUid)
 # ============================================================
 # Ask about entryUUID preservation unless already requested via flag.
 if [[ $PRESERVE_UUID -eq 0 ]]; then
@@ -274,29 +305,41 @@ if [[ $PRESERVE_UUID -eq 0 ]]; then
     fi
 fi
 
-# TMP_RAW is already unfolded (see Step 4), so each attribute is on one line and
-# grep -v removes the whole value cleanly — no orphaned continuation lines.
-# When preserving entryUUID we keep it in the LDIF (and add '-e relax' below).
-TMP_CLEAN="${WORK_DIR}/restore-comp-${NAME_INPUT}.clean.ldif"
+# TMP_RAW is unfolded, so grep -v removes whole values cleanly. Note memberOf is
+# stripped (nested-group membership is operational) but the group's OWN members
+# uniqueMember/memberUid are preserved. When preserving entryUUID we keep it in
+# the LDIF (and add '-e relax' below).
+TMP_CLEAN="${WORK_DIR}/restore-grp-${NAME_INPUT}.clean.ldif"
 STRIP='^(entryUUID|entryCSN|creatorsName|createTimestamp|modifiersName|modifyTimestamp|structuralObjectClass|univentionObjectIdentifier|memberOf|subschemaSubentry|hasSubordinates|entryDN):'
 if [[ $PRESERVE_UUID -eq 1 ]]; then
     STRIP='^(entryCSN|creatorsName|createTimestamp|modifiersName|modifyTimestamp|structuralObjectClass|univentionObjectIdentifier|memberOf|subschemaSubentry|hasSubordinates|entryDN):'
 fi
 grep -vi -E "$STRIP" "$TMP_RAW" > "$TMP_CLEAN"
 
+# Drop dangling members if requested
+if [[ $DROP_MISSING -eq 1 ]]; then
+    for m in "${MISSING_UNIQMEM[@]}"; do
+        grep -viF "uniqueMember: $m" "$TMP_CLEAN" > "${TMP_CLEAN}.tmp" && mv "${TMP_CLEAN}.tmp" "$TMP_CLEAN"
+    done
+    for u in "${MISSING_MEMBERUID[@]}"; do
+        grep -viF "memberUid: $u" "$TMP_CLEAN" > "${TMP_CLEAN}.tmp" && mv "${TMP_CLEAN}.tmp" "$TMP_CLEAN"
+    done
+    ok "Dangling members removed from import file."
+fi
+
 if [[ $PRESERVE_UUID -eq 1 ]]; then
-    info "Operational attributes stripped; entryUUID PRESERVED (O365/Azure AD safe)."
+    info "Operational attributes stripped; entryUUID PRESERVED; members preserved."
 else
-    info "Operational attributes stripped; sambaSID/uidNumber/gidNumber preserved."
+    info "Operational attributes stripped; gidNumber/sambaSID and members preserved."
 fi
 
 # ============================================================
-# Step 8: import into LDAP
+# Step 9: import into LDAP
 # ============================================================
 info "Importing into LDAP ..."
 ADD_OPTS=()
 [[ $PRESERVE_UUID -eq 1 ]] && ADD_OPTS+=(-e relax)   # allow re-setting entryUUID
-if ldapadd -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// "${ADD_OPTS[@]}" -f "$TMP_CLEAN"; then
+if ldapadd "${LDAP_OPTS[@]}" "${ADD_OPTS[@]}" -f "$TMP_CLEAN"; then
     ok "Import succeeded."
 else
     err "Import failed. Check ldapadd output above. Cleaned LDIF: $TMP_CLEAN"
@@ -304,33 +347,29 @@ else
 fi
 
 # ============================================================
-# Step 9: show restored object (authoritative, via ldapsearch)
+# Step 10: show restored object
 # ============================================================
-# Computer UDM modules are per-role (computers/windows, computers/memberserver,
-# computers/ipmanagedclient, ...) with no generic list, so query LDAP directly.
 echo
 info "===== Restored object (ldapsearch) ====="
-ldapsearch -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// \
-    -b "$TARGET_DN" -s base \
-    cn uid uidNumber gidNumber macAddress aRecord operatingSystem \
-    operatingSystemVersion sambaSID sambaPrimaryGroupSID univentionObjectType \
+ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base \
+    cn gidNumber sambaSID sambaGroupType description univentionObjectType \
     | sed 's/^/   /'
+NEW_MEMBERUID_COUNT="$(ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base memberUid 2>/dev/null | grep -ic '^memberUid:')"
+NEW_UNIQMEM_COUNT="$(ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base uniqueMember 2>/dev/null | grep -ic '^uniqueMember:')"
+echo "   memberUid restored    : ${NEW_MEMBERUID_COUNT}"
+echo "   uniqueMember restored : ${NEW_UNIQMEM_COUNT}"
 
 # ============================================================
-# Step 10: auto-compare against backup
+# Step 11: auto-compare against backup
 # ============================================================
 echo
 info "===== Auto-compare (LDAP actual vs backup original) ====="
 
-RESTORED_ATTRS="$(ldapsearch -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// \
-    -b "$TARGET_DN" -s base sambaSID uidNumber gidNumber sambaPrimaryGroupSID 2>/dev/null)"
-
+RESTORED_ATTRS="$(ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base gidNumber sambaSID 2>/dev/null)"
 get_ldap_val() { echo "$RESTORED_ATTRS" | grep -i "^$1:" | head -1 | awk '{print $2}'; }
 
-NEW_SAMBASID="$(get_ldap_val sambaSID)"
-NEW_UIDNUM="$(get_ldap_val uidNumber)"
 NEW_GIDNUM="$(get_ldap_val gidNumber)"
-NEW_PRIMSID="$(get_ldap_val sambaPrimaryGroupSID)"
+NEW_SAMBASID="$(get_ldap_val sambaSID)"
 
 compare_attr() {
     local name="$1" orig="$2" new="$3"
@@ -344,30 +383,27 @@ compare_attr() {
 }
 
 SID_MISMATCH=0
-compare_attr "uidNumber           " "$ORIG_UIDNUM"  "$NEW_UIDNUM"
-compare_attr "gidNumber           " "$ORIG_GIDNUM"  "$NEW_GIDNUM"
-compare_attr "sambaPrimaryGroupSID" "$ORIG_PRIMSID" "$NEW_PRIMSID"
-compare_attr "sambaSID            " "$ORIG_SAMBASID" "$NEW_SAMBASID" || SID_MISMATCH=1
+compare_attr "gidNumber" "$ORIG_GIDNUM"  "$NEW_GIDNUM"
+compare_attr "sambaSID " "$ORIG_SAMBASID" "$NEW_SAMBASID" || SID_MISMATCH=1
 
 # ============================================================
-# Step 11: force-fix sambaSID if mismatched
+# Step 12: force-fix sambaSID if mismatched
 # ============================================================
 if [[ $SID_MISMATCH -eq 1 && -n "$ORIG_SAMBASID" ]]; then
     echo
     warn "sambaSID differs from backup (reassigned during import)."
     if ask_yes_no "Force-fix sambaSID back to original ${ORIG_SAMBASID}?"; then
-        TMP_FIX="${WORK_DIR}/fix-sambasid-comp-${NAME_INPUT}.ldif"
+        TMP_FIX="${WORK_DIR}/fix-sambasid-grp-${NAME_INPUT}.ldif"
         cat > "$TMP_FIX" <<EOF
 dn: ${TARGET_DN}
 changetype: modify
 replace: sambaSID
 sambaSID: ${ORIG_SAMBASID}
 EOF
-        if ldapmodify -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// -f "$TMP_FIX"; then
+        if ldapmodify "${LDAP_OPTS[@]}" -f "$TMP_FIX"; then
             ok "sambaSID fixed. Re-comparing:"
-            NEW_SAMBASID="$(ldapsearch -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// \
-                -b "$TARGET_DN" -s base sambaSID 2>/dev/null | grep -i '^sambaSID:' | awk '{print $2}')"
-            compare_attr "sambaSID            " "$ORIG_SAMBASID" "$NEW_SAMBASID"
+            NEW_SAMBASID="$(ldapsearch "${LDAP_OPTS[@]}" -b "$TARGET_DN" -s base sambaSID 2>/dev/null | grep -i '^sambaSID:' | awk '{print $2}')"
+            compare_attr "sambaSID " "$ORIG_SAMBASID" "$NEW_SAMBASID"
         else
             err "sambaSID fix failed (SID may be in use by another object). Handle manually. Fix LDIF: $TMP_FIX"
         fi
@@ -377,21 +413,15 @@ EOF
 fi
 
 # ============================================================
-# Step 12: follow-up hints (groups / DNS / DHCP / domain re-join / cleanup)
+# Step 13: follow-up hints
 # ============================================================
 echo
 info "===== Follow-up ====="
-echo "   1. Group membership is NOT auto-restored. Machine accounts use the"
-echo "      uid form '${NAME_INPUT}\$'. Find original groups:"
-echo "        zcat \"$BACKUP_FILE\" | awk '/^dn: cn=/{dn=\$0} /memberUid: ${NAME_INPUT}\\\$\$/{print dn}'"
-echo "      Then re-add with (computers use the 'hosts' property):"
-echo "        udm groups/group modify --dn \"<group DN>\" --append hosts=\"${TARGET_DN}\""
-echo "   2. DNS (A/PTR) and DHCP host entries are SEPARATE objects and are NOT"
-echo "      restored here. Recreate them via UMC or udm dns/* and dhcp/host."
-echo "   3. Machine-account password: a domain-joined Windows/Samba client rotates"
-echo "      its password periodically. If the client can no longer authenticate,"
-echo "      re-join it to the domain."
-echo "   4. Clean up temp files (may contain machine-account hashes; secure-delete):"
+echo "   1. Verify the group and its members in UMC / via:"
+echo "        udm groups/group list --filter cn=\"${NAME_INPUT}\""
+echo "   2. If this group is nested inside other groups, that membership is NOT"
+echo "      restored here — re-add it on the parent group if needed."
+echo "   3. Clean up temp files:"
 echo "        shred -u ${TMP_RAW} ${TMP_CLEAN}${TMP_FIX:+ \$TMP_FIX}"
 echo
 

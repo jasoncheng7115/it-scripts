@@ -15,8 +15,15 @@
 #   5. If sambaSID differs from the backup, offers to force-fix it.
 #
 # Usage:
-#   ./ucs-restore-user.sh              # interactive, prompts for uid
-#   ./ucs-restore-user.sh <uid>        # specify uid directly
+#   ./jt-ucs-user-recovery.sh                 # interactive, prompts for uid
+#   ./jt-ucs-user-recovery.sh <uid>           # specify uid directly
+#   ./jt-ucs-user-recovery.sh -u <uid>        # also preserve entryUUID (O365/Azure AD)
+#
+# Options:
+#   -u, --preserve-uuid   Keep the original entryUUID (uses 'ldapadd -e relax').
+#                         Needed for Microsoft 365 / Azure AD synced accounts so
+#                         the cloud identity mapping is not broken. If omitted,
+#                         the script asks interactively.
 #
 # Note: run as root on the Primary Directory Node.
 # ------------------------------------------------------------
@@ -95,6 +102,20 @@ if [[ -z "$LDAP_BASE" ]]; then
     exit 1
 fi
 BIND_DN="cn=admin,${LDAP_BASE}"
+
+# ---- parse options (-u/--preserve-uuid) ----
+# Preserving entryUUID keeps Microsoft 365 / Azure AD account mappings intact
+# (the connector derives the immutableID from entryUUID). Requires ldapadd
+# '-e relax' to re-set the otherwise NO-USER-MODIFICATION attribute.
+PRESERVE_UUID=0
+POSARGS=()
+for a in "$@"; do
+    case "$a" in
+        -u|--preserve-uuid) PRESERVE_UUID=1 ;;
+        *) POSARGS+=("$a") ;;
+    esac
+done
+set -- "${POSARGS[@]}"
 
 # ============================================================
 # Step 1: obtain uid
@@ -234,19 +255,36 @@ fi
 # ============================================================
 # Step 7: strip operational attributes, keep identity attributes
 # ============================================================
+# Ask about entryUUID preservation unless already requested via flag.
+if [[ $PRESERVE_UUID -eq 0 ]]; then
+    if ask_yes_no "Preserve entryUUID (needed for Microsoft 365 / Azure AD synced accounts)?"; then
+        PRESERVE_UUID=1
+    fi
+fi
+
 TMP_CLEAN="${WORK_DIR}/restore-${UID_INPUT}.clean.ldif"
 # TMP_RAW is already unfolded (see Step 4), so each attribute is on one line and
 # grep -v removes the whole value cleanly — no orphaned continuation lines.
-grep -vi -E '^(entryUUID|entryCSN|creatorsName|createTimestamp|modifiersName|modifyTimestamp|structuralObjectClass|univentionObjectIdentifier|memberOf|subschemaSubentry|hasSubordinates|entryDN):' \
-    "$TMP_RAW" > "$TMP_CLEAN"
+# When preserving entryUUID we keep it in the LDIF (and add '-e relax' below).
+STRIP='^(entryUUID|entryCSN|creatorsName|createTimestamp|modifiersName|modifyTimestamp|structuralObjectClass|univentionObjectIdentifier|memberOf|subschemaSubentry|hasSubordinates|entryDN):'
+if [[ $PRESERVE_UUID -eq 1 ]]; then
+    STRIP='^(entryCSN|creatorsName|createTimestamp|modifiersName|modifyTimestamp|structuralObjectClass|univentionObjectIdentifier|memberOf|subschemaSubentry|hasSubordinates|entryDN):'
+fi
+grep -vi -E "$STRIP" "$TMP_RAW" > "$TMP_CLEAN"
 
-info "Operational attributes stripped; sambaSID/uidNumber/gidNumber preserved."
+if [[ $PRESERVE_UUID -eq 1 ]]; then
+    info "Operational attributes stripped; entryUUID PRESERVED (O365/Azure AD safe)."
+else
+    info "Operational attributes stripped; sambaSID/uidNumber/gidNumber preserved."
+fi
 
 # ============================================================
 # Step 8: import into LDAP
 # ============================================================
 info "Importing into LDAP ..."
-if ldapadd -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// -f "$TMP_CLEAN"; then
+ADD_OPTS=()
+[[ $PRESERVE_UUID -eq 1 ]] && ADD_OPTS+=(-e relax)   # allow re-setting entryUUID
+if ldapadd -x -D "$BIND_DN" -y "$LDAP_SECRET" -H ldapi:/// "${ADD_OPTS[@]}" -f "$TMP_CLEAN"; then
     ok "Import succeeded."
 else
     err "Import failed. Check ldapadd output above. Cleaned LDIF: $TMP_CLEAN"
