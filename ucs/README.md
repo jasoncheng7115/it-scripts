@@ -24,6 +24,8 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 | `jt-ucs-attr-rollback.sh` | **Roll back one attribute** on a still-existing object | Restores a single attribute's value(s) from a backup |
 | `jt-ucs-snapshot.sh` | **Pre-change snapshot** (restore point) | Captures LDAP + Samba AD + config + secrets before risky work |
 | `jt-ucs-ldap-audit.sh` | **Read-only consistency / orphan audit** | Finds duplicate IDs, dangling members, S4 rejects — writes nothing |
+| `jt-ucs-listener-health.sh` | **Read-only listener/notifier health check** | Detects a stalled replication pipeline — writes nothing |
+| `jt-ucs-snapshot-verify.sh` | **Read-only snapshot verifier** | Confirms a snapshot is restorable (incl. SSL CA) — writes nothing |
 
 ---
 
@@ -32,7 +34,7 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 Download to `/opt/` (run as root):
 
 ```bash
-for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit; do
+for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit jt-ucs-listener-health jt-ucs-snapshot-verify; do
   curl -Lo "/opt/$s.sh" "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/$s.sh"
 done
 chmod +x /opt/jt-ucs-*.sh
@@ -169,6 +171,29 @@ and `uniqueMember` (members whose object is gone); accounts whose primary
 `gidNumber` has no group; S4 Connector rejected objects (Samba4 AD DC); and an
 informational LDAP-vs-Samba object-count drift. Exit code `0` = clean, `1` =
 issues found, `2` = setup error (handy for cron/monitoring).
+
+---
+
+## Health & DR-readiness checks
+
+Two more **read-only** checks (exit `0`/`1`/`2`, cron-friendly):
+
+```bash
+/opt/jt-ucs-listener-health.sh          # Listener/Notifier replication health
+/opt/jt-ucs-snapshot-verify.sh          # verify newest snapshot is restorable
+/opt/jt-ucs-snapshot-verify.sh <dir>    # verify a specific snapshot
+```
+
+- **`jt-ucs-listener-health.sh`** — checks the Univention Directory Listener /
+  Notifier services and compares the notifier transaction ID against the ID the
+  local listener last processed (the "lag"). It re-samples to tell *catching up*
+  from *stuck*, and flags any failed handler LDIF. When the listener stalls, UMC
+  changes silently stop taking effect and replicas fall behind.
+- **`jt-ucs-snapshot-verify.sh`** — confirms a `jt-ucs-snapshot.sh` restore point
+  is actually usable **before** you depend on it: all files present, archives and
+  gzip intact, sha256 matches `MANIFEST.txt`, and — the classic PDN-recovery trap
+  — the **SSL CA** (`/etc/univention/ssl/ucsCA`) is present. Without the domain
+  CA, a rebuilt Primary loses trust with every joined host.
 
 ---
 
