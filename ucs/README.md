@@ -26,6 +26,8 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 | `jt-ucs-ldap-audit.sh` | **Read-only consistency / orphan audit** | Finds duplicate IDs, dangling members, S4 rejects — writes nothing |
 | `jt-ucs-listener-health.sh` | **Read-only listener/notifier health check** | Detects a stalled replication pipeline — writes nothing |
 | `jt-ucs-snapshot-verify.sh` | **Read-only snapshot verifier** | Confirms a snapshot is restorable (incl. SSL CA) — writes nothing |
+| `jt-ucs-backup2master.sh` | **Promote Backup → Primary** ⚠️ | Guarded wrapper for `univention-backup2master` — one-way, DR only |
+| `jt-ucs-pdn-restore.sh` | **Rebuild Primary from snapshot** ⚠️ | Guided runbook; dry-run by default — lab / replacement node only |
 
 ---
 
@@ -34,7 +36,7 @@ optionally, `entryUUID` for Microsoft 365 / Azure AD synced objects.
 Download to `/opt/` (run as root):
 
 ```bash
-for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit jt-ucs-listener-health jt-ucs-snapshot-verify; do
+for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit jt-ucs-listener-health jt-ucs-snapshot-verify jt-ucs-backup2master jt-ucs-pdn-restore; do
   curl -Lo "/opt/$s.sh" "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/$s.sh"
 done
 chmod +x /opt/jt-ucs-*.sh
@@ -194,6 +196,46 @@ Two more **read-only** checks (exit `0`/`1`/`2`, cron-friendly):
   gzip intact, sha256 matches `MANIFEST.txt`, and — the classic PDN-recovery trap
   — the **SSL CA** (`/etc/univention/ssl/ucsCA`) is present. Without the domain
   CA, a rebuilt Primary loses trust with every joined host.
+
+---
+
+## Role / system-level recovery (advanced) ⚠️
+
+> **Destructive, one-way, and for a lab or a replacement node only.** Do NOT run
+> these against a healthy production Primary. Both have guard rails, default to
+> being non-destructive, and were validated only on their read-only / dry-run /
+> guard paths — the actual recovery must be rehearsed in a lab first.
+
+### Promote a Backup node to Primary
+
+When the Primary is permanently gone and you have a **Backup Directory Node**:
+
+```bash
+/opt/jt-ucs-backup2master.sh -n     # dry-run: preflight + plan, no change
+/opt/jt-ucs-backup2master.sh        # real promotion (guarded, typed confirmation)
+```
+
+Runs **on the Backup node**. Refuses unless the node's role is
+`domaincontroller_backup`, and **aborts on split-brain** — if the old Primary
+still answers ping/LDAP it will not promote (override only with
+`--force-old-master-gone` once you are certain it is dead). Wraps
+`univention-backup2master` and verifies role/notifier afterwards.
+
+### Rebuild a Primary from a snapshot
+
+When the Primary is gone and there is **no** Backup to promote — rebuild onto a
+fresh/replacement node from a `jt-ucs-snapshot.sh` restore point:
+
+```bash
+/opt/jt-ucs-pdn-restore.sh                          # print the runbook (dry-run)
+/opt/jt-ucs-pdn-restore.sh --snapshot <dir> --execute   # guarded, per-step confirm
+```
+
+It verifies the snapshot first (incl. **SSL CA**), **refuses if the local
+OpenLDAP already holds a directory** (`--force-wipe` to override), and by default
+only prints the exact commands. In `--execute` mode it restores config/CA,
+secrets and OpenLDAP with per-step confirmation, and prints the Samba
+`domain backup restore` step for you to run and reconcile manually.
 
 ---
 

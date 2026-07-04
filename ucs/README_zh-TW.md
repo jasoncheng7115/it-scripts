@@ -25,6 +25,8 @@ LDAP 備份還原誤刪的目錄物件、回滾被誤改的單一屬性、以及
 | `jt-ucs-ldap-audit.sh` | **唯讀一致性 / 殘留參照稽核** | 找重複 ID、失效成員參照、S4 rejects——完全不寫入 |
 | `jt-ucs-listener-health.sh` | **唯讀 listener/notifier 健檢** | 偵測複寫管線卡住——完全不寫入 |
 | `jt-ucs-snapshot-verify.sh` | **唯讀快照驗證器** | 確認快照可還原（含 SSL CA）——完全不寫入 |
+| `jt-ucs-backup2master.sh` | **Backup 升級為 Primary** ⚠️ | `univention-backup2master` 的守衛包裝——單向、僅限 DR |
+| `jt-ucs-pdn-restore.sh` | **從快照重建 Primary** ⚠️ | 引導式 runbook；預設 dry-run——僅限 lab / 替換機 |
 
 ---
 
@@ -33,7 +35,7 @@ LDAP 備份還原誤刪的目錄物件、回滾被誤改的單一屬性、以及
 下載到 `/opt/`（以 root 執行）：
 
 ```bash
-for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit jt-ucs-listener-health jt-ucs-snapshot-verify; do
+for s in jt-ucs-user-recovery jt-ucs-computer-recovery jt-ucs-group-recovery jt-ucs-attr-rollback jt-ucs-snapshot jt-ucs-ldap-audit jt-ucs-listener-health jt-ucs-snapshot-verify jt-ucs-backup2master jt-ucs-pdn-restore; do
   curl -Lo "/opt/$s.sh" "https://raw.githubusercontent.com/jasoncheng7115/it-scripts/refs/heads/master/ucs/$s.sh"
 done
 chmod +x /opt/jt-ucs-*.sh
@@ -186,6 +188,42 @@ S4 Connector rejected 物件（Samba4 AD DC）；以及 LDAP 對 Samba 的物件
   確認它真的能用：檔案齊全、壓縮檔與 gzip 完整、sha256 與 `MANIFEST.txt` 相符，以及
   PDN 重建的經典地雷——**SSL CA**（`/etc/univention/ssl/ucsCA`）是否存在。少了網域 CA，
   重建的主節點會與所有已加入的主機失去信任。
+
+---
+
+## 角色 / 系統級復原（進階）⚠️
+
+> **破壞性、單向，僅限 lab 或替換機。** 請勿對健康的正式 Primary 執行。兩支都有防呆
+> 守衛、預設不做破壞動作，且只在唯讀 / dry-run / 守衛路徑驗證過——實際復原務必先在
+> lab 演練。
+
+### 把 Backup 節點升級為 Primary
+
+當 Primary 永久損毀、且你有 **Backup Directory Node** 時：
+
+```bash
+/opt/jt-ucs-backup2master.sh -n     # dry-run：preflight + 計畫，不變更
+/opt/jt-ucs-backup2master.sh        # 實際升級（守衛、需打字確認）
+```
+
+**在 Backup 節點上執行**。角色不是 `domaincontroller_backup` 就拒絕；並在 **split-brain**
+時中止——若舊 Primary 仍回應 ping/LDAP 就不升級（確定它已死才用
+`--force-old-master-gone` 覆寫）。包裝 `univention-backup2master`，事後驗證
+role/notifier。
+
+### 從快照重建 Primary
+
+當 Primary 損毀、且**沒有** Backup 可升級時——在全新/替換機上用 `jt-ucs-snapshot.sh`
+還原點重建：
+
+```bash
+/opt/jt-ucs-pdn-restore.sh                          # 印出 runbook（dry-run）
+/opt/jt-ucs-pdn-restore.sh --snapshot <dir> --execute   # 守衛、逐步確認
+```
+
+會先驗證快照（含 **SSL CA**）、**若本機 OpenLDAP 已有目錄資料就拒絕**（`--force-wipe`
+才覆寫），預設只印出確切指令。`--execute` 模式會逐步確認地還原 config/CA、secrets 與
+OpenLDAP，Samba 的 `domain backup restore` 步驟則印出讓你自行執行與調校。
 
 ---
 
