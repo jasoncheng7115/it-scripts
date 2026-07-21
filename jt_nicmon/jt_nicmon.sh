@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # jt_nicmon.sh - NIC/Bridge/Bond status monitor (two sections)
 # Author: Jason Cheng (Jason Tools)
-# Version: 1.4
+# Version: 1.5
 # Date: 2025/09/29
 #
 # Changelog:
